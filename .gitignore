@@ -1,0 +1,19 @@
+# your private training material and generated data
+training/
+handy_cache/
+motion_library.json
+!tests/fixtures/motion_library.json
+*.labels.csv
+!tests/fixtures/*.labels.csv
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
+*.wmv
+handy-profile.json
+
+__pycache__/
+node_modules/
+.DS_Store

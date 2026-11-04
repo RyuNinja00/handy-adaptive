@@ -499,7 +499,10 @@ def build(args):
         # motifs, round-robin across sources for diversity
         pools = {}
         for src, s in segs:
-            pools.setdefault(src, []).extend(cut_motifs(s, src, rng))
+            # seeded per source segment so phrase IDs (and your ratings of them)
+            # stay stable when other videos are added to the library later
+            seg_rng = random.Random(f"{src}@{s['start']}")
+            pools.setdefault(src, []).extend(cut_motifs(s, src, seg_rng))
         for p in pools.values():
             rng.shuffle(p)
         motifs, keys = [], list(pools)

@@ -2,6 +2,8 @@
 
 The AI describes **what** is happening in the scene, the extension improvises **how** the device moves using motion learned from your hand-scripted videos, and your live feedback tunes it to your taste over time.
 
+📖 **New here? Follow the [complete step-by-step User Guide](docs/USER_GUIDE.md)**: installation, setup, training, daily use, troubleshooting and reference.
+
 ## Install
 1. Copy the `handy-adaptive` folder into `SillyTavern/data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/`), or push it to a git repo and use **Extensions → Install extension**.
 2. Reload. Open **Extensions → Handy Adaptive**, paste your connection key, set your max speed and stroke limits, and click **Test connection**.
@@ -35,7 +37,8 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 |---|---|
 | `manifest.json`, `index.js`, `synth.js`, `style.css` | the SillyTavern extension (repo root, so **Extensions → Install extension** with this repo's URL works) |
 | `trainer/trainer.py` | video + funscript → `motion_library.json` |
-| `TRAINING.md` | step-by-step training guide |
+| `docs/USER_GUIDE.md` | complete step-by-step guide (start here) |
+| `TRAINING.md` | how the training and learning work |
 | `tests/` | synthesizer checks, learning simulation, trainer end-to-end test with a mock vision model (`npm test`; needs Node, Python 3, ffmpeg) |
 | `dist/` | packaged release zip |
 | `tools/` | an earlier, separate trainer prototype; its library format is **not** compatible with this extension (kept for reference) |

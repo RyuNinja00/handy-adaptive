@@ -31,6 +31,7 @@ import statistics as st
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 DEFAULT_LABELS = [
@@ -185,32 +186,97 @@ def vlm_query(args, frames, start, end, feat, labels):
         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(fr).decode()}}
         for fr in frames
     ]
-    body = {
-        "model": args.model,
-        "messages": [
-            {"role": "system", "content": "You label adult video segments to train motion software for an adult toy. "
-                                          "Be factual and concise. Output valid JSON only."},
-            {"role": "user", "content": content},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 500,
-    }
+    system = ("You label adult video segments to train motion software for an adult toy. "
+              "Be factual and concise. Output valid JSON only.")
+    return parse_vlm(chat(args, system, content), labels)
+
+
+class VLMError(Exception):
+    def __init__(self, status, message):
+        super().__init__(f"HTTP {status}: {message}" if status else message)
+        self.status, self.message = status, message
+
+
+def chat(args, system, content, max_tokens=500):
+    """POST one chat request. Raises VLMError carrying the server's own error text."""
+    if getattr(args, "no_system", False):          # some chat templates reject a system message
+        messages = [{"role": "user", "content": [{"type": "text", "text": system}] + content}]
+    else:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
+    body = {"model": args.model, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens}
     req = urllib.request.Request(
-        args.vlm_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(body).encode(),
+        args.vlm_url.rstrip("/") + "/chat/completions", data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json",
-                 **({"Authorization": f"Bearer {args.api_key}"} if args.api_key else {})},
-    )
+                 **({"Authorization": f"Bearer {args.api_key}"} if args.api_key else {})})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=args.timeout) as r:
-                text = json.load(r)["choices"][0]["message"]["content"]
-            return parse_vlm(text, labels)
-        except Exception as e:  # noqa: BLE001
+                return json.load(r)["choices"][0]["message"]["content"] or ""
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", "replace")
+            try:
+                j = json.loads(raw)
+                err = j.get("error")
+                msg = err.get("message") if isinstance(err, dict) else (err or j.get("message") or raw)
+            except ValueError:
+                msg = raw
+            msg = str(msg).strip()[:500] or e.reason
+            if 400 <= e.code < 500 or attempt == 2:       # a bad request won't fix itself by retrying
+                raise VLMError(e.code, msg) from None
+        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError) as e:
             if attempt == 2:
-                print(f"    ! VLM failed: {e}", file=sys.stderr)
-                return None
-            time.sleep(2 * (attempt + 1))
+                raise VLMError(0, str(getattr(e, "reason", e))) from None
+        time.sleep(2 * (attempt + 1))
+
+
+def explain(err):
+    """Plain-language diagnosis of a model server error."""
+    m = (err.message if isinstance(err, VLMError) else str(err)).lower()
+    if any(k in m for k in ("image", "vision", "multimodal", "mmproj", "multi-modal", "clip")):
+        return ("The loaded model can't read images. In LM Studio, load a model with the yellow eye /\n"
+                "    'Vision' badge (e.g. a Qwen3-VL or Gemma vision build). Some downloads need the\n"
+                "    separate mmproj (vision) file too: on the model's download page, get the variant\n"
+                "    marked Vision, or download the mmproj file next to the model.")
+    if any(k in m for k in ("context", "n_ctx", "too long", "exceed", "tokens to keep", "overflow")):
+        return ("The request is bigger than the model's context length. In LM Studio's Developer tab,\n"
+                "    open the loaded model's settings, set Context Length to 8192 (or 16384), and reload it.")
+    if any(k in m for k in ("template", "jinja", "role", "system")):
+        return "The model's chat template rejected the message format (the trainer adjusts for this automatically)."
+    if any(k in m for k in ("not found", "no model", "not loaded", "model")):
+        return ("The model name doesn't match a loaded model. Load the model in LM Studio and pick it\n"
+                "    from the list (guided mode), or copy its exact API identifier for --model.")
+    if isinstance(err, VLMError) and err.status == 0:
+        return "Can't reach the model server. Is LM Studio's server Status set to Running?"
+    return "See the server message above. LM Studio's Developer tab log shows more detail."
+
+
+TEST_JPEG = base64.b64decode(  # 64x64 grey JPEG, so the self-test needs no ffmpeg
+    "/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYwLjMxLjEwMgD/2wBDAAgKCgsKCw0NDQ0NDRAPEBAQEBAQEBAQEBASEhIVFRUS"
+    "EhIQEBISFBQVFRcXFxUVFRUXFxkZGR4eHBwjIyQrKzP/xABKAAEAAAAAAAAAAAAAAAAAAAAAAQEAAAAAAAAAAAAAAAAAAAAAEAEA"
+    "AAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAQABAAwEiAAIRAAMRAP/aAAwDAQACEQMRAD8AAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAA/9k=")
+
+
+def self_test(args):
+    """One small request to check the server + model accept images. Returns None if OK, else the error."""
+    content = [{"type": "text", "text": 'This is a connection test. Reply with exactly: {"ok": true}'},
+               {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(TEST_JPEG).decode()}}]
+    for _ in range(2):
+        try:
+            chat(args, "You are a helpful assistant.", content, max_tokens=20)
+            return None
+        except VLMError as e:
+            m = e.message.lower()
+            if not getattr(args, "no_system", False) and any(k in m for k in ("template", "jinja", "role", "system")):
+                args.no_system = True
+                continue
+            return e
+    return None
+
+
+def report(err):
+    print(f"\n! The model server returned an error:\n    {err}", file=sys.stderr)
+    print(f"  What it means:\n    {explain(err)}\n", file=sys.stderr)
 
 
 def norm_label(s, labels):
@@ -303,6 +369,45 @@ def find_script(video):
     return hits[0] if hits else None
 
 
+def query_window(args, video, s, e, feat, labels):
+    """Ask the model about one window. If the server rejects the request as too big,
+    step down to fewer/smaller frames and remember what works for later windows."""
+    ladder = [(args.frames, args.width), (min(args.frames, 3), 512), (2, 448), (1, 384)]
+    ladder = [x for i, x in enumerate(ladder) if x not in ladder[:i]]
+    level = getattr(args, "vlm_level", 0)
+    while level < len(ladder):
+        n, width = ladder[level]
+        times = [s + (e - s) * (i + 0.5) / n for i in range(n)]
+        frames = [fr for fr in (grab_frame(video, x, width) for x in times) if fr]
+        if not frames:
+            print(f"  ! could not read frames at {fmt_time(s)} (is ffmpeg installed? is the video readable?)")
+            return None
+        print(f"  {fmt_time(s)}-{fmt_time(e)}  asking VLM ({len(frames)} frame{'s' if len(frames) > 1 else ''})...",
+              end="", flush=True)
+        try:
+            vlm = vlm_query(args, frames, s, e, feat, labels)
+            print(f" {vlm['act']}")
+            return vlm
+        except VLMError as err:
+            print(" failed")
+            m = err.message.lower()
+            too_big = err.status in (400, 413) and not any(
+                k in m for k in ("image", "vision", "multimodal", "mmproj", "not found", "no model", "not loaded"))
+            if too_big and level + 1 < len(ladder):
+                level += 1
+                args.vlm_level = level
+                print(f"    server rejected it ({err.message[:120]}); retrying with "
+                      f"{ladder[level][0]} smaller frame(s)")
+                if not getattr(args, "ctx_tip", False):
+                    args.ctx_tip = True
+                    print("    Tip: for better accuracy, raise Context Length to 8192+ in LM Studio's model\n"
+                          "    settings (Developer tab), reload the model, and run this again.")
+                continue
+            report(err)
+            raise SystemExit(1)
+    return None
+
+
 def analyze(args, video, script):
     labels = [norm_label(l, [l]) for l in (args.labels.split(",") if args.labels else DEFAULT_LABELS)]
     if "other" not in labels:
@@ -346,14 +451,7 @@ def analyze(args, video, script):
         vlm = cached.get(round(s, 2))
         need_vlm = args.vlm_url and not vlm and (not manual or args.vlm_notes)
         if need_vlm:
-            times = [s + (e - s) * (i + 0.5) / args.frames for i in range(args.frames)]
-            frames = [fr for fr in (grab_frame(video, x, args.width) for x in times) if fr]
-            if frames:
-                print(f"  {fmt_time(s)}-{fmt_time(e)}  asking VLM ({len(frames)} frames)...", end="", flush=True)
-                vlm = vlm_query(args, frames, s, e, feat, labels)
-                print(f" {vlm['act'] if vlm else 'failed'}")
-            else:
-                print(f"  ! could not read frames at {fmt_time(s)} (is ffmpeg installed?)")
+            vlm = query_window(args, video, s, e, feat, labels)
         w["vlm"] = vlm
         row = best_row(manual, s, e) if manual else None
         if row:
@@ -640,13 +738,22 @@ def wizard():
         print(f"  Using {model}")
 
     # 3. analyze
-    print("\nStep 3/4  Analyzing")
-    print("  This asks the model about every 10 s of video, so it can take a while.")
-    print("  You can stop with Ctrl+C and run this again later: finished parts are saved.\n")
     cache = os.path.join(root, "handy_cache")
     args = argparse.Namespace(
         script=None, labels_csv=None, labels=None, window=10.0, frames=4, width=640, vlm_notes=False,
         cache=cache, vlm_url=url or "", model=model, api_key="", timeout=300)
+    if url:
+        print("  Testing that the model accepts images...", end="", flush=True)
+        err = self_test(args)
+        if err:
+            print(" problem")
+            report(err)
+            return
+        print(" OK")
+
+    print("\nStep 3/4  Analyzing")
+    print("  This asks the model about every 10 s of video, so it can take a while.")
+    print("  You can stop with Ctrl+C and run this again later: finished parts are saved.\n")
     if not run_analyze(args, [folder]):
         print("\nNothing was analyzed. If you skipped the vision model, every video needs a")
         print("<video>.labels.csv first (see docs/USER_GUIDE.md, Part 10).")
@@ -713,6 +820,19 @@ def main():
 
     args = ap.parse_args()
     if args.cmd == "analyze":
+        if args.vlm_url:
+            print(f"Checking the model server at {args.vlm_url} (model: {args.model})...")
+            err = self_test(args)
+            if err:
+                report(err)
+                try:
+                    names = list_models(args.vlm_url, args.api_key)
+                    if names:
+                        print("  Models this server offers: " + ", ".join(names))
+                except Exception:  # noqa: BLE001
+                    pass
+                sys.exit(1)
+            print("  OK\n")
         run_analyze(args, args.inputs)
         print("\nNext: fix the review CSVs, then run:  python trainer.py build")
     else:

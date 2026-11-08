@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.3.2.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.3.3.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -247,7 +247,7 @@ If your server needs a key, add `--api-key YOURKEY`.
    - **Windows:** double-click **`Train.bat`** in the `handy-adaptive` folder.
    - **macOS:** double-click **`train.command`**. The first time, you may need to right-click it and choose Open.
    - **Any system:** open a terminal in the `trainer` folder and run `python trainer.py` (Windows) or `python3 trainer.py` (Mac/Linux) with **no options**.
-4. **Answer the questions:**
+4. **Answer the questions.** Before analyzing, it sends one test image to check the model can read images, and explains any problem.
    - **Folder:** press Enter to use the `training` folder, or paste another path. It lists which videos have a matching script.
    - **Model:** it finds LM Studio or Ollama on its own and lists your models. Type the number of your **vision** model.
    - It then analyzes everything. This takes a while. You can stop with Ctrl+C and run it again later, and finished parts are kept.
@@ -507,6 +507,13 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 
 **Trainer: `ffmpeg` not found / "could not read frames"**
 - Install ffmpeg (Part 7.2) and open a new terminal.
+
+**Trainer: "HTTP 400" / "Bad Request" / "The model server returned an error"**
+- The trainer prints the server's own message and what it means. The usual causes:
+  - **Model can't read images.** Load a model with the **Vision** (eye) badge in LM Studio. If you downloaded a GGUF yourself, the separate **mmproj** vision file must be downloaded too.
+  - **Context too small.** The trainer automatically switches to fewer, smaller frames, but accuracy is better if you fix it: Developer tab → loaded model settings → **Context Length 8192** or more → reload the model.
+  - **Wrong model name** (command line only). Use a name exactly as listed at `http://localhost:1234/v1/models`, or use guided mode, which lists them for you.
+- A chat-template "system role" error is handled automatically.
 
 **Trainer: "VLM failed" / connection refused / "No model server found"**
 - Make sure the model server is running. In LM Studio the Developer tab's Status must say **Running** with your model loaded. Check by opening `http://localhost:1234/v1/models` in a browser.

@@ -26,6 +26,7 @@ import math
 import os
 import random
 import re
+import shutil
 import statistics as st
 import subprocess
 import sys
@@ -524,8 +525,160 @@ def build(args):
         print(f"\nTip: {', '.join(thin)} have under 2 minutes of examples; add more for better variety.")
 
 
+
+# ----------------------------------------------------------------- guided mode
+SERVERS = [("LM Studio", "http://localhost:1234/v1"), ("Ollama", "http://localhost:11434/v1"),
+           ("llama.cpp", "http://localhost:8080/v1"), ("KoboldCpp", "http://localhost:5001/v1")]
+
+
+def list_models(url, api_key=""):
+    req = urllib.request.Request(url.rstrip("/") + "/models",
+                                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        return [m.get("id") for m in json.load(r).get("data", []) if m.get("id")]
+
+
+def ask(prompt, default=""):
+    try:
+        v = input(f"{prompt}{f' [{default}]' if default else ''}: ").strip().strip('"')
+    except EOFError:
+        v = ""
+    return v or default
+
+
+def run_analyze(args, inputs):
+    vids = []
+    for p in inputs:
+        if os.path.isdir(p):
+            vids += sorted(f for f in glob.glob(os.path.join(p, "*")) if f.lower().endswith(VIDEO_EXT))
+        else:
+            vids.append(p)
+    done = 0
+    for v in vids:
+        s = args.script if getattr(args, "script", None) and len(vids) == 1 else find_script(v)
+        if not s:
+            print(f"- {os.path.basename(v)}: no matching .funscript (needs the same name), skipping")
+            continue
+        print(f"- {os.path.basename(v)}  +  {os.path.basename(s)}")
+        if analyze(args, v, s):
+            done += 1
+    return done
+
+
+def wizard():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    print("=" * 64)
+    print(" Handy Adaptive trainer: guided mode")
+    print(" (advanced users: run  python trainer.py --help  for options)")
+    print("=" * 64)
+
+    if not shutil.which("ffmpeg"):
+        print("\n! ffmpeg was not found. Install it first:")
+        print("    Windows:  winget install Gyan.FFmpeg   (then open a NEW window)")
+        print("    macOS:    brew install ffmpeg")
+        print("    Linux:    sudo apt install ffmpeg")
+        return
+
+    # 1. training folder
+    default_dir = os.path.join(root, "training")
+    print("\nStep 1/4  Training folder")
+    print("  Put each video next to its .funscript with the SAME name, e.g.")
+    print("  scene01.mp4 + scene01.funscript")
+    while True:
+        folder = os.path.abspath(ask("  Folder with your videos", default_dir))
+        if not os.path.isdir(folder):
+            if folder == default_dir and ask(f"  {folder} doesn't exist. Create it? (y/n)", "y").lower().startswith("y"):
+                os.makedirs(folder)
+                print(f"  Created. Copy your videos + funscripts into it, then run this again.")
+                return
+            print("  That folder doesn't exist, try again.")
+            continue
+        vids = [f for f in sorted(os.listdir(folder)) if f.lower().endswith(VIDEO_EXT)]
+        pairs = [v for v in vids if find_script(os.path.join(folder, v))]
+        print(f"  Found {len(vids)} video(s), {len(pairs)} with a matching .funscript.")
+        for v in vids:
+            print(f"    {'OK ' if v in pairs else '-- no script:'} {v}")
+        if pairs:
+            break
+        print("  No usable pairs. Check the names match, then try again.")
+
+    # 2. model server
+    print("\nStep 2/4  Vision model")
+    url, models = None, []
+    for name, u in SERVERS:
+        try:
+            models = list_models(u)
+            url = u
+            print(f"  Found {name} at {u}")
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if not url:
+        print("  No model server found. In LM Studio: open the Developer tab (green >_ icon),")
+        print("  load your vision model, and switch the server Status to Running.")
+        u = ask("  Server URL (or press Enter to skip the vision model and use only your own labels)", "")
+        if u:
+            url = u.rstrip("/") + ("" if u.rstrip("/").endswith("/v1") else "/v1")
+            try:
+                models = list_models(url)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! Couldn't reach {url}: {e}")
+                return
+    model = ""
+    if url:
+        models = [m for m in models if "embed" not in m.lower()]
+        if not models:
+            print("  The server has no models available. Load your vision model and run this again.")
+            return
+        print("  Models:")
+        for i, m in enumerate(models, 1):
+            print(f"    {i}. {m}")
+        while not model:
+            c = ask("  Pick your VISION model (number)", "1" if len(models) == 1 else "")
+            if c.isdigit() and 1 <= int(c) <= len(models):
+                model = models[int(c) - 1]
+        print(f"  Using {model}")
+
+    # 3. analyze
+    print("\nStep 3/4  Analyzing")
+    print("  This asks the model about every 10 s of video, so it can take a while.")
+    print("  You can stop with Ctrl+C and run this again later: finished parts are saved.\n")
+    cache = os.path.join(root, "handy_cache")
+    args = argparse.Namespace(
+        script=None, labels_csv=None, labels=None, window=10.0, frames=4, width=640, vlm_notes=False,
+        cache=cache, vlm_url=url or "", model=model, api_key="", timeout=300)
+    if not run_analyze(args, [folder]):
+        print("\nNothing was analyzed. If you skipped the vision model, every video needs a")
+        print("<video>.labels.csv first (see docs/USER_GUIDE.md, Part 10).")
+        return
+    print("\n" + "-" * 64)
+    print("  Now CHECK the labels before building:")
+    print(f"  1. Open the .review.csv files in {cache}")
+    print("  2. Fix any wrong 'act' values (use 'other' to leave a part out)")
+    print(f"  3. Save each as <video name>.labels.csv inside {folder}")
+    print("  4. Run this again: it will use your corrections.")
+    print("-" * 64)
+    if not ask("\nBuild the motion library now anyway? (y/n)", "n").lower().startswith("y"):
+        print("\nOK. Run this again after checking the labels.")
+        return
+
+    # 4. build
+    print("\nStep 4/4  Building")
+    out = os.path.join(root, "motion_library.json")
+    build(argparse.Namespace(analyses=[cache], out=out, min_confidence=0.5, max_motifs=40, ignore=None,
+                             summary_url="", summary_model="", model=model, api_key="", timeout=300))
+    print(f"\nDone! Import this file in SillyTavern (Extensions > Handy Adaptive >")
+    print(f"Import motion_library.json):\n  {out}")
+
+
 # ----------------------------------------------------------------- cli
 def main():
+    if len(sys.argv) == 1:
+        try:
+            wizard()
+        except KeyboardInterrupt:
+            print("\nStopped. Run again to continue where you left off.")
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -560,19 +713,7 @@ def main():
 
     args = ap.parse_args()
     if args.cmd == "analyze":
-        vids = []
-        for p in args.inputs:
-            if os.path.isdir(p):
-                vids += sorted(f for f in glob.glob(os.path.join(p, "*")) if f.lower().endswith(VIDEO_EXT))
-            else:
-                vids.append(p)
-        for v in vids:
-            s = args.script if args.script and len(vids) == 1 else find_script(v)
-            if not s:
-                print(f"- {v}: no matching .funscript, skipping")
-                continue
-            print(f"- {os.path.basename(v)}  +  {os.path.basename(s)}")
-            analyze(args, v, s)
+        run_analyze(args, args.inputs)
         print("\nNext: fix the review CSVs, then run:  python trainer.py build")
     else:
         build(args)

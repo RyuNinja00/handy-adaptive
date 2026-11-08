@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.3.1.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.3.2.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -237,21 +237,43 @@ If your server needs a key, add `--api-key YOURKEY`.
 
 ## Part 9 — Run the analysis
 
-1. Make sure your vision model server is running (e.g. Ollama is open).
-2. Open a terminal in the `trainer` folder and run:
-   ```
-   python3 trainer.py analyze ../training --model <model-name>
-   ```
-3. For each video you'll see progress like:
-   ```
-   - scene01.mp4  +  scene01.funscript
-     0:00.00-0:10.00  asking VLM (4 frames)... blowjob
-     0:10.00-0:20.00  asking VLM (4 frames)... blowjob
-     ...
-     labelled time: blowjob 240s, handjob 90s, other 30s
-     review/correct: handy_cache/scene01.review.csv  ->  save as ../training/scene01.labels.csv
-   ```
-4. This can take a while: one model call per 10 seconds of video. Results are cached in `handy_cache/`, so if you stop and restart, finished windows aren't redone.
+### Easy way: guided mode (recommended)
+
+1. **Start your model server.**
+   - **LM Studio:** download your vision model. Then open the **Developer** tab (the green `>_` icon on the left), load the model at the top, and switch **Status** to **Running**. To check, open `http://localhost:1234/v1/models` in a browser. It should list your model.
+   - **Ollama:** just make sure Ollama is running.
+2. **Put your videos and scripts** in the `training` folder inside `handy-adaptive` (Part 8).
+3. **Start the trainer:**
+   - **Windows:** double-click **`Train.bat`** in the `handy-adaptive` folder.
+   - **macOS:** double-click **`train.command`**. The first time, you may need to right-click it and choose Open.
+   - **Any system:** open a terminal in the `trainer` folder and run `python trainer.py` (Windows) or `python3 trainer.py` (Mac/Linux) with **no options**.
+4. **Answer the questions:**
+   - **Folder:** press Enter to use the `training` folder, or paste another path. It lists which videos have a matching script.
+   - **Model:** it finds LM Studio or Ollama on its own and lists your models. Type the number of your **vision** model.
+   - It then analyzes everything. This takes a while. You can stop with Ctrl+C and run it again later, and finished parts are kept.
+   - **Build now?** The first time, answer **n**, check the labels (Part 10), then run it again and answer **y**.
+5. When it finishes, it shows where `motion_library.json` was saved. Import that file (Part 11).
+
+### Manual way: command line
+
+Use this if you want to change options. Open a terminal in the `trainer` folder:
+```
+python trainer.py analyze ../training --vlm-url http://localhost:1234/v1 --model <model name>
+```
+- `--vlm-url http://localhost:1234/v1` is needed for **LM Studio**. Without it, the trainer looks for Ollama.
+- `<model name>` must exactly match what `http://localhost:1234/v1/models` shows, or the model's API identifier in LM Studio's Developer tab.
+- On Windows, if `python` isn't found, use `py` instead.
+- The `analysis` and `build` commands save files under the folder you run them from. Guided mode always saves to `handy-adaptive/handy_cache` and `handy-adaptive/motion_library.json`.
+
+For each video you'll see progress like:
+```
+- scene01.mp4  +  scene01.funscript
+  0:00.00-0:10.00  asking VLM (4 frames)... blowjob
+  0:10.00-0:20.00  asking VLM (4 frames)... blowjob
+  ...
+  labelled time: blowjob 240s, handjob 90s, other 30s
+  review/correct: handy_cache/scene01.review.csv  ->  save as ../training/scene01.labels.csv
+```
 
 What happens in each 10-second window:
 - The script is measured: strokes per second, stroke length, where in the range (tip/base), rhythm regularity, up/down asymmetry, pauses, speeding up or slowing down.
@@ -301,11 +323,7 @@ This step matters most for quality. Even good models make mistakes.
    - **Improve the notes.** They're shown to the AI as the description of the act. A line like *"teasing licks at the tip with long pauses, then sudden deep strokes"* helps a lot.
    - You can add rows and delete rows. Only `start`, `end`, `act` are required. `notes` and `position` are optional.
 3. Save the file **next to the video** as `<video name>.labels.csv`, e.g. `training/scene01.labels.csv`. Keep it in CSV format.
-4. Run the analysis again:
-   ```
-   python3 trainer.py analyze ../training --model <model-name>
-   ```
-   It now says `using your labels from ...`, applies them, and reuses the cached model notes. Your labels always override the model's.
+4. Run the analysis again (guided mode, or the same command as before). It now says `using your labels from ...`, applies them, and reuses the cached model notes. Your labels always override the model's.
 
 ### Labelling entirely by hand (no vision model)
 
@@ -325,9 +343,9 @@ python3 trainer.py analyze ../training --vlm-url ""
 
 ## Part 11 — Build and import the motion library
 
-1. Build:
+1. Build: answer **y** to *Build now?* in guided mode, or run:
    ```
-   python3 trainer.py build --out motion_library.json
+   python trainer.py build --out motion_library.json
    ```
 2. Read the summary table it prints:
    ```
@@ -484,11 +502,16 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 **Device stops by itself**
 - That's the idle auto-stop. Raise *Auto-stop after idle* or set it to 0.
 
+**Trainer: `'python' is not recognized` (Windows)**
+- Use `py` instead of `python`, or reinstall Python with **Add Python to PATH** ticked. `Train.bat` tries both.
+
 **Trainer: `ffmpeg` not found / "could not read frames"**
 - Install ffmpeg (Part 7.2) and open a new terminal.
 
-**Trainer: "VLM failed" / connection refused**
-- Make sure the model server is running, and `--vlm-url` and `--model` match what it shows (`ollama list`).
+**Trainer: "VLM failed" / connection refused / "No model server found"**
+- Make sure the model server is running. In LM Studio the Developer tab's Status must say **Running** with your model loaded. Check by opening `http://localhost:1234/v1/models` in a browser.
+- On the command line, LM Studio needs `--vlm-url http://localhost:1234/v1`, and `--model` must match a name from that list exactly.
+- If you get errors only on the first requests, make sure the model is fully loaded first.
 - Slow model? Add `--timeout 600`.
 
 **Trainer: every window gets the same label, or nonsense**

@@ -36,7 +36,8 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 | path | what |
 |---|---|
 | `manifest.json`, `index.js`, `synth.js`, `style.css` | the SillyTavern extension (repo root, so **Extensions → Install extension** with this repo's URL works) |
-| `trainer/trainer.py` | video + funscript → `motion_library.json` |
+| `trainer/trainer.py` | video + funscript → `motion_library.json` (run with no options for guided mode) |
+| `Train.bat` / `train.command` | double-click to start the trainer in guided mode (Windows / macOS) |
 | `docs/USER_GUIDE.md` | complete step-by-step guide (start here) |
 | `TRAINING.md` | how the training and learning work |
 | `tests/` | synthesizer checks, learning simulation, trainer end-to-end test with a mock vision model (`npm test`; needs Node, Python 3, ffmpeg) |

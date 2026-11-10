@@ -190,5 +190,133 @@ for (const at of [0, 100]) {
     check('"Let the AI decide" leaves the motion alone and asks for a reply', h.H.actEngine.intent.intensity === 0.8 && h.st.replies === 1);
 }
 
+// ---- buffered streaming (API v3 HSP) ----
+async function live(h, ms, step = 10) { const out = []; for (let t = 0; t < ms; t += step) { await h.advance(step); out.push(h.devPos()); } return out; }
+function motion(s, step = 10) {
+    let still = 0, run = 0, rev = 0, dir = 0, vmax = 0;
+    for (let i = 1; i < s.length; i++) {
+        const d = s[i] - s[i - 1];
+        vmax = Math.max(vmax, (Math.abs(d) / step) * 1000);
+        if (Math.abs(d) < 1e-6) run += step; else { if (run >= 60) still += run; run = 0; const sg = Math.sign(d); if (dir && sg !== dir) rev++; dir = sg; }
+    }
+    if (run >= 60) still += run;
+    const secs = (s.length * step) / 1000;
+    return { rate: rev / 2 / secs, stalled: still / (s.length * step), vmax };
+}
+const v3 = { transport: 'hsp', appId: 'APP' };
+for (const [label, opts] of [['150 ms round trip', { rtt: 150 }], ['400 ms round trip', { rtt: 400 }], ['background tab (timers ~1/s)', { rtt: 150, minTimer: 1000 }]]) {
+    const h = await boot({ seed: 100 + label.length, ...opts, settings: { ...v3, library: flat(2 / 1.05, 60) } });
+    h.st.extensionSettings.handy_adaptive.profile.acts.a = { ...settled };
+    h.H.run({ act: 'a', intensity: 0.5, variation: 0 }); await h.advance(8000);
+    const m = motion(await live(h, 30000));
+    check(`buffered streaming, ${label}: rhythm held`, h.H.actEngine.mode === 'hsp' && m.rate > 1.9 && m.stalled < 0.02, `${m.rate.toFixed(2)} strokes/s, ${(100 * m.stalled).toFixed(1)}% stalled`);
+    check(`buffered streaming, ${label}: speed cap held`, m.vmax <= cap * 1.03, `fastest ${Math.round(m.vmax)} %/s`);
+}
+{
+    const h = await boot({ seed: 120, settings: { ...v3, library: flat(1 / 1.05, 70) } });
+    h.st.extensionSettings.handy_adaptive.profile.acts.a = { ...settled };
+    h.H.run({ act: 'a', intensity: 0.5, variation: 0 }); await h.advance(8000);
+    const reacted = [];
+    for (let k = 0; k < 12; k++) {
+        await h.advance(1700 + (311 * k) % 900);
+        const n0 = h.dev.hspAdds.length, t = h.now();
+        h.H.feedback(k % 2 ? 'faster' : 'slower');
+        await h.advance(2500);
+        const fl = h.dev.hspAdds.slice(n0).find((x) => x.flush);
+        if (fl) reacted.push({ ms: fl.t - t, jump: fl.jump });
+    }
+    const s = await live(h, 20000); const m = motion(s);
+    check('buffered streaming: changes swap in without a jump', reacted.length === 12 && Math.max(...reacted.map((r) => r.jump)) <= 2, `largest jump ${Math.max(...reacted.map((r) => r.jump)).toFixed(1)}%`);
+    check('buffered streaming: a change reaches the device within ~½ s', Math.max(...reacted.map((r) => r.ms)) <= 600, `slowest ${Math.max(...reacted.map((r) => r.ms))} ms`);
+    let stall = 0;
+    h.H.feedback('faster'); const s2 = await live(h, 4000);
+    for (let i = 1, run = 0; i < s2.length; i++) { if (Math.abs(s2[i] - s2[i - 1]) < 1e-6) { run += 10; stall = Math.max(stall, run); } else run = 0; }
+    check('buffered streaming: no stall around a change', stall < 60, `longest pause ${stall} ms`);
+    h.H.stop(); await h.advance(1500);
+    const p = h.devPos(); await h.advance(3000);
+    check('buffered streaming: stop halts the device', !h.H.active() && !h.dev.hsp.playing && Math.abs(h.devPos() - p) < 1e-6);
+}
+{
+    const h = await boot({ seed: 130, settings: { ...v3, library: flat(1.5, 60) } });
+    h.st.extensionSettings.handy_adaptive.profile.acts.a = { ...settled };
+    h.H.run({ act: 'a', intensity: 0.5, variation: 0 }); await h.advance(8000);
+    h.dev.offline3 = true; await h.advance(1000); h.dev.offline3 = false;
+    const m = motion(await live(h, 10000));
+    check('buffered streaming rides out a 1 s network drop', h.H.active() && m.rate > 1.35 && m.stalled < 0.03, `${m.rate.toFixed(2)} strokes/s afterwards, ${(100 * m.stalled).toFixed(1)}% stalled`);
+    h.dev.offline3 = true; await h.advance(15000);
+    const p = h.devPos(); await h.advance(3000);
+    check('a long network loss stops the extension; the device pauses when its buffer runs out', !h.H.active() && Math.abs(h.devPos() - p) < 1e-6);
+}
+{
+    const h = await boot({ seed: 140, settings: { ...v3 } });
+    h.dev.offline3 = true;
+    h.H.run({ act: 'handjob', intensity: 0.5 }); await h.advance(8000);
+    check('buffered streaming falls back to Streaming when API v3 is unreachable', h.H.actEngine.mode === 'hdsp' && moving(h) && h.toasts.some((t) => /Buffered streaming unavailable/.test(t.m)));
+}
+
+// ---- calibration ----
+async function calibrate(h, tip, base) {
+    h.H.calib.start(); await h.advance(500);
+    h.H.calib.begin(); await h.advance(5000);
+    const jogTo = async (p) => { while (h.H.calib.pos !== p) { h.H.calib.jog(Math.max(-10, Math.min(10, p - h.H.calib.pos))); await h.advance(600); } };
+    await jogTo(tip); h.H.calib.mark(); await jogTo(base); h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
+}
+for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 25, 'hsp']]) {
+    const h = await boot({ seed: 150 + tip, settings: { ...v3, transport } });
+    await calibrate(h, tip, base);
+    const c = h.st.extensionSettings.handy_adaptive.calibration;
+    const s1 = [];
+    h.H.run({ act: 'doggy', intensity: 1, depth: -1 }); await h.advance(4000); for (let k = 0; k < 1500; k++) { await h.advance(10); s1.push(h.devPos()); }
+    h.H.run({ act: 'teasing', intensity: 0.4, depth: 1 }); await h.advance(5000); const s2 = []; for (let k = 0; k < 1500; k++) { await h.advance(10); s2.push(h.devPos()); }
+    h.H.stop(); await h.advance(1000);
+    const lo = Math.min(tip, base), hi = Math.max(tip, base), all = [...s1, ...s2];
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const nearTip = Math.abs(mean(s2) - tip) < Math.abs(mean(s2) - base);
+    const m = { vmax: Math.max(motion(s1).vmax, motion(s2).vmax) };
+    check(`calibration ${base}→${tip} (${transport}): saved, motion stays between base and tip`, c?.tip === tip && c?.base === base && Math.min(...all) >= lo - 0.5 && Math.max(...all) <= hi + 0.5, `device range ${Math.round(Math.min(...all))}-${Math.round(Math.max(...all))}`);
+    check(`calibration ${base}→${tip} (${transport}): "tip" teasing happens at your tip`, nearTip, `teasing averages ${Math.round(mean(s2))}`);
+    check(`calibration ${base}→${tip} (${transport}): speed cap still holds on the device`, m.vmax <= cap * 1.03, `fastest ${Math.round(m.vmax)} %/s`);
+}
+{
+    const h = await boot({ seed: 170 });
+    h.H.calib.start(); await h.advance(300); h.H.calib.begin(); await h.advance(5000);
+    h.H.calib.jog(10); await h.advance(200);
+    const tagWhile = h.dev.cmds.length; h.message('<handy act="doggy" intensity="1"/>'); await h.advance(2000);
+    const ignored = h.dev.cmds.filter((c) => !c.rejected).length - tagWhile <= 1 && !h.H.actEngine.running;
+    h.H.stop(); await h.advance(1500);
+    check('during calibration AI tags are ignored, and STOP ends it', ignored && !h.H.calib.active && !h.H.active());
+    const moves = h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v);
+    check('calibration moves are slow (≤ 25 %/s)', Math.max(...moves) <= 26, `fastest ${Math.round(Math.max(...moves))} %/s`);
+}
+
+// ---- learning ----
+{
+    const h = await boot({ seed: 180, settings: { library: lib } });
+    const pr = h.st.extensionSettings.handy_adaptive.profile; pr.acts.doggy = { ...settled };
+    h.H.run({ act: 'doggy', intensity: 0.3 }); await h.advance(6000);
+    const target = lib.acts.doggy.motifs[0].id;
+    for (let k = 0; k < 3; k++) {   // the same phrase is playing each time "Not this" is pressed
+        h.H.actEngine.used.push({ from: h.now() - 1000, to: h.now() + 4000, act: 'doggy', motif: target });
+        h.H.feedback('nope'); await h.advance(3000);
+    }
+    const { synthesize } = await import('../synth.js');
+    let picked = 0;
+    for (let k = 0; k < 30; k++) picked += synthesize({ lib, intent: { act: 'doggy', intensity: 0.3 }, prefs: { ...pr, exploreBias: 2 }, limits: { maxVel: cap }, durationMs: 20000 }).used.filter((u) => u.motif === target).length;
+    check('a phrase turned down 3 times is retired, even when experimenting a lot', pr.banned[target] === true && picked === 0, `banned=${!!pr.banned[target]}, picked ${picked} times in 10 min`);
+    const one = await boot({ seed: 181, settings: { library: lib } }), pr1 = one.st.extensionSettings.handy_adaptive.profile;
+    one.H.run({ act: 'doggy', intensity: 0.3 }); await one.advance(6000);
+    one.H.actEngine.used.push({ from: one.now() - 1000, to: one.now() + 4000, act: 'doggy', motif: target }); one.H.feedback('nope'); await one.advance(3000);
+    check('a single "Not this" does not retire a phrase', !pr1.banned[target]);
+}
+{
+    const h = await boot({ seed: 190, settings: { library: lib } });
+    const pr = h.st.extensionSettings.handy_adaptive.profile;
+    h.H.run({ act: 'blowjob', intensity: 0.7 }); await h.advance(9000);
+    const cur = h.H.actEngine.used.filter((u) => u.motif && u.from <= h.now() && u.to > h.now()).pop();
+    h.H.feedback('close'); await h.advance(1000);
+    const p = h.st.prompts.filter(Boolean).pop() || '';
+    check('"I\'m close" counts as a win for what was playing and is remembered per act', (!cur || pr.motifs[cur.motif] > 0) && pr.acts.blowjob.edges === 1 && /brought them to the edge 1 time/.test(p));
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');
 process.exit(failed ? 1 : 0);

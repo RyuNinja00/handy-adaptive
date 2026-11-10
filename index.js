@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.3.4)
+// Handy Adaptive — SillyTavern extension (v0.4.0)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -16,7 +16,10 @@ const DEFAULTS = {
     enabled: true,
     connectionKey: '',
     apiBase: 'https://www.handyfeeling.com/api/handy/v2',
-    transport: 'hdsp',          // 'hdsp' = stream each stroke (instant reactions) | 'hssp' = upload script chunks (smoothest)
+    transport: 'hdsp',          // 'hdsp' = stream each stroke | 'hssp' = upload script chunks | 'hsp' = buffered streaming (API v3, firmware 4)
+    appId: '',                  // Handy API v3 Application ID (buffered streaming only)
+    apiV3Base: 'https://www.handyfeeling.com/api/handy-rest/v3',
+    calibration: null,          // { base, tip }: device positions (0-100) of your base and your tip
     uploadUrl: 'https://scripts01.handyfeeling.com/api/script/v0/temp/upload',
     minSpeed: 5,
     maxSpeed: 80,               // % cap. Pattern mode: HAMP velocity. Act mode: scales max travel speed.
@@ -40,6 +43,8 @@ const EMPTY_PROFILE = () => ({
     trans: {},      // "motifA>motifB" -> score (which phrases you like following which)
     exploreBias: 1, // "try new things": 0 = only what you've liked, 2 = experiment a lot
     favorites: [], log: [], sessions: 0,
+    motifStats: {}, // motif id -> { love, nope }
+    banned: {},     // motif ids you have firmly rejected
 });
 
 function S() {
@@ -140,6 +145,66 @@ const api = {
     hsspStop: (k = false) => api.call('PUT', '/hssp/stop', undefined, k),
 };
 
+// ---------------------------------------------------------------- calibration
+// The engine thinks in body positions: 0 = your base, 100 = your tip. Calibration records which device
+// positions those are for you, and everything sent to the Handy is mapped through it, so "at the tip"
+// really is at your tip. Without a calibration the two scales are the same.
+function cal() {
+    const c = S().calibration;
+    return c && Number.isFinite(+c.base) && Number.isFinite(+c.tip) && Math.abs(c.tip - c.base) >= 10 ? c : null;
+}
+const span = () => { const c = cal(); return c ? Math.abs(c.tip - c.base) / 100 : 1; };
+const toDev = (p) => { const c = cal(); const x = clamp(+p || 0, 0, 100); return c ? c.base + (x / 100) * (c.tip - c.base) : x; };
+// The speed cap is a physical limit on the device; in body units it is wider when your range is shorter.
+const capBody = () => maxVel() / span();
+
+// ---------------------------------------------------------------- device API v3 (firmware 4): buffered streaming
+// HSP keeps a few seconds of timed points on the device itself, so motion stays smooth whatever the
+// network or the browser tab is doing. Requests carry an Application ID from Handy's developer portal.
+const api3 = {
+    offset: 0, offsetAt: 0,
+    base: () => String(S().apiV3Base || 'https://www.handyfeeling.com/api/handy-rest/v3').replace(/\/$/, ''),
+    async call(method, path, body, keepalive = false) {
+        const s = S();
+        if (!s.connectionKey) throw new Error('No connection key set');
+        if (!s.appId) throw new Error('No API v3 Application ID set');
+        const t0 = performance.now();
+        const res = await fetch(api3.base() + path, {
+            method, keepalive,
+            signal: AbortSignal.timeout?.(8000),
+            headers: { 'X-Connection-Key': s.connectionKey, 'X-Api-Key': s.appId, 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        api.rtt = api.rtt * 0.8 + (performance.now() - t0) * 0.2;
+        let json = {};
+        try { json = await res.json(); } catch { /* empty */ }
+        if (!res.ok || json.error) throw new Error(json?.error?.message || json?.message || `HTTP ${res.status}`);
+        return json.result ?? json;
+    },
+    async syncTime() {
+        if (Date.now() - api3.offsetAt < 5 * 60000) return;
+        const samples = [];
+        for (let i = 0; i < 5; i++) {
+            const t0 = Date.now(); const r = await api3.call('GET', '/servertime'); const t1 = Date.now();
+            const st = num(r.server_time ?? r.serverTime); if (st === undefined) throw new Error('bad server time');
+            samples.push(st + (t1 - t0) / 2 - t1);
+        }
+        samples.sort((a, b) => a - b);
+        api3.offset = samples[Math.floor(samples.length / 2)]; api3.offsetAt = Date.now();
+    },
+    connected: () => api3.call('GET', '/connected'),
+    async mode(m) { try { return await api3.call('PUT', '/mode2', { mode: m }); } catch { return api3.call('PUT', '/mode', { mode: m }); } },
+    xpt: (pos, ms) => api3.call('PUT', '/hdsp/xpt', { xp: Math.round(clamp(pos, 0, 100) * 100) / 10000, t: Math.round(ms), stop_on_target: true, immediate_rsp: false }),
+    stroke: (min, max) => api3.call('PUT', '/slider/stroke', { min, max }),
+    setup: (id) => api3.call('PUT', '/hsp/setup', { stream_id: id }),
+    add: (points, tail, flush) => api3.call('PUT', '/hsp/add', { points, tail_point_stream_index: Math.max(1, tail), flush }),
+    play: (start) => api3.call('PUT', '/hsp/play', { start_time: Math.round(start), server_time: Math.round(Date.now() + api3.offset), playback_rate: 1, loop: false, pause_on_starving: true }),
+    resume: () => api3.call('PUT', '/hsp/resume', { pick_up: false }),
+    stop: (k = false) => api3.call('PUT', '/hsp/stop', undefined, k),
+};
+// "starving" / "paused" in either of the forms the API has been seen to use (numbers 3/4 or strings).
+const hspStalled = (st) => { const p = st?.play_state; return p === 3 || p === 4 || (typeof p === 'string' && /starv|pause/i.test(p)); };
+
 // ---------------------------------------------------------------- act engine (synthesizer)
 const actEngine = {
     running: false,
@@ -154,6 +219,7 @@ const actEngine = {
     known: false,     // false until the first move of a start has landed: the device may be anywhere
     timer: null, startedAt: 0, keptSince: Date.now(),
     hssp: { playStart: 0, actions: null, refill: null, swapMs: 900, timed: false },
+    hsp: { origin: 0, streamId: Math.floor(Math.random() * 1e9), count: 0, sentUntil: 0, lock: Promise.resolve(), sending: false, resync: false },
 
     async apply(cmd) {
         const s = S(); if (!s.enabled) return;
@@ -184,7 +250,7 @@ const actEngine = {
         } finally { this.starting--; ui.refresh(); updatePrompt(); }
     },
 
-    limits() { const s = S(); return { floor: s.strokeFloor, ceil: s.strokeCeil, maxVel: maxVel(), minMs: 60 }; },
+    limits() { const s = S(); return { floor: s.strokeFloor, ceil: s.strokeCeil, maxVel: capBody(), minMs: 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
         const r = synthesize({ lib: LIB(), intent: this.intent, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
         this.lastMotif = r.lastMotif;
@@ -206,10 +272,11 @@ const actEngine = {
     },
 
     async regen(my = epoch) {
-        const want = S().transport === 'hssp' ? 'hssp' : 'hdsp';
+        const t = S().transport, want = t === 'hssp' || t === 'hsp' ? t : 'hdsp';
         if (this.running && this.mode !== want) await this.stop();   // transport was changed while playing
         if (my !== epoch) return;
         if (want === 'hssp') return this.regenHssp(my);
+        if (want === 'hsp') return this.regenHsp(my);
         const now = Date.now();
         settlePhrases();
         if (this.running && this.buf.length) {
@@ -262,15 +329,16 @@ const actEngine = {
         const from = this.estPos(arrive);
         // On a fresh start the device could be at either end (after power-on, or moved by the Handy app),
         // so the first move is timed for the longest trip it might really make.
-        const dist = this.known ? Math.abs(next.pos - from) : Math.max(next.pos, 100 - next.pos);
-        const floor = Math.max(50, 0.9 * (next.at - prev.at), (dist / maxVel()) * 1000);
+        const dev = toDev(next.pos);
+        const travel = this.known ? Math.abs(dev - toDev(from)) : Math.max(dev, 100 - dev);   // device %
+        const floor = Math.max(50, 0.9 * (next.at - prev.at), (travel / maxVel()) * 1000);
         let dur = next.at - arrive;
         if (dur < floor) { this.shift(floor - dur, 1); dur = floor; }
         this.seg = { p0: from, t0: arrive, p1: next.pos, t1: arrive + dur };
         this.known = true;
         this.buf.shift();
         this.inflight++;
-        api.xpt(next.pos, dur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
+        api.xpt(dev, dur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
         ui.live(next.pos);
     },
     sendFailed(e) {
@@ -289,7 +357,7 @@ const actEngine = {
         let start;
         try {
             await api.syncTime(); if (my !== epoch) return;
-            const url = await api.upload(g.actions); if (my !== epoch) return;
+            const url = await api.upload(g.actions.map((a) => ({ at: a.at, pos: Math.round(toDev(a.pos)) }))); if (my !== epoch) return;
             const tSetup = Date.now();
             if (!swapping) await api.mode(1);
             if (my !== epoch) return;
@@ -322,8 +390,122 @@ const actEngine = {
         }, 500);
     },
 
+    // ---- buffered streaming (API v3 HSP). The plan in `buf` is kept whole (past points included) and the
+    // device holds ~5 s of it. A change replaces the buffer from the next turning point after the change
+    // can land, so the motion never reverses mid-stroke or stalls at the hand-over.
+    async regenHsp(my = epoch) {
+        const now = Date.now(), live = this.running && this.mode === 'hsp';
+        const lead = api.rtt + 250;
+        settlePhrases();
+        if (live && this.buf.length) {
+            let k = this.buf.findIndex((a) => a.at > now + lead);
+            if (k < 0) k = this.buf.length - 1;
+            this.buf = this.buf.slice(0, k + 1);
+        } else {
+            this.buf = [{ at: now + lead, pos: Math.round(this.estPos(now)) }];
+            this.known = false;
+        }
+        const last = this.buf[this.buf.length - 1];
+        this.used = this.used.filter((u) => u.from < last.at && u.to > now - 20000);
+        for (const u of this.used) if (u.to > last.at) u.to = last.at;
+        this.lastMotif = [...this.used].reverse().find((u) => u.motif && u.act === this.intent.act)?.motif ?? null;
+        const g = this.gen_(last.at, last.pos, 20000);
+        this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
+        if (live) return this.hspLocked(() => this.hspSend(true));
+        // Fresh start: the device could be anywhere, so the first move is timed for the longest possible trip.
+        if (this.buf.length > 1) {
+            const d = toDev(this.buf[1].pos), need = (Math.max(d, 100 - d) / maxVel()) * 1000;
+            const have = this.buf[1].at - this.buf[0].at;
+            if (have < need) this.shift(need - have, 1);
+        }
+        let setup = false;
+        try {
+            await api3.syncTime(); if (my !== epoch) return;
+            await api3.mode(4).catch(() => {});                 // setup also selects HSP; this is belt and braces
+            await api3.stroke(0, 1).catch(() => {});            // clear any stroke window another app left: calibration is done here
+            if (my !== epoch) return;
+            this.hsp.streamId = (this.hsp.streamId % 4294967295) + 1;
+            await api3.setup(this.hsp.streamId); setup = true;
+            if (my !== epoch) { api3.stop().catch(() => {}); return; }
+            const t0 = Date.now();
+            this.shift(Math.max(0, t0 + lead - this.buf[0].at));   // starts after the round trips just spent
+            this.hsp.origin = t0;
+            await this.hspSend(true);
+            if (my !== epoch) { api3.stop().catch(() => {}); return; }
+            await api3.play(Date.now() - this.hsp.origin);
+            if (my !== epoch) { api3.stop().catch(() => {}); return; }
+        } catch (e) {
+            if (setup) api3.stop().catch(() => {});
+            if (my !== epoch) return;
+            toast(`Buffered streaming unavailable (${e.message}); switching to Streaming`, 'warning');
+            S().transport = 'hdsp'; save(); $('#handy_transport').val('hdsp');
+            this.buf = [];
+            return this.regen(my);
+        }
+        this.running = true; this.mode = 'hsp'; this.fails = 0; this.known = true; this.startedAt = Date.now(); this.keptSince = Date.now();
+        clearInterval(this.timer);
+        this.timer = setInterval(() => this.tickHsp(), 250);
+    },
+    hspLocked(fn) { const p = this.hsp.lock.then(fn); this.hsp.lock = p.catch(() => {}); return p; },
+    // Send the plan up to ~5 s ahead. flush = replace what the device holds, starting from the point it is on.
+    async hspSend(flush) {
+        if (this.hsp.resync) { flush = true; this.hsp.resync = false; }
+        const now = Date.now(), horizon = now + 5200, h = this.hsp;
+        let pts;
+        if (flush) {
+            const devNow = now + api.rtt / 2;
+            let i = this.buf.findIndex((a) => a.at > devNow);
+            i = i < 0 ? Math.max(0, this.buf.length - 2) : Math.max(0, i - 1);
+            pts = this.buf.slice(i).filter((a, j) => j < 2 || a.at <= horizon);
+            h.count = 0;
+        } else pts = this.buf.filter((a) => a.at > h.sentUntil && a.at <= horizon);
+        if (!pts.length) return;
+        h.sending = true;
+        try {
+            let st = null;
+            for (let k = 0; k < pts.length; k += 100) {
+                const chunk = pts.slice(k, k + 100);
+                h.count += chunk.length;
+                st = await api3.add(chunk.map((a) => ({ t: Math.max(0, Math.round(a.at - h.origin)), x: Math.round(clamp(toDev(a.pos), 0, 100)) })), h.count - 1, flush && k === 0);
+            }
+            h.sentUntil = pts[pts.length - 1].at;
+            this.fails = 0;
+            this.hspObserve(st, now);
+        } catch (e) {
+            h.resync = true;   // never retry a failed add blindly: next time, replace the whole window
+            this.sendFailed(e);
+        } finally { h.sending = false; }
+    },
+    // Keep our timeline in step with the device's. If it paused (buffer ran dry), slide the plan to match.
+    hspObserve(st, sentAt) {
+        if (!st) return;
+        if (hspStalled(st)) api3.resume().catch(() => {});
+        const cur = num(st.current_time);
+        if (cur === undefined || hspStalled(st)) return;
+        const lag = (sentAt + api.rtt / 2 - this.hsp.origin) - cur;
+        if (Math.abs(lag) > 300 && Math.abs(lag) < 10000) { this.hsp.origin += lag; this.shift(lag); this.hsp.sentUntil += lag; }
+    },
+    tickHsp() {
+        if (!this.running || this.mode !== 'hsp') return;
+        const now = Date.now();
+        if (S().idleStopSec > 0 && now - lastActivity > S().idleStopSec * 1000) return stopAll('idle timeout');
+        implicitLearn();
+        const tail = this.buf[this.buf.length - 1];
+        if (tail && tail.at - now < 8000) {
+            const g = this.gen_(tail.at, tail.pos, 20000);
+            this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
+            settlePhrases();
+            this.used = this.used.filter((u) => u.to > now - 30000);
+        }
+        const old = this.buf.findIndex((a) => a.at > now - 3000);
+        if (old > 1) this.buf.splice(0, old - 1);
+        if (!this.hsp.sending && (this.hsp.resync || this.hsp.sentUntil - now < 3000)) this.hspLocked(() => this.running && this.mode === 'hsp' && this.hspSend(false));
+        ui.live(this.currentPos(now));
+    },
+
     currentPos(t = Date.now()) {
         if (this.running && this.mode === 'hssp' && this.hssp.actions) return posAt(this.hssp.actions, t - this.hssp.playStart);
+        if (this.running && this.mode === 'hsp' && this.buf.length) return posAt(this.buf, t);
         return this.estPos(t);
     },
 
@@ -332,12 +514,15 @@ const actEngine = {
         clearInterval(this.timer); this.timer = null; clearTimeout(this.hssp.refill); clearTimeout(this.durTimer); clearTimeout(regenTimer);
         settlePhrases();
         this.recordKept();
-        const was = this.running, hssp = was ? this.mode === 'hssp' : S().transport === 'hssp';
+        const was = this.running, how = was ? this.mode : (['hssp', 'hsp'].includes(S().transport) ? S().transport : 'hdsp');
         const here = Math.round(clamp(this.currentPos(Date.now() + api.rtt / 2), 0, 100));   // where it will be when the halt lands
-        this.running = false; this.buf = []; this.seg = null; this.rest = here; this.hssp.actions = null;
-        try { if (hssp) await api.hsspStop(); else await api.xpt(here, 100); }
-        catch (e) { if (was) toast(`Stop failed: ${e.message} — use the device button!`, 'error'); }
-        try { await api.mode(0); await api.hampStop(); } catch { /* best effort */ }
+        this.running = false; this.buf = []; this.seg = null; this.rest = here; this.hssp.actions = null; this.hsp.sentUntil = 0;
+        try {
+            if (how === 'hsp') await api3.stop();
+            else if (how === 'hssp') await api.hsspStop();
+            else await api.xpt(toDev(here), 100);
+        } catch (e) { if (was) toast(`Stop failed: ${e.message} — use the device button!`, 'error'); }
+        if (how !== 'hsp') { try { await api.mode(0); await api.hampStop(); } catch { /* best effort */ } }
         if (reason) toast(`Handy stopped: ${reason}`, 'info');
         ui.refresh(); updatePrompt();
     },
@@ -417,7 +602,10 @@ const hamp = {
         const tg = { speed: clamp(r.speed, s.minSpeed, s.maxSpeed), min: clamp(r.min, s.strokeFloor, s.strokeCeil), max: clamp(r.max, s.strokeFloor, s.strokeCeil) };
         api.busy = true;
         try {
-            if (Math.abs(tg.min - this.sent.min) >= 3 || Math.abs(tg.max - this.sent.max) >= 3) { await api.slide(tg.min, tg.max); this.sent.min = tg.min; this.sent.max = tg.max; }
+            if (Math.abs(tg.min - this.sent.min) >= 3 || Math.abs(tg.max - this.sent.max) >= 3) {
+                const a = toDev(tg.min), b = toDev(tg.max);
+                await api.slide(Math.min(a, b), Math.max(a, b)); this.sent.min = tg.min; this.sent.max = tg.max;
+            }
             if (Math.abs(tg.speed - this.sent.speed) >= 2) { await api.velocity(tg.speed); this.sent.speed = tg.speed; }
         } catch (e) { console.warn('[Handy]', e); } finally { api.busy = false; }
         $('#handy_live').text(`${this.pattern} · ${Math.round(tg.speed)} · ${Math.round(tg.min)}–${Math.round(tg.max)}`);
@@ -426,10 +614,11 @@ const hamp = {
 
 let lastActivity = Date.now();
 const anyRunning = () => actEngine.running || hamp.running;
-const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting > 0;   // moving, or about to
+const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting > 0 || calib.active;   // moving, or about to
 function stopAll(reason) {
     epoch++;   // cancels every start that is in progress or queued
     const jobs = [];
+    if (calib.active) jobs.push(calib.abort());
     if (actEngine.running || actEngine.starting > 0) jobs.push(actEngine.stop(reason));
     if (hamp.running || hamp.starting > 0) jobs.push(hamp.stop(reason));
     const done = Promise.allSettled(jobs);
@@ -465,9 +654,17 @@ function creditMotifs(reward, windowMs = 8000, alpha = 0.3) {
         if (u.rated && u.to <= now && Math.sign(u.rated) !== Math.sign(reward)) continue;
         reinforce(pr.motifs, u.motif, reward, alpha);
         if (i > 0) reinforce(pr.trans, `${seq[i - 1].motif}>${u.motif}`, reward, alpha);
+        if (!u.rated || Math.sign(u.rated) !== Math.sign(reward)) countRating(u.motif, reward);
         u.rated = reward;
     }
     pruneTrans();
+}
+// A phrase you have turned down three times, more than twice as often as you liked it, is retired
+// for good (Reset under Learned taste brings it back). Up to then, "Not this" only makes it rarer.
+function countRating(id, reward) {
+    const pr = S().profile, st = (pr.motifStats[id] ??= { love: 0, nope: 0 });
+    if (reward >= 1) st.love++; else if (reward < 0) st.nope++;
+    if (st.nope >= 3 && st.nope > 2 * st.love) pr.banned[id] = true;
 }
 // Phrases that finished with no reaction count as a weak "fine" signal.
 function settlePhrases() {
@@ -524,6 +721,8 @@ let edges = 0;
 function closeSignal() {
     edges++;
     const s = S(), pull = s.closeAction !== 'ai';
+    // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
+    if (actEngine.running) { creditMotifs(0.6, 10000, 0.2); const a = actPrefs(actEngine.intent.act); a.edges = (a.edges || 0) + 1; save(); }
     if (actEngine.running && pull) {
         actEngine.intent.intensity = clamp(actEngine.intent.intensity * 0.3, 0.05, 1);
         clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
@@ -599,18 +798,83 @@ function handleUserMessage(id) {
     updatePrompt();   // the reply being written now should already know
 }
 
+// ---------------------------------------------------------------- guided calibration
+// Wear the Handy, move the sleeve to your tip and then to your base with the buttons, and save. Moves are
+// slow (25 %/s) and every stop path works: the STOP button, Esc, a typed stop and the device's own button.
+const calib = {
+    active: false, step: 0, pos: 50, tip: null, base: null, my: 0,
+    v3: () => S().transport === 'hsp',
+    async move(p, ms = 0) {
+        p = Math.round(clamp(p, 0, 100));
+        const d = Math.abs(p - this.pos);
+        ms = Math.max(ms, (d / 25) * 1000, 150);
+        this.pos = p; $('#handy_calib_pos').text(p);
+        try { await (this.v3() ? api3.xpt(p, ms) : api.xpt(p, ms)); }
+        catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); }
+        return ms;
+    },
+    async start() {
+        await stopAll();
+        const my = epoch; this.my = my;
+        this.active = true; this.step = 0; this.tip = null; this.base = null;
+        const c = cal(); this.pos = c ? Math.round((c.tip + c.base) / 2) : 50;
+        ui.calib(); ui.refresh();
+    },
+    async begin() {
+        const my = this.my;
+        try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
+        catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
+        if (!this.active || my !== epoch) return;
+        // We can't know where it is resting, so the first move is timed for the longest possible trip.
+        await this.move(this.pos, 4000);   // 100% of travel in 4 s at most: 25 %/s wherever it starts
+        this.step = 1; ui.calib();
+    },
+    jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.move(this.pos + delta); },
+    mark() {
+        if (this.step === 1) { this.tip = this.pos; this.step = 2; }
+        else if (this.step === 2) {
+            if (Math.abs(this.pos - this.tip) < 10) return toast('Tip and base must be at least 10 apart. Move further and try again.', 'warning');
+            this.base = this.pos; this.step = 3;
+        }
+        ui.calib();
+    },
+    back() { if (this.step > 1) { this.step--; ui.calib(); } },
+    async test() {
+        if (this.step !== 3) return;
+        const my = this.my;
+        for (const p of [this.base, this.tip, this.base, this.tip]) {
+            const ms = await this.move(p, (Math.abs(p - this.pos) / 30) * 1000);
+            await new Promise((r) => setTimeout(r, ms + 100));
+            if (!this.active || my !== epoch) return;
+        }
+    },
+    finish() {
+        if (this.step !== 3) return;
+        S().calibration = { base: this.base, tip: this.tip, at: new Date().toISOString().slice(0, 10) };
+        save(); toast(`Calibrated: base at ${this.base}, tip at ${this.tip}`, 'success');
+        this.close();
+    },
+    close() { this.active = false; ui.calib(); ui.refresh(); updatePrompt(); try { (this.v3() ? api3.mode(0) : api.mode(0)).catch(() => {}); } catch { /* best effort */ } },
+    async abort() {
+        if (!this.active) return;
+        this.active = false; ui.calib(); ui.refresh();
+        try { await (this.v3() ? api3.mode(0) : api.mode(0)); } catch { /* the device button always works */ }
+    },
+};
+
 // ---------------------------------------------------------------- prompt
 function actLine(name, e) {
     const a = S().profile.acts[name];
     let line = `* ${name}: ${e.motion || ''}`;
     if (e.description) line += ` — ${String(e.description).slice(0, 260)}`;
+    if (a && a.edges && !(a.n > 0)) line += ` | has brought them to the edge ${a.edges} time${a.edges > 1 ? 's' : ''}`;
     if (a && a.n > 0) {
         const taste = [];
         if (Math.abs(a.rateMul - 1) > 0.08) taste.push(a.rateMul > 1 ? `faster than usual (x${a.rateMul.toFixed(2)})` : `slower than usual (x${a.rateMul.toFixed(2)})`);
         if (Math.abs(a.ampMul - 1) > 0.08) taste.push(a.ampMul > 1 ? 'longer strokes' : 'shorter strokes');
         if (Math.abs(a.centerShift) > 4) taste.push(a.centerShift > 0 ? 'more at the tip' : 'deeper/at the base');
         taste.push(`variation ~${a.variation.toFixed(2)}`);
-        line += ` | USER TASTE: ${taste.join(', ')}; rating ${a.score.toFixed(1)}${a.keptSec ? `; enjoys ~${Math.round(a.keptSec)}s before wanting a change` : ''}`;
+        line += ` | USER TASTE: ${taste.join(', ')}; rating ${a.score.toFixed(1)}${a.keptSec ? `; enjoys ~${Math.round(a.keptSec)}s before wanting a change` : ''}${a.edges ? `; has brought them to the edge ${a.edges} time${a.edges > 1 ? 's' : ''}` : ''}`;
     }
     return line;
 }
@@ -664,7 +928,7 @@ function handleMessage(id) {
 // <handy stop/>, and the ways models say the same thing through act/pattern.
 const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 'string' && /^(stop|stopped|none|off)$/i.test(v.trim()) && !LIB().acts[v.trim().toLowerCase()]);
 function runCommand(a) {
-    if (!S().enabled) return;
+    if (!S().enabled || calib.active) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
     if (a.favorite) { const f = S().profile.favorites.find((x) => x.name.toLowerCase() === String(a.favorite).toLowerCase()); if (f) return playFavorite(f); }
     if (a.act || a.intensity !== undefined || a.blend) return actEngine.apply(a);
@@ -692,7 +956,8 @@ const ui = {
     <label>Motion transport
       <select id="handy_transport" class="text_pole">
         <option value="hdsp">Streaming (reacts instantly)</option>
-        <option value="hssp">Script sync (smoothest, ~1s to react)</option>
+        <option value="hssp">Script sync (smooth, ~1s to react)</option>
+        <option value="hsp">Buffered streaming (Handy firmware 4: smoothest, reacts in ~½ s)</option>
       </select></label>
     <label>Max speed % <input type="number" id="handy_maxspeed" class="text_pole" min="5" max="100"></label>
     <label>Min speed % (pattern mode) <input type="number" id="handy_minspeed" class="text_pole" min="0" max="100"></label>
@@ -709,6 +974,15 @@ const ui = {
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>Sending a message that is only “stop”, “halt”, “pause” or “red” also stops it.</small>
     <label class="checkbox_label"><input type="checkbox" id="handy_panel"> Show control panel</label>
+    <hr>
+    <label>API v3 Application ID (buffered streaming only) <input type="password" id="handy_appid" class="text_pole" placeholder="from Handy's developer portal"></label>
+    <hr>
+    <b>Calibration</b>
+    <div id="handy_cal_summary" class="handy-lib"></div>
+    <div class="flex-container">
+      <div id="handy_cal_start" class="menu_button">Calibrate to my body</div>
+      <div id="handy_cal_clear" class="menu_button">Clear calibration</div>
+    </div>
     <hr>
     <b>Motion library</b>
     <div id="handy_lib_summary" class="handy-lib"></div>
@@ -744,13 +1018,15 @@ const ui = {
         bind('#handy_floor', 'strokeFloor'); bind('#handy_ceil', 'strokeCeil'); bind('#handy_idle', 'idleStopSec');
         bind('#handy_esc', 'escStops', 'checked'); bind('#handy_inject', 'injectProfile', 'checked');
         bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
-        bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword');
+        bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
+        $('#handy_cal_start').on('click', () => calib.start());
+        $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; save(); ui.refresh(); } });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
         const ex = () => { const v = S().profile.exploreBias ?? 1; $('#handy_explore').val(v); $('#handy_explore_v').text(v < 0.4 ? 'stick to favorites' : v > 1.4 ? 'experiment a lot' : 'balanced'); };
         ex(); $('#handy_explore').on('input', function () { S().profile.exploreBias = +this.value; ex(); save(); });
         $('#handy_test').on('click', async () => {
             $('#handy_status').text('…');
-            try { const r = await api.connected(); $('#handy_status').text(r.connected ? `✅ connected · ${Math.round(api.rtt)} ms round trip` : '❌ not connected'); }
+            try { const r = await (S().transport === 'hsp' ? api3.connected() : api.connected()); $('#handy_status').text(r.connected ? `✅ connected · ${Math.round(api.rtt)} ms round trip` : '❌ not connected'); }
             catch (e) { $('#handy_status').text('❌ ' + e.message); }
         });
         const pickFile = (cb) => { const inp = Object.assign(document.createElement('input'), { type: 'file', accept: '.json' }); inp.onchange = async () => { try { cb(JSON.parse(await inp.files[0].text())); } catch (e) { toast(e.message, 'error'); } }; inp.click(); };
@@ -779,6 +1055,33 @@ const ui = {
     <div id="handy_now" class="handy-small"></div>
   </div>
 </div>`);
+        $('body').append(`
+<div id="handy_calib" class="handy-calib">
+  <div class="handy-calib-box">
+    <b>Calibrate to your body</b>
+    <p id="handy_calib_text"></p>
+    <div class="handy-calib-pos">Device position <span id="handy_calib_pos">50</span> <span id="handy_calib_marks" class="handy-small"></span></div>
+    <div class="handy-calib-jog">
+      <div class="menu_button" data-jog="-10">▼▼ −10</div><div class="menu_button" data-jog="-2">▼ −2</div>
+      <div class="menu_button" data-jog="2">▲ +2</div><div class="menu_button" data-jog="10">▲▲ +10</div>
+    </div>
+    <div class="handy-calib-actions">
+      <div id="handy_calib_back" class="menu_button">Back</div>
+      <div id="handy_calib_test" class="menu_button">Test</div>
+      <div id="handy_calib_next" class="menu_button"></div>
+    </div>
+    <div id="handy_calib_cancel" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP / cancel</div>
+  </div>
+</div>`);
+        $('#handy_calib').on('click', '[data-jog]', function () { calib.jog(+this.dataset.jog); });
+        $('#handy_calib_back').on('click', () => calib.back());
+        $('#handy_calib_test').on('click', () => calib.test());
+        $('#handy_calib_next').on('click', () => (calib.step === 0 ? calib.begin() : calib.step === 3 ? calib.finish() : calib.mark()));
+        $('#handy_calib_cancel').on('click', () => stopAll('calibration cancelled'));
+        document.addEventListener('keydown', (e) => {
+            if (!calib.active || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+            e.preventDefault(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
+        });
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
         $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
@@ -798,6 +1101,8 @@ const ui = {
         $('#handy_favs').html(`<option value="">— favorites —</option>` + pr.favorites.map((f) => `<option>${esc(f.name)}</option>`).join(''));
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
+        const c = cal();
+        $('#handy_cal_summary').text(c ? `Calibrated${c.at ? ` on ${c.at}` : ''}: your base is device position ${c.base}, your tip ${c.tip}. Tip, base and the stroke limits now refer to your body.` : 'Not calibrated: motion uses the full device range (0 = bottom, 100 = top).');
         $('#handy_lib_summary').html(lib.starter
             ? 'Using starter defaults. Train a library from your scripted videos (see TRAINING.md).'
             : `${acts.length} acts from ${lib.sources} videos (${esc(lib.created || '')}):<br>` +
@@ -808,6 +1113,23 @@ const ui = {
             : 'Nothing learned yet — use ❤ / 👎 and the adjust buttons while playing.');
     },
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
+    calib() {
+        const c = calib, steps = [
+            ['Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. STOP, Esc and the button on the device all work at any point.', 'Start'],
+            ['Move the sleeve with the buttons (or the ↑ ↓ keys, Shift for bigger steps) until it sits at your <b>tip</b>: as far out as it should ever go.', 'This is my tip'],
+            ['Now move it to your <b>base</b>: as deep as it should ever go.', 'This is my base'],
+            ['Press <b>Test</b> for two slow full strokes between your base and tip. If they feel right, press <b>Save</b>. Use Back to adjust.', 'Save'],
+        ];
+        $('#handy_calib').toggle(c.active);
+        if (!c.active) return;
+        $('#handy_calib_text').html(steps[c.step][0]);
+        $('#handy_calib_next').text(steps[c.step][1]);
+        $('#handy_calib .handy-calib-jog').toggle(c.step === 1 || c.step === 2);
+        $('#handy_calib_back').toggle(c.step > 1);
+        $('#handy_calib_test').toggle(c.step === 3);
+        $('#handy_calib_pos').text(c.pos);
+        $('#handy_calib_marks').text([c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
+    },
 };
 
 // ---------------------------------------------------------------- boot
@@ -824,7 +1146,8 @@ jQuery(() => {
         epoch++;
         api.call('PUT', '/mode', { mode: 0 }, true).catch(() => {});
         api.hampStop(true).catch(() => {}); api.hsspStop(true).catch(() => {});
+        if (S().appId) api3.stop(true).catch(() => {});
     });
     S().profile.sessions++; save(); updatePrompt();
-    window.handyAdaptive = { actEngine, hamp, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

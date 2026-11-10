@@ -52,13 +52,78 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         for (let i = 1; i < A.length; i++) if (A[i].at >= st) return A[i - 1].pos + (A[i].pos - A[i - 1].pos) * ((st - A[i - 1].at) / Math.max(1, A[i].at - A[i - 1].at));
         return A[A.length - 1].pos;
     };
+    // API v3 HSP: a point buffer played against a stream clock. With pause_on_starving the clock freezes
+    // at the last point and resumes when points arrive (as the v3 documentation describes).
+    dev.hsp = null; dev.hspAdds = [];
+    const hspClock = (t) => {
+        const h = dev.hsp; if (!h || !h.playing) return null;
+        let st = h.base + (t - h.anchor);
+        const last = h.points.length ? h.points[h.points.length - 1].t : -Infinity;
+        if (h.pauseOnStarving && st > last) st = last;
+        return st;
+    };
+    const hspPos = (t) => {
+        const st = hspClock(t); if (st === null) return null;
+        const P = dev.hsp.points, h = dev.hsp;
+        if (!P.length) return h.pos0;
+        if (st <= P[0].t) {   // before the first point: ease from where it was toward it
+            const span = Math.max(1, P[0].t - h.st0);
+            return h.pos0 + (P[0].x - h.pos0) * clampN((st - h.st0) / span, 0, 1);
+        }
+        for (let i = 1; i < P.length; i++) if (P[i].t >= st) return P[i - 1].x + (P[i].x - P[i - 1].x) * ((st - P[i - 1].t) / Math.max(1, P[i].t - P[i - 1].t));
+        return P[P.length - 1].x;
+    };
+    const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
+    const hspState = (t = vnow) => {
+        const h = dev.hsp, st = hspClock(t), P = h?.points || [];
+        const starving = h?.playing && P.length && h.base + (t - h.anchor) > P[P.length - 1].t;
+        return { play_state: !h ? 0 : !h.playing ? 2 : starving ? 4 : 1, current_time: st ?? 0, points: P.length, max_points: 400, stream_id: h?.streamId ?? 0 };
+    };
     const devPos = (t = vnow) => {
+        const sp = hspPos(t); if (sp !== null) return sp;
         const hp = hsspPos(t); if (hp !== null) return hp;
         const s = dev.seg; if (!s) return dev.restPos;
         if (t >= s.t1) return s.p1;
         return s.p0 + (s.p1 - s.p0) * ((t - s.t0) / (s.t1 - s.t0));
     };
-    const halt = () => { dev.restPos = devPos(); dev.seg = null; if (dev.hssp) dev.hssp.playing = false; dev.traj.push({ t: vnow, p: dev.restPos, halt: true }); };
+    const halt = () => { dev.restPos = devPos(); dev.seg = null; if (dev.hssp) dev.hssp.playing = false; if (dev.hsp) dev.hsp.playing = false; dev.traj.push({ t: vnow, p: dev.restPos, halt: true }); };
+    function handle3(method, path, body, headers) {
+        dev.calls.push({ t: vnow, method, path, body, v3: true });
+        if (path === '/servertime') return { server_time: vnow };
+        if (!headers['X-Api-Key']) return { error: { message: 'Unauthorized' }, status: 401 };
+        if (path === '/connected') return { result: { connected: true } };
+        if (path === '/mode2') { if (body.mode !== dev.mode) halt(); dev.mode = body.mode; return { result: { mode: dev.mode } }; }
+        if (path === '/slider/stroke') { dev.stroke = body; return { result: body }; }
+        if (path === '/hdsp/xpt') {
+            if (dev.mode !== 2) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'device not in HDSP mode' } }; }
+            return handle('PUT', '/hdsp/xpt', { position: body.xp * 100, duration: body.t });
+        }
+        if (path === '/hsp/setup') { halt(); dev.mode = 4; dev.hsp = { streamId: body.stream_id, points: [], playing: false, pauseOnStarving: false, base: 0, anchor: vnow, pos0: devPos(), st0: 0 }; return { result: hspState() }; }
+        if (path === '/hsp/add') {
+            const h = dev.hsp; if (!h || dev.mode !== 4) return { error: { message: 'HSP not set up' } };
+            if (!Array.isArray(body.points) || body.points.length > 100 || body.points.some((p) => !Number.isInteger(p.t) || !Number.isInteger(p.x) || p.x < 0 || p.x > 100)) return { error: { message: 'bad points' } };
+            if (h.playing) {   // starved: freeze the clock at the last point, then carry on from there
+                const st = hspClock(vnow); h.base = st; h.anchor = vnow;
+                if (body.flush) { h.pos0 = devPos(); h.st0 = st; }
+            }
+            const before = devPos();
+            if (body.flush) h.points = [];
+            h.points.push(...body.points.map((p) => ({ t: p.t, x: p.x })));
+            h.points.sort((a, b) => a.t - b.t);
+            dev.hspAdds.push({ t: vnow, flush: !!body.flush, n: body.points.length, tail: body.tail_point_stream_index, jump: Math.abs(devPos() - before), first: body.points[0].t, last: body.points[body.points.length - 1].t, clock: hspClock(vnow) });
+            return { result: hspState() };
+        }
+        if (path === '/hsp/play') {
+            const h = dev.hsp; if (!h) return { error: { message: 'HSP not set up' } };
+            h.pos0 = devPos(); h.playing = true; h.pauseOnStarving = !!body.pause_on_starving;
+            h.base = body.start_time + (vnow - body.server_time); h.anchor = vnow; h.st0 = h.base;
+            return { result: hspState() };
+        }
+        if (path === '/hsp/resume') return { result: hspState() };
+        if (path === '/hsp/stop') { halt(); return { result: hspState() }; }
+        if (path === '/hsp/state') return { result: hspState() };
+        return { error: { message: 'unknown v3 ' + path } };
+    }
     function handle(method, path, body) {
         dev.calls.push({ t: vnow, method, path, body });
         if (path === '/connected') return { connected: true };
@@ -89,7 +154,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         return { error: { message: 'unknown ' + path } };
     }
     const lat = () => (rtt / 2) * (1 + jitter * (2 * netRand() - 1));
-    globalThis.fetch = (url, opts = {}) => new Promise((resolve) => {
+    globalThis.fetch = (url, opts = {}) => new Promise((resolve, reject) => {
         if (String(url).includes('upload')) {
             opts.body.get('file').text().then((txt) => {
                 const u = 'sim://script/' + (++dev.uploads); dev.scripts[u] = JSON.parse(txt).actions;
@@ -97,11 +162,13 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
             });
             return;
         }
-        const path = String(url).split('/v2')[1];
+        const v3 = String(url).includes('/handy-rest/v3');
+        const path = v3 ? String(url).split('/handy-rest/v3')[1] : String(url).split('/v2')[1];
         const body = opts.body ? JSON.parse(opts.body) : undefined;
         net(() => {
-            const out = handle(opts.method, path, body);
-            net(() => resolve({ ok: !out.error, status: out.error ? 400 : 200, json: async () => out }), lat());
+            if (v3 && dev.offline3) return net(() => reject(new TypeError('Failed to fetch')), 0);
+            const out = v3 ? handle3(opts.method, path, body, opts.headers || {}) : handle(opts.method, path, body);
+            net(() => resolve({ ok: !out.error, status: out.error ? (out.status || 400) : 200, json: async () => out }), lat());
         }, lat());
     });
 
@@ -131,7 +198,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
     const mod = await import(`${repo}/index.js?boot=${++bootN}`);
     const H = globalThis.window.handyAdaptive;
     Object.assign(st.extensionSettings.handy_adaptive, { connectionKey: 'KEY', ...settings });
-    return { H, st, dev, devPos, advance, flush, now: () => vnow, toasts, errors, handlers, timers: () => timers, mod,
+    return { H, st, dev, devPos, hspState, advance, flush, now: () => vnow, toasts, errors, handlers, timers: () => timers, mod,
         message(text) { st.chat.push({ mes: text, is_user: false }); return handlers.message_received(st.chat.length - 1); },
         say(text) { st.chat.push({ mes: text, is_user: true }); return handlers.message_sent?.(st.chat.length - 1); } };
 }

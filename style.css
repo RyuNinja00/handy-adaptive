@@ -33,3 +33,16 @@
 #handy_now { margin-top: 4px; min-height: 1em; }
 .handy-lib { font-size: .85em; margin: 4px 0; }
 .handy-settings hr { margin: 8px 0; opacity: .3; }
+
+.handy-calib { display: none; position: fixed; inset: 0; z-index: 3100; background: #0008; align-items: center; justify-content: center; }
+.handy-calib[style*="block"] { display: flex !important; }
+.handy-calib-box { width: min(420px, calc(100vw - 32px)); background: var(--SmartThemeBlurTintColor, #222e); backdrop-filter: blur(8px); border: 1px solid var(--SmartThemeBorderColor, #555); border-radius: 12px; padding: 14px; }
+.handy-calib-pos { font-size: 1.2em; margin: 8px 0; }
+.handy-calib-jog, .handy-calib-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.handy-calib-jog .menu_button { flex: 1; text-align: center; }
+.handy-calib-actions .menu_button { flex: 1; text-align: center; }
+
+.handy-btn.finish { background: #9c6ade55; grid-column: span 2; justify-content: center; }
+.handy-pos { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: .75em; opacity: .8; }
+.handy-pos-track { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--black30a, #0004); }
+#handy_pos_dot { position: absolute; top: -3px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #e0559a; }

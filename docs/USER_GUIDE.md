@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.3.4.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.4.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -104,8 +104,10 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 3. Click **Test connection**. You should see ✅ connected and the round-trip time in ms. If you see ❌, check the key and that the Handy is online.
 4. **Motion transport**:
    - **Streaming (reacts instantly)**: the default and recommended. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
-   - **Script sync (smoothest)**: uploads a 2-minute generated script to the device. Motion can be smoother, but changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
-   - **Which to pick:** Streaming needs the SillyTavern tab to stay visible on screen. Browsers slow down background tabs, and Streaming then drops to about one stroke per second. If SillyTavern will sit behind another tab or a full-screen video, choose Script sync.
+   - **Script sync (smooth)**: uploads a 2-minute generated script to the device. Changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
+   - **Buffered streaming (Handy firmware 4)**: the recommended choice if your Handy runs firmware 4. The extension keeps about 5 seconds of motion stored on the device and tops it up, using Handy's API v3. Motion stays smooth on a slow network and when SillyTavern is in a background tab, and changes still take effect in about half a second, always at a turning point so nothing jerks. It needs an **API v3 Application ID** (next item). If the Handy servers refuse it, or your firmware is older, the extension tells you and switches to Streaming. If the network drops for more than a few seconds, the extension stops, and the device pauses by itself once its stored motion runs out.
+   - **API v3 Application ID**: only for Buffered streaming. Sign in to Handy's developer portal (linked from Handy's developer documentation at handyfeeling.com/api/handy-rest/v3/docs), create an application, and paste its Application ID here. It identifies the app, not you; your connection key is still what grants access to your device.
+   - **Which to pick:** Buffered streaming on firmware 4. Otherwise, Streaming if the SillyTavern tab stays visible (browsers slow down background tabs and Streaming then drops to about one stroke per second), or Script sync if it will sit behind another tab or a full-screen video.
 5. **Max speed %**: a hard limit on how fast the device may ever move. **Start low (40–50)** and raise it once you trust it. Nothing the AI or the engine does can exceed it.
 6. **Min speed % (pattern mode)**: only matters for the old pattern mode. Leave it as is.
 7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable.
@@ -114,10 +116,12 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt.
 11. **AI replies automatically to ❤/👎**: when on, pressing ❤ or 👎 makes the character respond in-story a few seconds later. Optional.
 12. **When I press "I'm close"**: *Ease off at once, then the AI reacts* (default) drops the intensity immediately, because an AI reply takes seconds. *Let the AI decide* leaves the motion alone and asks the AI to reply right away, so it can pull back, hold you there or push you over.
-13. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A message that is only “stop”, “halt”, “pause” or “red” always stops it too.
-14. **Show control panel**: shows or hides the floating panel.
-15. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
-16. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
+13. **When I press "Finished"**: *Wind down gently for 20 s, then stop* (default), *Stop at once*, or *Let the AI decide*.
+14. **Notice “I'm close” / “I'm cumming” in my messages** (on by default): for when your hands are busy. Writing "I'm so close" or "gonna cum" acts like the 🔥 button; "I'm cumming" or "I just came" acts like 🥂 Finished. Questions ("are you cumming?"), negations ("I'm not cumming yet") and everyday phrases ("close to the door", "I came home") are ignored.
+15. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A short message (up to five words) such as “stop”, “stop, please”, “ok halt” or “red” always stops it too; “don't stop” and questions such as “can you stop?” never do.
+16. **Show control panel**: shows or hides the floating panel.
+17. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
+18. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
 
 ---
 
@@ -131,6 +135,18 @@ Do this before involving the AI, so you know the hardware side works.
 4. Move the **Intensity** slider and watch it respond.
 5. Try **Faster**, **Slower**, **Longer**, **Shorter**, **Tip**, **Base**.
 6. Press **STOP**. It should stop at once. Then try starting it again and pressing **Esc**.
+
+### Calibrate to your body (recommended)
+
+Out of the box, "tip" and "base" mean the ends of the device's travel, which rarely match your body. Calibration fixes that: you move the sleeve to your own tip and base, and from then on every act, every *Tip* / *Base* press and every AI depth request lands where it should.
+
+1. Open **Extensions → Handy Adaptive** and click **Calibrate to my body**.
+2. Wear the Handy and keep still. Press **Start**. The sleeve moves slowly to the middle.
+3. Use **▲ +2 / ▲▲ +10 / ▼ −2 / ▼▼ −10** (or the **↑ ↓** keys, Shift for big steps) until the sleeve is at your **tip**, as far out as it should ever go. Press **This is my tip**.
+4. Move it to your **base**, as deep as it should ever go. Press **This is my base**.
+5. Press **Test** for two slow full strokes. If they feel right, press **Save**. Otherwise use **Back** and adjust.
+
+Calibration moves are slow (25%/s at most). STOP, Esc, a typed "stop" and the device's own button all work, and AI tags are ignored until you finish. The **Stroke limits** now apply within your calibrated range (0 = your base, 100 = your tip), and the **Max speed** stays a limit on the device itself. **Clear calibration** returns to the full device range.
 
 Until you train a library, the acts are rough **starter profiles** (teasing, handjob, blowjob, deepthroat, cowgirl, missionary, doggy). They work, but they're generic. Training is what makes each act feel right.
 
@@ -394,6 +410,8 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Wilder / Smoother** | More organic and varied vs. more steady and mechanical |
 | **❤ Love this** | Strong positive rating for what's playing now |
 | **👎 Not this** | Negative rating; switches to something else at once |
+| **🥂 Finished** | You climaxed. The phrases from the last ~20 s are rated up firmly, the act's finish count is remembered and shown to the AI, and the device winds down gently for 20 s, then stops (or as set in *When I press "Finished"*). A new AI tag during the wind-down takes over. |
+| **Position bar** | Live position, your base on the left and your tip on the right. |
 | **🔥 I'm close** | Edging signal. Eases off at once (unless you chose *Let the AI decide*), and tells the AI, which pulls back, holds or pushes you over in character. The AI is told how many times you've been on the edge in this chat. |
 | **Act dropdown + ▶** | Play an act yourself |
 | **Intensity slider** | Overall intensity of the current act |
@@ -420,6 +438,8 @@ There is no fixed script for any act. For each act the engine combines:
 | ❤ Love this | Current settings strongly kept for this act; phrases and phrase pairs from the last ~8 s rated up |
 | 👎 Not this | Phrases and pairs from the last ~8 s rated down; plays something different immediately |
 | ⭐ Save favorite | Exact setup stored; you or the AI can recall it by name |
+| 🔥 I'm close | Phrases from the last ~10 s rated up (they worked), and the act's edge count is remembered and shown to the AI |
+| 🥂 Finished | Phrases from the last ~20 s rated up firmly, and the act's finish count is remembered and shown to the AI |
 | Nothing | Phrases that played through count as mildly OK |
 
 **How it behaves over time:**
@@ -431,7 +451,7 @@ Each act's status appears in the settings under *Learned taste*: **still explori
 
 **Tips:**
 - Press ❤ **at the moment** something feels great. It applies to the last ~8 seconds.
-- Use 👎 freely. It's how bad phrases get weeded out.
+- Use 👎 freely. It's how bad phrases get weeded out. A phrase you turn down three times (and more than twice as often as you liked it) is **retired** and never plays again, however experimental the setting. **Reset** under Learned taste brings retired phrases back.
 - Each act learns separately. Taste for handjobs doesn't change cowgirl.
 - If it feels samey, move **Try new things** up. If it keeps wandering away from what you like, move it down.
 
@@ -467,7 +487,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ## Part 16 — Safety
 
 - **Start with a low Max speed** and narrow stroke limits until you're comfortable.
-- **Ways to stop:** the STOP button, the **Esc** key, a message that is only “stop” (or “halt”, “pause”, “red”), your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
+- **Ways to stop:** the STOP button, the **Esc** key, a short message such as “stop” or “stop, please”, your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
 - **Auto-stop:** after the idle time, when you switch chats, and when you close or reload the page.
 - In Streaming mode every move is "stop on target": if the connection drops, the device stops where it is instead of continuing.
 - Keep your connection key private.

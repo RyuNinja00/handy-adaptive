@@ -183,7 +183,7 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
         // phrase length: your learned "how long before I want a change", else 4-12 s
         const kept = prefs?.acts?.[act]?.keptSec;
         const phraseMs = kept && tg.explore < 0.6 ? clamp(kept * 1000 * rnd(0.6, 1.1), 3000, 30000) : rnd(4000, 12000);
-        const motifs = (tg.prof.motifs || []).filter(validMotif);
+        const motifs = (tg.prof.motifs || []).filter((m) => validMotif(m) && !prefs?.banned?.[m.id]);   // phrases you firmly rejected never come back
         const useProcedural = !motifs.length || Math.random() < 0.3 * tg.explore + 0.1 * tg.variation;
         const phrase = useProcedural
             ? procedural(tg, phraseMs, clamp(pos, 0, 100))

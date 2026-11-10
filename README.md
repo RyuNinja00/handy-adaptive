@@ -1,4 +1,4 @@
-# Handy Adaptive (SillyTavern extension) v0.3
+# Handy Adaptive (SillyTavern extension) v0.4
 
 The AI describes **what** is happening in the scene, the extension improvises **how** the device moves using motion learned from your hand-scripted videos, and your live feedback tunes it to your taste over time.
 
@@ -20,16 +20,18 @@ The AI writes hidden tags, for example:
 It doesn't choose speeds or patterns directly. It chooses the act, how intense it is, tip vs base, and optionally a blend with other acts. The engine then builds the motion from phrases learned from your scripted videos. It starts out exploring, then increasingly chains the phrases and phrase combinations you've rated highly for that act, using your learned speed, length and depth settings. See TRAINING.md §7. The old `<handy pattern="wave" .../>` tags still work as a simple fallback.
 
 ## Panel
-STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
+STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · 🥂 Finished (winds down gently, then stops; the strongest learning signal) · a live position bar (base ↔ tip) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
 
 ## Safety
-- Big STOP button; **Esc** stops; sending a message that is only “stop” (or “halt”, “pause”, “red”) stops at once without waiting for the AI, and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
+- Big STOP button; **Esc** stops; a short message such as “stop”, “stop, please” or “ok halt” stops at once without waiting for the AI (“don't stop” and questions never do), and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
 - A `<handy stop/>` tag always wins over other tags in the same message that come before it.
 - A hard max-speed and stroke range that no generated motion can exceed, including the first stroke of a start, wherever the device happens to be resting.
 - In streaming mode each move uses stop-on-target, so the device halts if the connection drops. After several failed commands in a row the extension stops and tells you.
 - The physical button on the device always works.
 
 ## Notes
+- **Buffered streaming (firmware 4, API v3)** keeps ~5 s of motion stored on the device and tops it up, so motion stays smooth on slow networks and in background tabs, and changes still land in ~½ s at a turning point. It needs an API v3 Application ID from Handy's developer portal, and falls back to Streaming if v3 isn't available.
+- **Calibration**: *Calibrate to my body* walks you through moving the sleeve to your tip and your base; all motion is then mapped onto that range, so "tip" means your tip.
 - *Streaming* needs the SillyTavern tab to stay visible: browsers slow the timers of background tabs to about one per second, which reduces streaming to roughly one stroke per second. If SillyTavern will be hidden behind another tab or a full-screen window, use *Script sync*, where the device plays the script by itself.
 - *Streaming* also depends on network delay. **Test connection** shows the round trip in ms. When the network can't keep up with a fast rhythm, the motion slows down smoothly; it never skips strokes or speeds past your limit.
 - *Script sync* pauses for a moment each time a new script is loaded: on every change, and about every two minutes.

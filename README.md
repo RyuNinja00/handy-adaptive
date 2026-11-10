@@ -20,15 +20,19 @@ The AI writes hidden tags, for example:
 It doesn't choose speeds or patterns directly. It chooses the act, how intense it is, tip vs base, and optionally a blend with other acts. The engine then builds the motion from phrases learned from your scripted videos. It starts out exploring, then increasingly chains the phrases and phrase combinations you've rated highly for that act, using your learned speed, length and depth settings. See TRAINING.md §7. The old `<handy pattern="wave" .../>` tags still work as a simple fallback.
 
 ## Panel
-STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
+STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
 
 ## Safety
-- Big STOP button; **Esc** stops; auto-stop when idle (default 10 min), on chat change and on page close.
-- A hard max-speed and stroke range that no generated motion can exceed.
-- In streaming mode each move uses stop-on-target, so the device halts if the connection drops.
+- Big STOP button; **Esc** stops; sending a message that is only “stop” (or “halt”, “pause”, “red”) stops at once without waiting for the AI, and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
+- A `<handy stop/>` tag always wins over other tags in the same message that come before it.
+- A hard max-speed and stroke range that no generated motion can exceed, including the first stroke of a start, wherever the device happens to be resting.
+- In streaming mode each move uses stop-on-target, so the device halts if the connection drops. After several failed commands in a row the extension stops and tells you.
 - The physical button on the device always works.
 
 ## Notes
+- *Streaming* needs the SillyTavern tab to stay visible: browsers slow the timers of background tabs to about one per second, which reduces streaming to roughly one stroke per second. If SillyTavern will be hidden behind another tab or a full-screen window, use *Script sync*, where the device plays the script by itself.
+- *Streaming* also depends on network delay. **Test connection** shows the round trip in ms. When the network can't keep up with a fast rhythm, the motion slows down smoothly; it never skips strokes or speeds past your limit.
+- *Script sync* pauses for a moment each time a new script is loaded: on every change, and about every two minutes.
 - Uses Handy REST API v2. *Streaming* mode (HDSP) reacts instantly. *Script sync* (HSSP) uploads 2-minute generated scripts and is smoother but slower to react. If an endpoint has changed for your firmware, the `api` object at the top of `index.js` is the only place to edit.
 - Larger instruction-following models use the tags more reliably.
 
@@ -40,7 +44,7 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 | `Train.bat` / `train.command` | double-click to start the trainer in guided mode (Windows / macOS) |
 | `docs/USER_GUIDE.md` | complete step-by-step guide (start here) |
 | `TRAINING.md` | how the training and learning work |
-| `tests/` | synthesizer checks, learning simulation, trainer end-to-end test with a mock vision model (`npm test`; needs Node, Python 3, ffmpeg) |
+| `tests/` | synthesizer checks, learning simulation, the extension run against a simulated Handy (`tests/device.sim.mjs`), trainer end-to-end test with a mock vision model (`npm test`; needs Node, Python 3, ffmpeg) |
 | `dist/` | packaged release zip |
 | `tools/` | an earlier, separate trainer prototype; its library format is **not** compatible with this extension (kept for reference) |
 

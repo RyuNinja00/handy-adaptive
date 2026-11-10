@@ -1,10 +1,10 @@
 {
   "name": "handy-adaptive",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "description": "SillyTavern extension: AI-driven, learning motion control for The Handy",
   "type": "module",
   "scripts": {
-    "test": "node tests/synth.test.mjs && node tests/learning.sim.mjs && bash tests/trainer_e2e.sh"
+    "test": "node tests/synth.test.mjs && node tests/learning.sim.mjs && node tests/device.sim.mjs && bash tests/trainer_e2e.sh"
   }
 }

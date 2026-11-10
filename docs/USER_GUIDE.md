@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.3.3.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.3.4.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -101,10 +101,11 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 
 1. **Enabled**: leave on.
 2. **Connection key**: paste the key from Part 2.
-3. Click **Test connection**. You should see ✅ connected. If you see ❌, check the key and that the Handy is online.
+3. Click **Test connection**. You should see ✅ connected and the round-trip time in ms. If you see ❌, check the key and that the Handy is online.
 4. **Motion transport**:
    - **Streaming (reacts instantly)**: the default and recommended. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
-   - **Script sync (smoothest)**: uploads a 2-minute generated script to the device. Motion can be smoother, but changes take about a second. If it fails, the extension switches back to Streaming automatically.
+   - **Script sync (smoothest)**: uploads a 2-minute generated script to the device. Motion can be smoother, but changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
+   - **Which to pick:** Streaming needs the SillyTavern tab to stay visible on screen. Browsers slow down background tabs, and Streaming then drops to about one stroke per second. If SillyTavern will sit behind another tab or a full-screen video, choose Script sync.
 5. **Max speed %**: a hard limit on how fast the device may ever move. **Start low (40–50)** and raise it once you trust it. Nothing the AI or the engine does can exceed it.
 6. **Min speed % (pattern mode)**: only matters for the old pattern mode. Leave it as is.
 7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable.
@@ -112,9 +113,11 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 9. **Esc key stops the device**: leave on. Esc becomes a panic button.
 10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt.
 11. **AI replies automatically to ❤/👎**: when on, pressing ❤ or 👎 makes the character respond in-story a few seconds later. Optional.
-12. **Show control panel**: shows or hides the floating panel.
-13. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
-14. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
+12. **When I press "I'm close"**: *Ease off at once, then the AI reacts* (default) drops the intensity immediately, because an AI reply takes seconds. *Let the AI decide* leaves the motion alone and asks the AI to reply right away, so it can pull back, hold you there or push you over.
+13. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A message that is only “stop”, “halt”, “pause” or “red” always stops it too.
+14. **Show control panel**: shows or hides the floating panel.
+15. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
+16. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
 
 ---
 
@@ -391,6 +394,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Wilder / Smoother** | More organic and varied vs. more steady and mechanical |
 | **❤ Love this** | Strong positive rating for what's playing now |
 | **👎 Not this** | Negative rating; switches to something else at once |
+| **🔥 I'm close** | Edging signal. Eases off at once (unless you chose *Let the AI decide*), and tells the AI, which pulls back, holds or pushes you over in character. The AI is told how many times you've been on the edge in this chat. |
 | **Act dropdown + ▶** | Play an act yourself |
 | **Intensity slider** | Overall intensity of the current act |
 | **⭐** | Save exactly what's playing as a named favorite |
@@ -463,7 +467,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ## Part 16 — Safety
 
 - **Start with a low Max speed** and narrow stroke limits until you're comfortable.
-- **Three ways to stop:** the STOP button, the **Esc** key, and the **physical button** on the Handy, which always works even if the browser or network fails.
+- **Ways to stop:** the STOP button, the **Esc** key, a message that is only “stop” (or “halt”, “pause”, “red”), your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
 - **Auto-stop:** after the idle time, when you switch chats, and when you close or reload the page.
 - In Streaming mode every move is "stop on target": if the connection drops, the device stops where it is instead of continuing.
 - Keep your connection key private.
@@ -493,7 +497,8 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 - They're removed once the message finishes. To hide them during streaming, add the Regex script from Part 6.
 
 **Motion is jerky or lags**
-- Streaming depends on your network. A wired or 5 GHz connection for the SillyTavern machine helps.
+- In Streaming mode, keep the SillyTavern tab visible. A tab in the background is limited by the browser to about one command per second.
+- Streaming depends on your network. **Test connection** shows the round trip in ms: under about 250 ms keeps up with fast acts; above that, fast rhythms slow down (they never skip or exceed your speed limit). A wired or 5 GHz connection for the SillyTavern machine helps.
 - Try **Script sync** transport for smoother (but slower-reacting) motion.
 
 **Script sync keeps failing / switches back to Streaming**
@@ -546,7 +551,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 | `blend` | `act:weight,...` | Mix in other acts, e.g. `handjob:0.4` |
 | `duration` | seconds | After this time, intensity eases off |
 | `favorite` | a favorite's name | Play a saved favorite |
-| `stop` | — | Stop |
+| `stop` | — | Stop. Always wins over earlier tags in the same message. `act="stop"` or `act="none"` is treated the same way. |
 
 Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`
 
@@ -571,4 +576,4 @@ From the repository root (needs Node.js, Python 3 and ffmpeg):
 ```
 npm test
 ```
-This runs synthesizer checks, a simulated learning session, and a full trainer run against a mock vision model.
+This runs synthesizer checks, a simulated learning session, the extension against a simulated Handy (phrase joins, speed cap and rhythm at several network delays, stop behaviour, malformed tags, script sync), and a full trainer run against a mock vision model.

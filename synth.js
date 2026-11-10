@@ -9,6 +9,10 @@
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
+// Numbers arrive from saved settings, imported files and model-written tags; never let a bad one through.
+const fin = (v, d) => (v !== null && v !== '' && typeof v !== 'boolean' && Number.isFinite(+v) ? +v : d);
+const validMotif = (m) => m && m.rate > 0 && Number.isFinite(+m.center) && Array.isArray(m.strokes) && m.strokes.length >= 2
+    && m.strokes.every((x) => Array.isArray(x) && x[0] > 0 && Number.isFinite(+x[1]));
 function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
 
 const s = (mean, std) => ({ mean, std });
@@ -55,13 +59,13 @@ export function exploration(prefs, act) {
 export function targetFor(lib, actName, intent, prefs, tMs = 0, drift = null) {
     const prof = lib?.acts?.[actName] || STARTER_LIBRARY.acts.handjob;
     const ap = prefs?.acts?.[actName] || {};
-    const intensity = clamp(intent.intensity ?? 0.5, 0, 1);
-    const variation = clamp((intent.variation ?? ap.variation ?? 0.35) + (intent.varOff ?? 0), 0, 1);
+    const intensity = clamp(fin(intent.intensity, 0.5), 0, 1);
+    const variation = clamp(fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0), 0, 1);
     const explore = exploration(prefs, actName);
     const d = drift ? 1 + 0.15 * variation * Math.sin((2 * Math.PI * tMs) / drift.period + drift.phase) : 1;
-    const rate = clamp(prof.rate.mean * lerp(0.6, 1.5, intensity) * (ap.rateMul ?? 1) * (intent.speedMul ?? 1) * d, 0.15, 6);
-    const amp = clamp(prof.amp.mean * (ap.ampMul ?? 1) * (intent.ampMul ?? 1) * lerp(0.9, 1.1, intensity), 8, 100);
-    const center = clamp(prof.center.mean + 25 * ((intent.depth ?? 0) + (intent.depthOff ?? 0)) + (ap.centerShift ?? 0), amp / 2, 100 - amp / 2);
+    const rate = clamp(fin(prof.rate?.mean, 1.5) * lerp(0.6, 1.5, intensity) * fin(ap.rateMul, 1) * fin(intent.speedMul, 1) * d, 0.15, 6);
+    const amp = clamp(fin(prof.amp?.mean, 50) * fin(ap.ampMul, 1) * fin(intent.ampMul, 1) * lerp(0.9, 1.1, intensity), 8, 100);
+    const center = clamp(fin(prof.center?.mean, 50) + 25 * (fin(intent.depth, 0) + fin(intent.depthOff, 0)) + fin(ap.centerShift, 0), amp / 2, 100 - amp / 2);
     // jitter = the organic feel you like (variation) + whatever experimenting is still going on (explore)
     const jitter = variation * (0.35 + 0.65 * explore);
     return { rate, amp, center, variation, intensity, explore, jitter, prof };
@@ -104,18 +108,30 @@ export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, 
 }
 
 // Re-time and re-scale a motif to the target. Jitter shrinks as the engine settles.
-function fromMotif(m, tg, phraseMs) {
+// `lastPos` is where the previous phrase left the device. Motifs are cut from scripts at arbitrary
+// turning points, so one may begin (or, when repeated, begin again) at the end of the stroke the
+// device has just finished; played as-is that is a dead beat. Each pass therefore starts on the first
+// stroke that actually travels, and that joining stroke is timed by its distance, not by the source.
+function fromMotif(m, tg, phraseMs, lastPos) {
     const strokes = [];
-    let t = 0;
+    let t = 0, cur = lastPos;
     const j = tg.jitter;
+    const speed = Math.max(20, 2 * tg.amp * tg.rate);   // typical travel speed of this phrase, %/s
+    const near = 0.3 * tg.amp;                          // closer than this reads as a stall, not a stroke
     while (t < phraseMs) {
         const ts = (m.rate / tg.rate) * (1 + gauss() * 0.08 * j);
         const as = (tg.amp / Math.max(5, m.amp)) * (1 + gauss() * 0.1 * j);
         const shift = gauss() * 4 * j;
-        for (const [dur, pos] of m.strokes) {
-            const d = Math.max(60, dur * ts * (1 + gauss() * 0.05 * j));
-            strokes.push([d, tg.center + (pos - m.center) * as + shift]);
-            t += d;
+        const at = (pos) => tg.center + (pos - m.center) * as + shift;
+        let k = 0;
+        while (k < m.strokes.length - 1 && k < 3 && Math.abs(at(m.strokes[k][1]) - cur) < near) k++;
+        for (let i = k; i < m.strokes.length; i++) {
+            const [dur, pos] = m.strokes[i];
+            const p = at(pos);
+            let d = Math.max(60, dur * ts * (1 + gauss() * 0.05 * j));
+            if (i === k) d = clamp((Math.abs(p - cur) / speed) * 1000, 60, d * 2.5);
+            strokes.push([d, p]);
+            cur = p; t += d;
             if (t >= phraseMs) break;
         }
     }
@@ -130,16 +146,18 @@ function procedural(tg, phraseMs, lastPos) {
     const cv = clamp((p.irregularity ?? 0.2) * (0.5 + tg.jitter), 0.02, 0.8);
     const asym = clamp(p.asym ?? 1, 0.5, 2);
     const upF = (2 * asym) / (1 + asym), downF = 2 / (1 + asym);
-    let up = lastPos < tg.center, t = 0;
     const phraseAmp = tg.amp * (1 + gauss() * 0.12 * tg.jitter);
     const phraseCenter = tg.center + gauss() * 6 * tg.jitter;
+    let up = lastPos < phraseCenter, t = 0, first = true;
     while (t < phraseMs) {
         if (Math.random() < (p.pause_frac ?? 0.05) * 0.6) {
             const d = rnd(250, 1100); strokes.push([d, null]); t += d; // hold
         }
         const a = Math.max(6, phraseAmp + gauss() * (p.amp_std ?? 8) * 0.6 * (0.5 + tg.jitter));
         const target = up ? phraseCenter + a / 2 : phraseCenter - a / 2;
-        const d = Math.max(60, half * (up ? upF : downF) * Math.exp(gauss() * cv));
+        let d = Math.max(60, half * (up ? upF : downF) * Math.exp(gauss() * cv));
+        // the first stroke starts wherever the last phrase ended, so time it by the distance it really covers
+        if (first) { d = clamp((d * Math.abs(target - lastPos)) / a, 60, d * 2.5); first = false; }
         strokes.push([d, target]);
         t += d; up = !up;
     }
@@ -165,28 +183,31 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
         // phrase length: your learned "how long before I want a change", else 4-12 s
         const kept = prefs?.acts?.[act]?.keptSec;
         const phraseMs = kept && tg.explore < 0.6 ? clamp(kept * 1000 * rnd(0.6, 1.1), 3000, 30000) : rnd(4000, 12000);
-        const motifs = tg.prof.motifs || [];
+        const motifs = (tg.prof.motifs || []).filter(validMotif);
         const useProcedural = !motifs.length || Math.random() < 0.3 * tg.explore + 0.1 * tg.variation;
         const phrase = useProcedural
-            ? procedural(tg, phraseMs, pos)
+            ? procedural(tg, phraseMs, clamp(pos, 0, 100))
             // now and then, even when dialed in, try a less-proven phrase (that's how new favorites and combos get found)
             : fromMotif(pickMotif(motifs, prefs, act, prev, tg.rate, tg.explore, recent,
-                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore)), tg, phraseMs);
-        const start = t;
+                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore)), tg, phraseMs, clamp(pos, 0, 100));
+        const i0 = actions.length - 1;
         for (const [dur, p] of phrase.strokes) {
             t += dur;
             if (p !== null) pos = p;
             actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) });
             if (t >= durationMs) break;
         }
-        used.push({ from: start, to: t, act, motif: phrase.motif });
+        if (actions.length - 1 === i0) { t += 250; actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) }); }   // never spin without advancing
+        used.push({ i0, i1: actions.length - 1, act, motif: phrase.motif });
         if (phrase.motif) {
             prev = phrase.motif;
             for (const k in recent) recent[k] *= 0.6;
             recent[prev] = (recent[prev] ?? 0) + 1;
         }
     }
-    return { actions: enforceLimits(actions, limits), used, lastMotif: prev };
+    // Speed limiting stretches time, so report each phrase's span on the final timeline (feedback is credited by time).
+    const out = enforceLimits(actions, limits);
+    return { actions: out, used: used.map((u) => ({ from: out[u.i0].at, to: out[u.i1].at, act: u.act, motif: u.motif })), lastMotif: prev };
 }
 
 /** Clamp positions and slow down any move faster than the user's limit. */
@@ -194,12 +215,12 @@ export function enforceLimits(actions, { floor = 0, ceil = 100, maxVel = 400, mi
     const out = [];
     let at = 0;
     for (let i = 0; i < actions.length; i++) {
-        const pos = clamp(actions[i].pos, floor, ceil);
+        const pos = Math.round(clamp(actions[i].pos, floor, ceil));
         if (i === 0) { out.push({ at: actions[0].at, pos }); at = actions[0].at; continue; }
         const dt = actions[i].at - actions[i - 1].at;
         const dp = Math.abs(pos - out[out.length - 1].pos);
-        at += Math.max(dt, dp > 0 ? minMs : 0, (dp / maxVel) * 1000);
-        out.push({ at: Math.round(at), pos: Math.round(pos) });
+        at += Math.ceil(Math.max(dt, dp > 0 ? minMs : 0, (dp / maxVel) * 1000));   // whole ms, rounded up: never faster than the cap
+        out.push({ at, pos: Math.round(pos) });
     }
     return out;
 }

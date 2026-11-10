@@ -27,6 +27,8 @@ const DEFAULTS = {
     escStops: true,
     injectProfile: true,
     autoReplyOnFeedback: false,
+    closeAction: 'pullback',    // "I'm close": 'pullback' = ease off at once, then the AI reacts | 'ai' = leave it to the AI's next reply
+    safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
     library: null,              // imported motion_library.json (null = starter profiles)
     profile: null,
@@ -149,6 +151,7 @@ const actEngine = {
     seg: null,        // the move the device is executing: {p0, t0, p1, t1} (times as they happen on the device)
     rest: 50,         // where the device was left when nothing is moving
     inflight: 0, fails: 0,
+    known: false,     // false until the first move of a start has landed: the device may be anywhere
     timer: null, startedAt: 0, keptSince: Date.now(),
     hssp: { playStart: 0, actions: null, refill: null, swapMs: 900, timed: false },
 
@@ -215,6 +218,7 @@ const actEngine = {
             this.buf = this.buf.filter((a, i) => i === 0 || a.at <= keepUntil);
         } else {
             this.buf = [{ at: now + api.rtt / 2 + 60, pos: Math.round(this.estPos(now)) }];
+            this.known = false;
         }
         const last = this.buf[this.buf.length - 1];
         // The phrases after the join are being replaced: end them there, so feedback given later is not credited to them.
@@ -256,10 +260,14 @@ const actEngine = {
         // squeezed into less time. A stroke runs at most ~10% faster than planned and never above the cap.
         const arrive = now + lead;
         const from = this.estPos(arrive);
-        const floor = Math.max(50, 0.9 * (next.at - prev.at), (Math.abs(next.pos - from) / maxVel()) * 1000);
+        // On a fresh start the device could be at either end (after power-on, or moved by the Handy app),
+        // so the first move is timed for the longest trip it might really make.
+        const dist = this.known ? Math.abs(next.pos - from) : Math.max(next.pos, 100 - next.pos);
+        const floor = Math.max(50, 0.9 * (next.at - prev.at), (dist / maxVel()) * 1000);
         let dur = next.at - arrive;
         if (dur < floor) { this.shift(floor - dur, 1); dur = floor; }
         this.seg = { p0: from, t0: arrive, p1: next.pos, t1: arrive + dur };
+        this.known = true;
         this.buf.shift();
         this.inflight++;
         api.xpt(next.pos, dur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
@@ -507,12 +515,30 @@ const FEEDBACK = {
     less:    { label: 'Smoother', icon: 'fa-minus',        act: (i) => { i.varOff -= 0.15; }, pat: (p) => { p.depth -= 6; } },
     love:    { label: 'Love this', icon: 'fa-heart' },
     nope:    { label: 'Not this',  icon: 'fa-thumbs-down' },
+    close:   { label: "I'm close", icon: 'fa-fire' },
 };
+
+// "I'm close": an edging signal, not a rating. By default the device eases off at once (the AI's reply
+// takes seconds), and the AI is told so it can pull back further, hold you there, or push you over.
+let edges = 0;
+function closeSignal() {
+    edges++;
+    const s = S(), pull = s.closeAction !== 'ai';
+    if (actEngine.running && pull) {
+        actEngine.intent.intensity = clamp(actEngine.intent.intensity * 0.3, 0.05, 1);
+        clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
+    } else if (hamp.running && pull) {
+        hamp.params.speed = Math.max(s.minSpeed, hamp.params.speed * 0.4);
+    }
+    logEvent('close'); ui.refresh(); updatePrompt();
+    if (!pull || s.autoReplyOnFeedback) debouncedReply(800);
+}
 
 let regenTimer = null;
 function feedback(kind) {
     const f = FEEDBACK[kind]; if (!f) return;
     lastActivity = Date.now();
+    if (kind === 'close') return closeSignal();
     if (actEngine.running) {
         const i = actEngine.intent, a = actPrefs(i.act);
         if (f.act) { f.act(i); absorb(0.15); }
@@ -549,9 +575,28 @@ async function playFavorite(f) {
 }
 
 let replyTimer = null;
-function debouncedReply() {
+function debouncedReply(ms = 4000) {
     clearTimeout(replyTimer);
-    replyTimer = setTimeout(async () => { try { await ctx().executeSlashCommandsWithOptions('/trigger'); } catch (e) { console.warn(e); } }, 4000);
+    replyTimer = setTimeout(async () => { try { await ctx().executeSlashCommandsWithOptions('/trigger'); } catch (e) { console.warn(e); } }, ms);
+}
+
+// Typing a stop works at once, without waiting for the AI to write a stop tag. Only a message that is
+// nothing but a stop word counts ("don't stop" or "wait for me" in the story never stops the device),
+// plus your own safeword anywhere in a message.
+const STOP_WORDS = new Set(['stop', 'stop it', 'stop now', 'stop stop', 'halt', 'pause', 'red', 'safeword']);
+function isUserStop(text) {
+    const t = String(text || '').toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    if (STOP_WORDS.has(t)) return true;
+    const sw = String(S().safeword || '').toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+    return !!sw && ` ${t} `.includes(` ${sw} `);
+}
+function handleUserMessage(id) {
+    const msg = ctx().chat?.[id];
+    if (!msg || !msg.is_user || !S().enabled || !anyActive() || !isUserStop(msg.mes)) return;
+    logEvent('stop');
+    stopAll('you said stop');
+    updatePrompt();   // the reply being written now should already know
 }
 
 // ---------------------------------------------------------------- prompt
@@ -579,13 +624,16 @@ function profileText() {
     L.push(`- depth: -1 = deep/at the base, +1 = shallow/at the tip. variation: 0 = mechanical, 1 = wild and unpredictable (omit to use the user's learned taste).`);
     L.push(`- blend mixes in a little of other acts for transitions or creative combinations (e.g. a blowjob with handjob: act="blowjob" blend="handjob:0.4").`);
     L.push(`- <handy stop/> stops. Don't emit a tag if nothing physical changed.`);
+    L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
     for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     if (loves.length) L.push(`Recently loved: ${loves.map((e) => `${e.act} @ intensity ${e.intensity}`).join(', ')}.`);
     if (pr.favorites.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${pr.favorites.map((f) => `"${f.name}"`).join(', ')}.`);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
-    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => e.kind + (e.act ? ` during ${e.act}` : '')).join(', ')}.`);
+    if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
+    const FB = { close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)' };
+    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (FB[e.kind] || e.kind) + (e.act ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : ' The device has already eased off a little.') : ''}`);
     L.push(']');
     return L.join('\n');
 }
@@ -653,6 +701,13 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_esc"> Esc key stops the device</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_inject"> Send acts, learned taste + controls to the AI</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_auto"> AI replies automatically to ❤/👎</label>
+    <label>When I press "I'm close"
+      <select id="handy_close" class="text_pole">
+        <option value="pullback">Ease off at once, then the AI reacts</option>
+        <option value="ai">Let the AI decide (it replies at once)</option>
+      </select></label>
+    <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
+    <small>Sending a message that is only “stop”, “halt”, “pause” or “red” also stops it.</small>
     <label class="checkbox_label"><input type="checkbox" id="handy_panel"> Show control panel</label>
     <hr>
     <b>Motion library</b>
@@ -689,6 +744,7 @@ const ui = {
         bind('#handy_floor', 'strokeFloor'); bind('#handy_ceil', 'strokeCeil'); bind('#handy_idle', 'idleStopSec');
         bind('#handy_esc', 'escStops', 'checked'); bind('#handy_inject', 'injectProfile', 'checked');
         bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
+        bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword');
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
         const ex = () => { const v = S().profile.exploreBias ?? 1; $('#handy_explore').val(v); $('#handy_explore_v').text(v < 0.4 ? 'stick to favorites' : v > 1.4 ? 'experiment a lot' : 'balanced'); };
         ex(); $('#handy_explore').on('input', function () { S().profile.exploreBias = +this.value; ex(); save(); });
@@ -760,7 +816,8 @@ jQuery(() => {
     S(); ui.init();
     const ev = c.eventTypes || c.event_types;
     c.eventSource.on(ev.MESSAGE_RECEIVED, handleMessage);
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; updatePrompt(); });
+    if (ev.MESSAGE_SENT) c.eventSource.on(ev.MESSAGE_SENT, handleUserMessage);
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;

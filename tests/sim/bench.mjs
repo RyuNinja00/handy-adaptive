@@ -10,7 +10,7 @@ console.warn = (...a) => { warns.push(a.map(String).join(' ').split('\n')[0]); }
 const flush = () => new Promise((r) => realImmediate(r));
 
 const ROOT = new URL('../../', import.meta.url).href.replace(/\/$/, '');
-export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9, seed = 1, settings = {}, minTimer = 0 } = {}) {
+export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9, seed = 1, settings = {}, minTimer = 0, startPos = 50 } = {}) {
     // ---- deterministic randomness
     let a = seed >>> 0;
     Math.random = () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -44,7 +44,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
 
     // ---- simulated device
     const errors = [], toasts = [];
-    const dev = { mode: 0, seg: null, restPos: 50, hamp: false, cmds: [], traj: [], calls: [], scripts: {}, hssp: null, hsspEvents: [], uploads: 0 };
+    const dev = { mode: 0, seg: null, restPos: startPos, hamp: false, cmds: [], traj: [], calls: [], slides: [], scripts: {}, hssp: null, hsspEvents: [], uploads: 0 };
     const hsspPos = (t) => {
         const h = dev.hssp; if (!h || !h.playing) return null;
         const st = t - h.playAt + h.startTime, A = h.actions;
@@ -66,7 +66,8 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         if (path === '/mode') { if (body.mode !== dev.mode) halt(); dev.mode = body.mode; dev.hamp = false; return { result: 0 }; }
         if (path === '/hamp/start') { dev.hamp = true; return { result: 0 }; }
         if (path === '/hamp/stop') { dev.hamp = false; halt(); return { result: 0 }; }
-        if (path === '/hamp/velocity' || path === '/slide') return { result: 0 };
+        if (path === '/hamp/velocity') { dev.velocity = body.velocity; return { result: 0 }; }
+        if (path === '/slide') { dev.slides.push({ t: vnow, ...body }); return { result: 0 }; }
         if (path === '/hdsp/xpt') {
             if (dev.mode !== 2) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'device not in HDSP mode' } }; }
             if (!Number.isFinite(body.position) || !Number.isFinite(body.duration)) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'bad xpt payload' } }; }
@@ -110,8 +111,9 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         extensionSettings: { handy_adaptive: undefined }, chat: [], prompts: [],
         saveSettingsDebounced() {}, setExtensionPrompt(_m, text) { st.prompts.push(text); },
         eventSource: { on(ev, fn) { handlers[ev] = fn; } },
-        eventTypes: { MESSAGE_RECEIVED: 'message_received', CHAT_CHANGED: 'chat_changed' },
-        executeSlashCommandsWithOptions: async () => {},
+        eventTypes: { MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', CHAT_CHANGED: 'chat_changed' },
+        replies: 0,
+        executeSlashCommandsWithOptions: async () => { st.replies++; },
     };
     globalThis.SillyTavern = { getContext: () => st };
     const mk = () => { let text = ''; const o = new Proxy(function () {}, { get(_t, k) {
@@ -130,7 +132,8 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
     const H = globalThis.window.handyAdaptive;
     Object.assign(st.extensionSettings.handy_adaptive, { connectionKey: 'KEY', ...settings });
     return { H, st, dev, devPos, advance, flush, now: () => vnow, toasts, errors, handlers, timers: () => timers, mod,
-        message(text) { st.chat.push({ mes: text, is_user: false }); return handlers.message_received(st.chat.length - 1); } };
+        message(text) { st.chat.push({ mes: text, is_user: false }); return handlers.message_received(st.chat.length - 1); },
+        say(text) { st.chat.push({ mes: text, is_user: true }); return handlers.message_sent?.(st.chat.length - 1); } };
 }
 
 // position samples of the simulated device between two times

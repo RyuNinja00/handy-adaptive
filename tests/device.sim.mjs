@@ -131,5 +131,64 @@ for (const [tag, want] of [['<handy act="blowjob" intensity=“0.6”/>', 0.6], 
     check('a rejected phrase gets no credit from a later "Love this"', n > 5 && wrong === 0, `${wrong} of ${n}`);
 }
 
+// 8. the first stroke of a start respects the speed cap wherever the device really is
+for (const at of [0, 100]) {
+    const h = await boot({ seed: 60 + at, startPos: at, settings: { library: flat(2.8, 90) } });
+    h.st.extensionSettings.handy_adaptive.profile.acts.a = { ...settled };
+    h.H.run({ act: 'a', intensity: 1, variation: 0 }); await h.advance(3000);
+    const v = Math.max(...h.dev.cmds.filter((c) => !c.rejected).slice(0, 3).map((c) => c.v));
+    check(`first strokes from a device resting at ${at}% stay under the cap`, v <= cap * 1.02, `fastest ${Math.round(v)} %/s`);
+}
+
+// 9. stroke limits hold in every mode, including stop
+{
+    const lim = { strokeFloor: 20, strokeCeil: 70 };
+    let h = await boot({ seed: 70, startPos: 0, settings: lim });
+    h.H.run({ act: 'doggy', intensity: 1, depth: -1 }); await h.advance(15000); h.H.stop(); await h.advance(2000);
+    const outS = h.dev.cmds.filter((c) => !c.rejected && (c.p1 < 20 || c.p1 > 70)).length;
+    h = await boot({ seed: 71, settings: { ...lim, transport: 'hssp' } });
+    h.H.run({ act: 'teasing', intensity: 1, depth: 1 }); await h.advance(8000);
+    const pts = Object.values(h.dev.scripts).flat(), outH = pts.filter((p) => p.pos < 20 || p.pos > 70).length;
+    h = await boot({ seed: 72, settings: lim });
+    h.message('<handy pattern="deep" min="0" max="100"/>'); await h.advance(3000);
+    const outP = h.dev.slides.filter((x) => x.min < 20 || x.max > 70).length;
+    check('stroke limits hold in streaming, script sync and pattern modes', outS + outH + outP === 0, `${outS} streaming, ${outH} script, ${outP} pattern points outside 20-70`);
+}
+
+// 10. typing stop stops at once; story text that merely contains the word does not
+{
+    let h = await boot({ seed: 80 });
+    h.H.run({ act: 'handjob', intensity: 0.6 }); await h.advance(4000);
+    h.say('Stop!'); await h.advance(3000);
+    check('a message that is only "Stop!" stops the device', !h.H.active() && !moving(h));
+    h = await boot({ seed: 81 });
+    h.H.run({ act: 'handjob', intensity: 0.6 }); await h.advance(4000);
+    h.say("Don't stop, please. Wait for me."); await h.advance(3000);
+    check('"don\'t stop" in a story message keeps it going', h.H.active() && moving(h));
+    h = await boot({ seed: 82, settings: { safeword: 'pineapple' } });
+    h.H.run({ act: 'handjob', intensity: 0.6 }); await h.advance(4000);
+    h.say('Okay... Pineapple. I need a break.'); await h.advance(3000);
+    check('the safeword anywhere in a message stops the device', !h.H.active() && !moving(h));
+    const p = h.st.prompts.filter(Boolean).pop() || '';
+    check('the AI is told the user stopped it', /STOP \(the device has already stopped/.test(p));
+}
+
+// 11. "I'm close" eases off at once and tells the AI
+{
+    let h = await boot({ seed: 90 });
+    h.H.run({ act: 'handjob', intensity: 0.8 }); await h.advance(6000);
+    const before = h.dev.cmds.filter((c) => !c.rejected && c.t > h.now() - 3000);
+    h.H.feedback('close'); await h.advance(4000);
+    const after = h.dev.cmds.filter((c) => !c.rejected && c.t > h.now() - 3000);
+    const rate = (cs) => cs.length / 3;
+    const p = h.st.prompts.filter(Boolean).pop() || '';
+    check('"I\'m close" slows the device within a second', h.H.actEngine.intent.intensity < 0.3 && rate(after) < rate(before), `${rate(before).toFixed(1)} → ${rate(after).toFixed(1)} strokes/s`);
+    check('"I\'m close" is passed to the AI with the edge count', /I'M CLOSE/.test(p) && /edge this chat: 1/.test(p));
+    h = await boot({ seed: 91, settings: { closeAction: 'ai' } });
+    h.H.run({ act: 'handjob', intensity: 0.8 }); await h.advance(6000);
+    h.H.feedback('close'); await h.advance(2000);
+    check('"Let the AI decide" leaves the motion alone and asks for a reply', h.H.actEngine.intent.intensity === 0.8 && h.st.replies === 1);
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');
 process.exit(failed ? 1 : 0);

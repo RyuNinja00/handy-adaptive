@@ -22,6 +22,7 @@
 .handy-btn:active { filter: brightness(1.4); }
 .handy-btn.love { background: #e0559a55; }
 .handy-btn.nope { background: #5557; }
+.handy-btn.close { background: #e0703055; grid-column: span 2; justify-content: center; }
 .handy-row { display: flex; gap: 4px; margin-top: 6px; align-items: center; }
 .handy-row select { flex: 1; margin: 0; }
 .handy-settings label { display: block; margin: 4px 0; }

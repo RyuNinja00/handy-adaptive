@@ -31,6 +31,8 @@ const DEFAULTS = {
     injectProfile: true,
     autoReplyOnFeedback: false,
     closeAction: 'pullback',    // "I'm close": 'pullback' = ease off at once, then the AI reacts | 'ai' = leave it to the AI's next reply
+    finishAction: 'winddown',   // "Finished": 'winddown' = very gentle for 20 s, then stop | 'stop' = stop at once | 'ai' = leave it to the AI
+    detectClimax: true,         // notice "I'm close" / "I'm cumming" in your own messages
     safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
     library: null,              // imported motion_library.json (null = starter profiles)
@@ -241,6 +243,7 @@ const actEngine = {
             if (cmd.blend !== undefined && cmd.blend !== true) this.intent.blend = parseBlend(cmd.blend);
             lastActivity = Date.now();
             clearTimeout(this.durTimer);   // a "for N seconds" from an earlier tag must not fire into this one
+            clearTimeout(windTimer);       // and a new instruction ends a wind-down
             if (hamp.running) await hamp.stop();
             if (my !== epoch) return;
             await this.regen(my);
@@ -617,6 +620,7 @@ const anyRunning = () => actEngine.running || hamp.running;
 const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting > 0 || calib.active;   // moving, or about to
 function stopAll(reason) {
     epoch++;   // cancels every start that is in progress or queued
+    clearTimeout(windTimer);
     const jobs = [];
     if (calib.active) jobs.push(calib.abort());
     if (actEngine.running || actEngine.starting > 0) jobs.push(actEngine.stop(reason));
@@ -713,12 +717,13 @@ const FEEDBACK = {
     love:    { label: 'Love this', icon: 'fa-heart' },
     nope:    { label: 'Not this',  icon: 'fa-thumbs-down' },
     close:   { label: "I'm close", icon: 'fa-fire' },
+    finish:  { label: 'Finished',  icon: 'fa-champagne-glasses' },
 };
 
 // "I'm close": an edging signal, not a rating. By default the device eases off at once (the AI's reply
 // takes seconds), and the AI is told so it can pull back further, hold you there, or push you over.
 let edges = 0;
-function closeSignal() {
+function closeSignal(fromText = false) {
     edges++;
     const s = S(), pull = s.closeAction !== 'ai';
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
@@ -730,7 +735,28 @@ function closeSignal() {
         hamp.params.speed = Math.max(s.minSpeed, hamp.params.speed * 0.4);
     }
     logEvent('close'); ui.refresh(); updatePrompt();
-    if (!pull || s.autoReplyOnFeedback) debouncedReply(800);
+    if (!fromText && (!pull || s.autoReplyOnFeedback)) debouncedReply(800);
+}
+
+// "Finished": the strongest signal there is about what works. The phrases from the last ~20 s are rated up
+// firmly, the act's finish count is remembered (and shown to the AI), and the device winds down gently.
+let finishes = 0, windTimer = null;
+function finishSignal(fromText = false) {
+    finishes++;
+    const s = S();
+    if (actEngine.running) { creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1; save(); }
+    logEvent('finished');
+    if (s.finishAction === 'stop') stopAll('you finished');
+    else if (s.finishAction === 'winddown') {
+        if (actEngine.running) {
+            Object.assign(actEngine.intent, { intensity: 0.05, speedMul: 0.6, varOff: -0.3 });
+            clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
+        } else if (hamp.running) hamp.params.speed = s.minSpeed;
+        clearTimeout(windTimer);
+        windTimer = setTimeout(() => anyRunning() && stopAll('wind-down finished'), 20000);
+    }
+    ui.refresh(); updatePrompt();
+    if (!fromText && (s.finishAction === 'ai' || s.autoReplyOnFeedback)) debouncedReply(800);
 }
 
 let regenTimer = null;
@@ -738,6 +764,7 @@ function feedback(kind) {
     const f = FEEDBACK[kind]; if (!f) return;
     lastActivity = Date.now();
     if (kind === 'close') return closeSignal();
+    if (kind === 'finish') return finishSignal();
     if (actEngine.running) {
         const i = actEngine.intent, a = actPrefs(i.act);
         if (f.act) { f.act(i); absorb(0.15); }
@@ -782,20 +809,42 @@ function debouncedReply(ms = 4000) {
 // Typing a stop works at once, without waiting for the AI to write a stop tag. Only a message that is
 // nothing but a stop word counts ("don't stop" or "wait for me" in the story never stops the device),
 // plus your own safeword anywhere in a message.
-const STOP_WORDS = new Set(['stop', 'stop it', 'stop now', 'stop stop', 'halt', 'pause', 'red', 'safeword']);
+const norm = (x) => String(x || '').toLowerCase().replace(/[’`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+const STOP_WORDS = new Set(['stop', 'halt', 'pause', 'red', 'safeword', 'freeze']);
+const NEGATION = /\b(don'?t|do not|not|never|no|won'?t|can'?t|cannot|without|wouldn'?t)\b/;
+// A short message (up to 5 words) with a stop word, no negation and no question: "Stop!", "stop, please",
+// "ok stop it now", "please stop". Longer story text never stops the device; neither do "don't stop",
+// "can you stop?" or "wait for me". Your safeword stops it anywhere in any message.
 function isUserStop(text) {
-    const t = String(text || '').toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+    const raw = String(text || ''), t = norm(raw);
     if (!t) return false;
-    if (STOP_WORDS.has(t)) return true;
-    const sw = String(S().safeword || '').toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
-    return !!sw && ` ${t} `.includes(` ${sw} `);
+    const sw = norm(S().safeword);
+    if (sw && ` ${t} `.includes(` ${sw} `)) return true;
+    const words = t.split(' ');
+    if (words.length > 5 || /\?\s*$/.test(raw.trim())) return false;
+    return words.some((w) => STOP_WORDS.has(w)) && !NEGATION.test(t);
+}
+// "I'm close" / "I'm cumming" written in your own message, for when your hands are busy. Questions and
+// negations never count, and "close to the door" or "I came home" don't either.
+function climaxCue(text) {
+    const raw = String(text || ''), t = norm(raw);
+    if (!t || /\?\s*$/.test(raw.trim())) return null;
+    const hit = (re) => { const m = re.exec(t); return m && !NEGATION.test(t.slice(Math.max(0, m.index - 20), m.index)); };
+    if (hit(/\b(i'?m|i am)\s+(cumming|finishing)\b/) || hit(/\bi\s+(just\s+)?came\s*$/) || hit(/^(cumming|i'?m cumming)\b/)) return 'finish';
+    if (hit(/\b(i'?m|i am)\s+(so\s+|really\s+|very\s+|getting\s+|almost\s+)?close\b(?!\s+(to|by|enough|friends?))/) || hit(/\b(about to|gonna|going to)\s+(cum|bust)\b/)) return 'close';
+    return null;
 }
 function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
-    if (!msg || !msg.is_user || !S().enabled || !anyActive() || !isUserStop(msg.mes)) return;
-    logEvent('stop');
-    stopAll('you said stop');
-    updatePrompt();   // the reply being written now should already know
+    if (!msg || !msg.is_user || !S().enabled || !anyActive()) return;
+    if (isUserStop(msg.mes)) {
+        logEvent('stop');
+        stopAll('you said stop');
+        return updatePrompt();   // the reply being written now should already know
+    }
+    const cue = S().detectClimax && !calib.active ? climaxCue(msg.mes) : null;
+    if (cue === 'finish') finishSignal(true);
+    else if (cue === 'close') closeSignal(true);
 }
 
 // ---------------------------------------------------------------- guided calibration
@@ -867,14 +916,15 @@ function actLine(name, e) {
     const a = S().profile.acts[name];
     let line = `* ${name}: ${e.motion || ''}`;
     if (e.description) line += ` — ${String(e.description).slice(0, 260)}`;
-    if (a && a.edges && !(a.n > 0)) line += ` | has brought them to the edge ${a.edges} time${a.edges > 1 ? 's' : ''}`;
+    const wins = [a?.edges ? `has brought them to the edge ${a.edges} time${a.edges > 1 ? 's' : ''}` : '', a?.finishes ? `has made them finish ${a.finishes} time${a.finishes > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+    if (wins && !(a.n > 0)) line += ` | ${wins}`;
     if (a && a.n > 0) {
         const taste = [];
         if (Math.abs(a.rateMul - 1) > 0.08) taste.push(a.rateMul > 1 ? `faster than usual (x${a.rateMul.toFixed(2)})` : `slower than usual (x${a.rateMul.toFixed(2)})`);
         if (Math.abs(a.ampMul - 1) > 0.08) taste.push(a.ampMul > 1 ? 'longer strokes' : 'shorter strokes');
         if (Math.abs(a.centerShift) > 4) taste.push(a.centerShift > 0 ? 'more at the tip' : 'deeper/at the base');
         taste.push(`variation ~${a.variation.toFixed(2)}`);
-        line += ` | USER TASTE: ${taste.join(', ')}; rating ${a.score.toFixed(1)}${a.keptSec ? `; enjoys ~${Math.round(a.keptSec)}s before wanting a change` : ''}${a.edges ? `; has brought them to the edge ${a.edges} time${a.edges > 1 ? 's' : ''}` : ''}`;
+        line += ` | USER TASTE: ${taste.join(', ')}; rating ${a.score.toFixed(1)}${a.keptSec ? `; enjoys ~${Math.round(a.keptSec)}s before wanting a change` : ''}${wins ? `; ${wins}` : ''}`;
     }
     return line;
 }
@@ -896,7 +946,8 @@ function profileText() {
     if (pr.favorites.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${pr.favorites.map((f) => `"${f.name}"`).join(', ')}.`);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
-    const FB = { close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)' };
+    const FB = { close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
+        finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
     if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (FB[e.kind] || e.kind) + (e.act ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : ' The device has already eased off a little.') : ''}`);
     L.push(']');
     return L.join('\n');
@@ -971,8 +1022,15 @@ const ui = {
         <option value="pullback">Ease off at once, then the AI reacts</option>
         <option value="ai">Let the AI decide (it replies at once)</option>
       </select></label>
+    <label>When I press "Finished"
+      <select id="handy_finish" class="text_pole">
+        <option value="winddown">Wind down gently for 20 s, then stop</option>
+        <option value="stop">Stop at once</option>
+        <option value="ai">Let the AI decide</option>
+      </select></label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
-    <small>Sending a message that is only “stop”, “halt”, “pause” or “red” also stops it.</small>
+    <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
     <label class="checkbox_label"><input type="checkbox" id="handy_panel"> Show control panel</label>
     <hr>
     <label>API v3 Application ID (buffered streaming only) <input type="password" id="handy_appid" class="text_pole" placeholder="from Handy's developer portal"></label>
@@ -1019,6 +1077,7 @@ const ui = {
         bind('#handy_esc', 'escStops', 'checked'); bind('#handy_inject', 'injectProfile', 'checked');
         bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
+        bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked');
         $('#handy_cal_start').on('click', () => calib.start());
         $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; save(); ui.refresh(); } });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
@@ -1052,6 +1111,7 @@ const ui = {
     <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div></div>
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
+    <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div id="handy_now" class="handy-small"></div>
   </div>
 </div>`);
@@ -1089,6 +1149,16 @@ const ui = {
         $('#handy_fav').on('click', saveFavorite);
         $('#handy_favs').on('change', function () { const f = S().profile.favorites.find((x) => x.name === this.value); if (f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
         $('#handy_collapse').on('click', () => $('#handy_panel').toggleClass('collapsed'));
+        // Live position, from the motion plan itself: no extra requests to the device.
+        const dot = document.getElementById?.('handy_pos_dot');
+        if (dot && typeof requestAnimationFrame === 'function') {
+            const frame = () => {
+                if (actEngine.running) dot.style.left = `${clamp(actEngine.currentPos(), 0, 100)}%`;
+                dot.style.opacity = actEngine.running ? 1 : 0.25;
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        }
         ui.refresh();
     },
     refresh() {

@@ -318,5 +318,39 @@ for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 2
     check('"I\'m close" counts as a win for what was playing and is remembered per act', (!cur || pr.motifs[cur.motif] > 0) && pr.acts.blowjob.edges === 1 && /brought them to the edge 1 time/.test(p));
 }
 
+// ---- typed stop variants and climax cues (ideas from StrokeGPT Vanilla / GenericCharacterGPT) ----
+for (const [text, shouldStop] of [['Stop, please!', true], ['please stop', true], ['ok halt it now', true], ['STOP STOP', true], ["don't stop!", false], ['Can you stop?', false], ['Wait for me.', false], ['She told me to stop by the store on the way home tonight', false]]) {
+    const h = await boot({ seed: 200 + text.length });
+    h.H.run({ act: 'handjob', intensity: 0.5 }); await h.advance(4000);
+    h.say(text); await h.advance(3000);
+    check(`typed "${text}" ${shouldStop ? 'stops' : 'does not stop'} the device`, h.H.active() !== shouldStop);
+}
+for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the door", null], ["I'm cumming!", 'finish'], ["I'm not cumming yet", null], ['Are you cumming?', null], ['I came home.', null], ['gonna cum', 'close'], ['I just came', 'finish']]) {
+    const h = await boot({ seed: 220 + text.length });
+    const pr = h.st.extensionSettings.handy_adaptive.profile;
+    h.H.run({ act: 'handjob', intensity: 0.8 }); await h.advance(5000);
+    h.say(text); await h.advance(1500);
+    const got = (pr.acts.handjob?.finishes ? 'finish' : null) || (pr.acts.handjob?.edges ? 'close' : null);
+    check(`"${text}" is read as ${want ?? 'nothing'}`, got === want, `got ${got}`);
+}
+{
+    const h = await boot({ seed: 240 });
+    h.H.run({ act: 'handjob', intensity: 0.8 }); await h.advance(6000);
+    h.H.feedback('finish'); await h.advance(5000);
+    const gentle = h.H.actEngine.intent.intensity <= 0.05 && h.H.active();
+    const p = h.st.prompts.filter(Boolean).pop() || '';
+    await h.advance(17000);
+    check('"Finished" winds down gently, then stops after ~20 s, and tells the AI', gentle && !h.H.active() && /FINISHED/.test(p) && /has made them finish 1 time/.test(p));
+    const h2 = await boot({ seed: 241 });
+    h2.H.run({ act: 'handjob', intensity: 0.8 }); await h2.advance(6000);
+    h2.H.feedback('finish'); await h2.advance(3000);
+    h2.message('<handy act="blowjob" intensity="0.4"/>'); await h2.advance(25000);
+    check('a new AI tag during the wind-down takes over (no surprise stop)', h2.H.active() && h2.H.actEngine.intent.act === 'blowjob');
+    const h3 = await boot({ seed: 242, settings: { finishAction: 'stop' } });
+    h3.H.run({ act: 'handjob', intensity: 0.8 }); await h3.advance(6000);
+    h3.H.feedback('finish'); await h3.advance(2000);
+    check('"Finished" set to "Stop at once" stops at once', !h3.H.active());
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');
 process.exit(failed ? 1 : 0);

@@ -116,10 +116,12 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt.
 11. **AI replies automatically to ❤/👎**: when on, pressing ❤ or 👎 makes the character respond in-story a few seconds later. Optional.
 12. **When I press "I'm close"**: *Ease off at once, then the AI reacts* (default) drops the intensity immediately, because an AI reply takes seconds. *Let the AI decide* leaves the motion alone and asks the AI to reply right away, so it can pull back, hold you there or push you over.
-13. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A message that is only “stop”, “halt”, “pause” or “red” always stops it too.
-14. **Show control panel**: shows or hides the floating panel.
-15. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
-16. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
+13. **When I press "Finished"**: *Wind down gently for 20 s, then stop* (default), *Stop at once*, or *Let the AI decide*.
+14. **Notice “I'm close” / “I'm cumming” in my messages** (on by default): for when your hands are busy. Writing "I'm so close" or "gonna cum" acts like the 🔥 button; "I'm cumming" or "I just came" acts like 🥂 Finished. Questions ("are you cumming?"), negations ("I'm not cumming yet") and everyday phrases ("close to the door", "I came home") are ignored.
+15. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A short message (up to five words) such as “stop”, “stop, please”, “ok halt” or “red” always stops it too; “don't stop” and questions such as “can you stop?” never do.
+16. **Show control panel**: shows or hides the floating panel.
+17. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
+18. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
 
 ---
 
@@ -408,6 +410,8 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Wilder / Smoother** | More organic and varied vs. more steady and mechanical |
 | **❤ Love this** | Strong positive rating for what's playing now |
 | **👎 Not this** | Negative rating; switches to something else at once |
+| **🥂 Finished** | You climaxed. The phrases from the last ~20 s are rated up firmly, the act's finish count is remembered and shown to the AI, and the device winds down gently for 20 s, then stops (or as set in *When I press "Finished"*). A new AI tag during the wind-down takes over. |
+| **Position bar** | Live position, your base on the left and your tip on the right. |
 | **🔥 I'm close** | Edging signal. Eases off at once (unless you chose *Let the AI decide*), and tells the AI, which pulls back, holds or pushes you over in character. The AI is told how many times you've been on the edge in this chat. |
 | **Act dropdown + ▶** | Play an act yourself |
 | **Intensity slider** | Overall intensity of the current act |
@@ -435,6 +439,7 @@ There is no fixed script for any act. For each act the engine combines:
 | 👎 Not this | Phrases and pairs from the last ~8 s rated down; plays something different immediately |
 | ⭐ Save favorite | Exact setup stored; you or the AI can recall it by name |
 | 🔥 I'm close | Phrases from the last ~10 s rated up (they worked), and the act's edge count is remembered and shown to the AI |
+| 🥂 Finished | Phrases from the last ~20 s rated up firmly, and the act's finish count is remembered and shown to the AI |
 | Nothing | Phrases that played through count as mildly OK |
 
 **How it behaves over time:**
@@ -482,7 +487,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ## Part 16 — Safety
 
 - **Start with a low Max speed** and narrow stroke limits until you're comfortable.
-- **Ways to stop:** the STOP button, the **Esc** key, a message that is only “stop” (or “halt”, “pause”, “red”), your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
+- **Ways to stop:** the STOP button, the **Esc** key, a short message such as “stop” or “stop, please”, your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
 - **Auto-stop:** after the idle time, when you switch chats, and when you close or reload the page.
 - In Streaming mode every move is "stop on target": if the connection drops, the device stops where it is instead of continuing.
 - Keep your connection key private.

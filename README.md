@@ -20,10 +20,10 @@ The AI writes hidden tags, for example:
 It doesn't choose speeds or patterns directly. It chooses the act, how intense it is, tip vs base, and optionally a blend with other acts. The engine then builds the motion from phrases learned from your scripted videos. It starts out exploring, then increasingly chains the phrases and phrase combinations you've rated highly for that act, using your learned speed, length and depth settings. See TRAINING.md §7. The old `<handy pattern="wave" .../>` tags still work as a simple fallback.
 
 ## Panel
-STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
+STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · 🥂 Finished (winds down gently, then stops; the strongest learning signal) · a live position bar (base ↔ tip) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu.
 
 ## Safety
-- Big STOP button; **Esc** stops; sending a message that is only “stop” (or “halt”, “pause”, “red”) stops at once without waiting for the AI, and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
+- Big STOP button; **Esc** stops; a short message such as “stop”, “stop, please” or “ok halt” stops at once without waiting for the AI (“don't stop” and questions never do), and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
 - A `<handy stop/>` tag always wins over other tags in the same message that come before it.
 - A hard max-speed and stroke range that no generated motion can exceed, including the first stroke of a start, wherever the device happens to be resting.
 - In streaming mode each move uses stop-on-target, so the device halts if the connection drops. After several failed commands in a row the extension stops and tells you.

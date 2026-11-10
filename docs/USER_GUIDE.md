@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.3.3.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.3.4.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -101,10 +101,11 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 
 1. **Enabled**: leave on.
 2. **Connection key**: paste the key from Part 2.
-3. Click **Test connection**. You should see ✅ connected. If you see ❌, check the key and that the Handy is online.
+3. Click **Test connection**. You should see ✅ connected and the round-trip time in ms. If you see ❌, check the key and that the Handy is online.
 4. **Motion transport**:
    - **Streaming (reacts instantly)**: the default and recommended. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
-   - **Script sync (smoothest)**: uploads a 2-minute generated script to the device. Motion can be smoother, but changes take about a second. If it fails, the extension switches back to Streaming automatically.
+   - **Script sync (smoothest)**: uploads a 2-minute generated script to the device. Motion can be smoother, but changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
+   - **Which to pick:** Streaming needs the SillyTavern tab to stay visible on screen. Browsers slow down background tabs, and Streaming then drops to about one stroke per second. If SillyTavern will sit behind another tab or a full-screen video, choose Script sync.
 5. **Max speed %**: a hard limit on how fast the device may ever move. **Start low (40–50)** and raise it once you trust it. Nothing the AI or the engine does can exceed it.
 6. **Min speed % (pattern mode)**: only matters for the old pattern mode. Leave it as is.
 7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable.
@@ -493,7 +494,8 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 - They're removed once the message finishes. To hide them during streaming, add the Regex script from Part 6.
 
 **Motion is jerky or lags**
-- Streaming depends on your network. A wired or 5 GHz connection for the SillyTavern machine helps.
+- In Streaming mode, keep the SillyTavern tab visible. A tab in the background is limited by the browser to about one command per second.
+- Streaming depends on your network. **Test connection** shows the round trip in ms: under about 250 ms keeps up with fast acts; above that, fast rhythms slow down (they never skip or exceed your speed limit). A wired or 5 GHz connection for the SillyTavern machine helps.
 - Try **Script sync** transport for smoother (but slower-reacting) motion.
 
 **Script sync keeps failing / switches back to Streaming**
@@ -546,7 +548,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 | `blend` | `act:weight,...` | Mix in other acts, e.g. `handjob:0.4` |
 | `duration` | seconds | After this time, intensity eases off |
 | `favorite` | a favorite's name | Play a saved favorite |
-| `stop` | — | Stop |
+| `stop` | — | Stop. Always wins over earlier tags in the same message. `act="stop"` or `act="none"` is treated the same way. |
 
 Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`
 
@@ -571,4 +573,4 @@ From the repository root (needs Node.js, Python 3 and ffmpeg):
 ```
 npm test
 ```
-This runs synthesizer checks, a simulated learning session, and a full trainer run against a mock vision model.
+This runs synthesizer checks, a simulated learning session, the extension against a simulated Handy (phrase joins, speed cap and rhythm at several network delays, stop behaviour, malformed tags, script sync), and a full trainer run against a mock vision model.

@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.4.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.4.1.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -140,13 +140,23 @@ Do this before involving the AI, so you know the hardware side works.
 
 Out of the box, "tip" and "base" mean the ends of the device's travel, which rarely match your body. Calibration fixes that: you move the sleeve to your own tip and base, and from then on every act, every *Tip* / *Base* press and every AI depth request lands where it should.
 
-1. Open **Extensions → Handy Adaptive** and click **Calibrate to my body**.
-2. Wear the Handy and keep still. Press **Start**. The sleeve moves slowly to the middle.
+1. Click the **ruler** button on the floating Handy panel (or **Calibrate to my body** in **Extensions → Handy Adaptive**).
+2. Wear the Handy and keep still. Press **Start**. The sleeve moves slowly to the middle (or, if you have calibrated before, to where your tip was last time).
 3. Use **▲ +2 / ▲▲ +10 / ▼ −2 / ▼▼ −10** (or the **↑ ↓** keys, Shift for big steps) until the sleeve is at your **tip**, as far out as it should ever go. Press **This is my tip**.
-4. Move it to your **base**, as deep as it should ever go. Press **This is my base**.
+4. Move it to your **base**, as deep as it should ever go. Press **This is my base**. (When recalibrating, the sleeve first moves to just short of where your base should be now, worked out from last time and how far your tip moved. It never goes deeper than before; you fine-tune the last bit.)
 5. Press **Test** for two slow full strokes. If they feel right, press **Save**. Otherwise use **Back** and adjust.
 
 Calibration moves are slow (25%/s at most). STOP, Esc, a typed "stop" and the device's own button all work, and AI tags are ignored until you finish. The **Stroke limits** now apply within your calibrated range (0 = your base, 100 = your tip), and the **Max speed** stays a limit on the device itself. **Clear calibration** returns to the full device range.
+
+#### Each new session
+
+The Handy rarely sits at exactly the same height and angle twice, so before the first motion after SillyTavern loads, a **New session: same setup?** box appears and nothing moves until you answer:
+
+- **Use it and start**: same setup as last time. The waiting command starts with your saved calibration.
+- **Recalibrate**: you've moved it. The calibration opens at your old tip and base, so a re-check takes a few taps. The waiting command is dropped; the next one starts normally once you've saved.
+- **STOP**: nothing moves, and you'll be asked again next time.
+
+If you have never calibrated, the choices are **Start without calibrating** and **Calibrate now**. Turn the question off with **Ask me to confirm calibration before the first motion of each session** in the settings. You can recalibrate at any time with the ruler button on the panel.
 
 Until you train a library, the acts are rough **starter profiles** (teasing, handjob, blowjob, deepthroat, cowgirl, missionary, doggy). They work, but they're generic. Training is what makes each act feel right.
 

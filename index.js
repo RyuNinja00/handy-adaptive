@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.4.0)
+// Handy Adaptive — SillyTavern extension (v0.4.1)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -32,6 +32,7 @@ const DEFAULTS = {
     autoReplyOnFeedback: false,
     closeAction: 'pullback',    // "I'm close": 'pullback' = ease off at once, then the AI reacts | 'ai' = leave it to the AI's next reply
     finishAction: 'winddown',   // "Finished": 'winddown' = very gentle for 20 s, then stop | 'stop' = stop at once | 'ai' = leave it to the AI
+    sessionCheck: true,         // before the first motion of each session, ask whether the setup (and calibration) is the same
     detectClimax: true,         // notice "I'm close" / "I'm cumming" in your own messages
     safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
@@ -85,6 +86,7 @@ const signed1 = (v) => { const x = num(v); return x === undefined ? undefined : 
 //  - STOP never waits in that line: it goes out immediately, and bumping `epoch` makes any start that
 //    is still in progress, or still waiting its turn, abandon itself.
 let epoch = 0;
+let sessionChecked = false;   // the setup has been confirmed (or calibrated) since SillyTavern loaded
 let chain = Promise.resolve();
 function enqueue(fn) {
     const my = epoch;
@@ -225,6 +227,7 @@ const actEngine = {
 
     async apply(cmd) {
         const s = S(); if (!s.enabled) return;
+        if (calib.gate(() => this.apply(cmd))) return;   // first motion of the session: confirm the setup first
         const my = epoch; this.starting++;
         try {
             const act = resolveAct(LIB(), cmd.act) || this.intent.act || Object.keys(LIB().acts)[0];
@@ -573,6 +576,7 @@ const hamp = {
     startedAt: 0, sent: { speed: -1, min: -1, max: -1 }, timer: null,
     async play(pattern, params = {}) {
         if (!S().enabled) return;
+        if (calib.gate(() => this.play(pattern, params))) return;
         const my = epoch; this.starting++;
         try {
             if (actEngine.running) await actEngine.stop();
@@ -851,7 +855,7 @@ function handleUserMessage(id) {
 // Wear the Handy, move the sleeve to your tip and then to your base with the buttons, and save. Moves are
 // slow (25 %/s) and every stop path works: the STOP button, Esc, a typed stop and the device's own button.
 const calib = {
-    active: false, step: 0, pos: 50, tip: null, base: null, my: 0,
+    active: false, step: 0, pos: 50, tip: null, base: null, my: 0, pending: null, prev: null,
     v3: () => S().transport === 'hsp',
     async move(p, ms = 0) {
         p = Math.round(clamp(p, 0, 100));
@@ -862,11 +866,30 @@ const calib = {
         catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); }
         return ms;
     },
+    // ---- session check: before the first motion after SillyTavern loads, ask whether the setup is the same.
+    // Returns true when it has taken the command (it runs later, if you confirm).
+    gate(run) {
+        if (!S().sessionCheck || sessionChecked || anyRunning()) return false;
+        if (this.active && this.step !== -1) return true;   // calibrating: nothing else moves the device
+        this.pending = run;                                 // the latest command wins
+        if (!this.active) { this.active = true; this.step = -1; ui.calib(); ui.refresh(); }
+        return true;
+    },
+    confirm() {   // "Use it and start" / "Start without calibrating"
+        if (this.step !== -1) return;
+        sessionChecked = true;
+        const run = this.pending; this.pending = null;
+        this.active = false; ui.calib(); ui.refresh();
+        if (run) enqueue(run);
+    },
+    recal() { if (this.step === -1) { this.pending = null; this.start(); } },   // the waiting command is dropped
     async start() {
         await stopAll();
         const my = epoch; this.my = my;
         this.active = true; this.step = 0; this.tip = null; this.base = null;
-        const c = cal(); this.pos = c ? Math.round((c.tip + c.base) / 2) : 50;
+        // Quick re-check: start from last session's tip, so a small change of height or angle is a few taps.
+        this.prev = cal();
+        this.pos = this.prev ? this.prev.tip : 50;
         ui.calib(); ui.refresh();
     },
     async begin() {
@@ -880,7 +903,16 @@ const calib = {
     },
     jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.move(this.pos + delta); },
     mark() {
-        if (this.step === 1) { this.tip = this.pos; this.step = 2; }
+        if (this.step === 1) {
+            this.tip = this.pos; this.step = 2;
+            // Last session's base, shifted by however far the tip moved, then stopped 10% short (toward the tip)
+            // so the sleeve never goes deeper than your base did last time. You fine-tune from there.
+            const p = this.prev;
+            if (p) {
+                const shifted = p.base + (this.tip - p.tip), target = Math.round(clamp(shifted + (this.tip - shifted) * 0.1, 0, 100));
+                if (Math.abs(target - this.tip) >= 10) this.move(target);
+            }
+        }
         else if (this.step === 2) {
             if (Math.abs(this.pos - this.tip) < 10) return toast('Tip and base must be at least 10 apart. Move further and try again.', 'warning');
             this.base = this.pos; this.step = 3;
@@ -900,13 +932,16 @@ const calib = {
     finish() {
         if (this.step !== 3) return;
         S().calibration = { base: this.base, tip: this.tip, at: new Date().toISOString().slice(0, 10) };
+        sessionChecked = true;
         save(); toast(`Calibrated: base at ${this.base}, tip at ${this.tip}`, 'success');
         this.close();
     },
     close() { this.active = false; ui.calib(); ui.refresh(); updatePrompt(); try { (this.v3() ? api3.mode(0) : api.mode(0)).catch(() => {}); } catch { /* best effort */ } },
     async abort() {
         if (!this.active) return;
-        this.active = false; ui.calib(); ui.refresh();
+        const asking = this.step === -1;
+        this.active = false; this.pending = null; ui.calib(); ui.refresh();
+        if (asking) return;   // only the question was open: nothing was sent to the device
         try { await (this.v3() ? api3.mode(0) : api.mode(0)); } catch { /* the device button always works */ }
     },
 };
@@ -979,7 +1014,7 @@ function handleMessage(id) {
 // <handy stop/>, and the ways models say the same thing through act/pattern.
 const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 'string' && /^(stop|stopped|none|off)$/i.test(v.trim()) && !LIB().acts[v.trim().toLowerCase()]);
 function runCommand(a) {
-    if (!S().enabled || calib.active) return;   // nothing else drives the device while you calibrate
+    if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
     if (a.favorite) { const f = S().profile.favorites.find((x) => x.name.toLowerCase() === String(a.favorite).toLowerCase()); if (f) return playFavorite(f); }
     if (a.act || a.intensity !== undefined || a.blend) return actEngine.apply(a);
@@ -1028,6 +1063,7 @@ const ui = {
         <option value="stop">Stop at once</option>
         <option value="ai">Let the AI decide</option>
       </select></label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_session_check"> Ask me to confirm calibration before the first motion of each session</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
@@ -1077,7 +1113,7 @@ const ui = {
         bind('#handy_esc', 'escStops', 'checked'); bind('#handy_inject', 'injectProfile', 'checked');
         bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
-        bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked');
+        bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         $('#handy_cal_start').on('click', () => calib.start());
         $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; save(); ui.refresh(); } });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
@@ -1108,7 +1144,7 @@ const ui = {
   <div class="handy-body">
     <div id="handy_stop" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP</div>
     <div class="handy-grid">${fb}</div>
-    <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div></div>
+    <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div><div id="handy_calib_btn" class="menu_button" title="Calibrate tip and base (for when the Handy is set up differently)"><i class="fa-solid fa-ruler-vertical"></i></div></div>
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
@@ -1118,7 +1154,7 @@ const ui = {
         $('body').append(`
 <div id="handy_calib" class="handy-calib">
   <div class="handy-calib-box">
-    <b>Calibrate to your body</b>
+    <b id="handy_calib_title">Calibrate to your body</b>
     <p id="handy_calib_text"></p>
     <div class="handy-calib-pos">Device position <span id="handy_calib_pos">50</span> <span id="handy_calib_marks" class="handy-small"></span></div>
     <div class="handy-calib-jog">
@@ -1135,8 +1171,9 @@ const ui = {
 </div>`);
         $('#handy_calib').on('click', '[data-jog]', function () { calib.jog(+this.dataset.jog); });
         $('#handy_calib_back').on('click', () => calib.back());
-        $('#handy_calib_test').on('click', () => calib.test());
-        $('#handy_calib_next').on('click', () => (calib.step === 0 ? calib.begin() : calib.step === 3 ? calib.finish() : calib.mark()));
+        $('#handy_calib_test').on('click', () => (calib.step === -1 ? calib.recal() : calib.test()));
+        $('#handy_calib_next').on('click', () => (calib.step === -1 ? calib.confirm() : calib.step === 0 ? calib.begin() : calib.step === 3 ? calib.finish() : calib.mark()));
+        $('#handy_calib_btn').on('click', () => calib.start());
         $('#handy_calib_cancel').on('click', () => stopAll('calibration cancelled'));
         document.addEventListener('keydown', (e) => {
             if (!calib.active || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
@@ -1184,19 +1221,33 @@ const ui = {
     },
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
     calib() {
-        const c = calib, steps = [
-            ['Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. STOP, Esc and the button on the device all work at any point.', 'Start'],
-            ['Move the sleeve with the buttons (or the ↑ ↓ keys, Shift for bigger steps) until it sits at your <b>tip</b>: as far out as it should ever go.', 'This is my tip'],
-            ['Now move it to your <b>base</b>: as deep as it should ever go.', 'This is my base'],
+        const c = calib, old = c.prev, saved = cal(), steps = [
+            [old ? `Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to where your tip was last time (${old.tip}). STOP, Esc and the button on the device all work at any point.`
+                 : 'Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. STOP, Esc and the button on the device all work at any point.', 'Start'],
+            [(old ? 'This is where your tip was last time. ' : '') + 'Move the sleeve with the buttons (or the ↑ ↓ keys, Shift for bigger steps) until it sits at your <b>tip</b>: as far out as it should ever go.', 'This is my tip'],
+            [old ? 'The sleeve has moved to just short of where your base should be now. Move it to your <b>base</b>: as deep as it should ever go.'
+                 : 'Now move it to your <b>base</b>: as deep as it should ever go.', 'This is my base'],
             ['Press <b>Test</b> for two slow full strokes between your base and tip. If they feel right, press <b>Save</b>. Use Back to adjust.', 'Save'],
         ];
         $('#handy_calib').toggle(c.active);
         if (!c.active) return;
-        $('#handy_calib_text').html(steps[c.step][0]);
-        $('#handy_calib_next').text(steps[c.step][1]);
+        const asking = c.step === -1;
+        $('#handy_calib_title').text(asking ? 'New session: same setup?' : 'Calibrate to your body');
+        if (asking) {
+            $('#handy_calib_text').html(saved
+                ? `Your Handy is calibrated${saved.at ? ` (${saved.at})` : ''}: base at ${saved.base}, tip at ${saved.tip}. If it is at the same height and angle as last time, start with that. If you have moved it, recalibrate first (it starts from last time's positions, so it only takes a moment). Nothing moves until you choose.`
+                : 'Your Handy is not calibrated, so motion will use the full device range. Calibrate now to fit the strokes to your tip and base, or start without it. Nothing moves until you choose.');
+            $('#handy_calib_next').text(saved ? 'Use it and start' : 'Start without calibrating');
+            $('#handy_calib_test').text(saved ? 'Recalibrate' : 'Calibrate now');
+        } else {
+            $('#handy_calib_text').html(steps[c.step][0]);
+            $('#handy_calib_next').text(steps[c.step][1]);
+            $('#handy_calib_test').text('Test');
+        }
+        $('#handy_calib .handy-calib-pos').toggle(!asking);
         $('#handy_calib .handy-calib-jog').toggle(c.step === 1 || c.step === 2);
         $('#handy_calib_back').toggle(c.step > 1);
-        $('#handy_calib_test').toggle(c.step === 3);
+        $('#handy_calib_test').toggle(asking || c.step === 3);
         $('#handy_calib_pos').text(c.pos);
         $('#handy_calib_marks').text([c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
     },

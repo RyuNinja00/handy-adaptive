@@ -289,6 +289,55 @@ for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 2
     check('calibration moves are slow (≤ 25 %/s)', Math.max(...moves) <= 26, `fastest ${Math.round(Math.max(...moves))} %/s`);
 }
 
+// ---- session question and quick re-check ----
+for (const transport of ['hdsp', 'hsp']) {
+    const h = await boot({ seed: 180, settings: { transport, appId: 'APP', sessionCheck: true, calibration: { base: 20, tip: 80, at: '2026-11-01' } } });
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(1500);
+    h.message('<handy act="blowjob" intensity="0.5"/>'); await h.advance(3000);
+    const asked = h.H.calib.active && h.H.calib.step === -1 && h.dev.calls.length === 0 && !h.H.actEngine.running;
+    check(`(${transport}) first motion of a session waits for "same setup?", nothing is sent to the device`, asked, `calls ${h.dev.calls.length}, step ${h.H.calib.step}`);
+    h.H.calib.confirm(); await h.advance(6000);
+    check(`(${transport}) "Use it and start" runs the latest waiting command`, !h.H.calib.active && h.H.actEngine.running && h.H.actEngine.intent.act === 'blowjob');
+    h.H.stop(); await h.advance(1500);
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(4000);
+    check(`(${transport}) it only asks once per session`, !h.H.calib.active && h.H.actEngine.running);
+}
+{
+    const h = await boot({ seed: 181, settings: { sessionCheck: true, calibration: { base: 20, tip: 80 } } });
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(2000);
+    h.H.stop(); await h.advance(1500);
+    const quiet = !h.H.calib.active && h.dev.calls.length === 0;
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(2000);
+    check('STOP while asking: nothing moves, and the next motion asks again', quiet && h.H.calib.step === -1 && h.dev.calls.length === 0);
+}
+{
+    const h = await boot({ seed: 182, settings: { sessionCheck: true, calibration: { base: 20, tip: 80 } } });
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(2000);
+    h.H.calib.recal(); await h.advance(500);
+    const opened = h.H.calib.active && h.H.calib.step === 0 && h.H.calib.pending === null;
+    h.H.calib.begin(); await h.advance(5000);
+    const atOldTip = h.H.calib.step === 1 && h.H.calib.pos === 80 && Math.abs(h.devPos() - 80) < 1;
+    h.H.calib.jog(2); await h.advance(400); h.H.calib.jog(2); await h.advance(400);   // the Handy sits 4 higher today
+    h.H.calib.mark(); await h.advance(4000);
+    // last base 20 shifted by +4 = 24, stopped 10% short toward the tip = 30
+    const pre = h.H.calib.step === 2 && h.H.calib.pos === 30 && Math.abs(h.devPos() - 30) < 1;
+    const deepest = Math.min(...h.dev.traj.filter((x) => x.t > 0).map((x) => x.p ?? 100), h.devPos());
+    check('"Recalibrate" drops the waiting command and starts at last time\'s tip', opened && atOldTip, `pos ${h.H.calib.pos}, device ${Math.round(h.devPos())}`);
+    check('after the tip, the sleeve waits just short of the shifted base (never deeper than before)', pre && deepest >= 24, `pos ${h.H.calib.pos}, deepest ${Math.round(deepest)}`);
+    h.H.calib.jog(-2); await h.advance(400); h.H.calib.jog(-2); await h.advance(400); h.H.calib.jog(-2); await h.advance(400);
+    h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
+    const c = h.st.extensionSettings.handy_adaptive.calibration;
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(5000);
+    check('a finished recalibration counts as the session check', c.tip === 84 && c.base === 24 && !h.H.calib.active && h.H.actEngine.running, `tip ${c.tip} base ${c.base}`);
+}
+{
+    const h = await boot({ seed: 183, settings: { sessionCheck: true, calibration: null } });
+    h.H.run({ act: 'handjob', intensity: 0.5 }); await h.advance(2000);
+    const asked = h.H.calib.step === -1 && h.dev.calls.length === 0;
+    h.H.calib.confirm(); await h.advance(5000);
+    check('not calibrated: it asks, and "Start without calibrating" starts', asked && h.H.actEngine.running);
+}
+
 // ---- learning ----
 {
     const h = await boot({ seed: 180, settings: { library: lib } });

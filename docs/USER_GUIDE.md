@@ -119,9 +119,11 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 13. **When I press "Finished"**: *Wind down gently for 20 s, then stop* (default), *Stop at once*, or *Let the AI decide*.
 14. **Notice “I'm close” / “I'm cumming” in my messages** (on by default): for when your hands are busy. Writing "I'm so close" or "gonna cum" acts like the 🔥 button; "I'm cumming" or "I just came" acts like 🥂 Finished. Questions ("are you cumming?"), negations ("I'm not cumming yet") and everyday phrases ("close to the door", "I came home") are ignored.
 15. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A short message (up to five words) such as “stop”, “stop, please”, “ok halt” or “red” always stops it too; “don't stop” and questions such as “can you stop?” never do.
-16. **Show control panel**: shows or hides the floating panel.
-17. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
-18. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
+16. **Ask me to confirm calibration before the first motion of each session** (on by default): before anything moves after SillyTavern loads, it asks whether the Handy is set up as last time, so you can recalibrate first. See *Calibrate to your body* in Part 5.
+17. **Show control panel**: shows or hides the floating panel.
+18. **Give each character their own stroking style** (under Character styles, on by default): each character moves the Handy their own way, read from their card and refined by your feedback. See *Character styles* in Part 13.
+19. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
+20. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
 
 ---
 
@@ -170,11 +172,12 @@ The extension tells the AI how to control the device. Your job is to make sure t
 2. **Check the instructions are reaching the AI.** Send a message, then open the prompt inspector (the "Prompt itemization" / prompt view on a message). Look for a block starting `[Device control:`. If it's missing, check that *Send acts, learned taste + controls to the AI* is on.
 3. **Optional: help the character.** Add a line like this to the character card or Author's Note:
    > {{char}} controls {{user}}'s stroker toy using <handy .../> tags as described in the device control instructions, changing it whenever the physical action changes.
-4. **Optional: hide tags while streaming.** With message streaming on, a tag can flash on screen for a moment before it's removed. To hide it, open the **Regex** extension and add a script with:
+4. **Recommended: give each character a clear personality.** Character styles (Part 13) are read from the card's description, personality, scenario and tags. A plain line such as "shy and inexperienced", "dominant and teasing" or "wild and insatiable" gives the character a distinct feel on the device. Check what was picked up under **Extensions → Handy Adaptive → Character styles**.
+5. **Optional: hide tags while streaming.** With message streaming on, a tag can flash on screen for a moment before it's removed. To hide it, open the **Regex** extension and add a script with:
    - Find: `/<handy\b[^>]*\/?>/g`
    - Replace with: *(empty)*
    - Only enable **Alter Chat Display** (so the tag still reaches the extension).
-5. **Try it.** Start a scene. When something physical happens, the AI's reply should contain a tag (you won't see it), and the device should start. The panel shows the current act and intensity.
+6. **Try it.** Start a scene. When something physical happens, the AI's reply should contain a tag (you won't see it), and the device should start. The panel shows the current act and intensity.
 
 What the AI can send (it learns this from the injected instructions):
 ```
@@ -406,9 +409,9 @@ python3 trainer.py analyze ../training --vlm-url ""
 
 ## Part 12 — Day-to-day use
 
-1. Turn on the Handy and open SillyTavern.
+1. Turn on the Handy, put it in place and open SillyTavern.
 2. Check the panel isn't showing an error. Optionally click **Test connection**.
-3. Chat as normal. The AI starts, changes and stops the device as the scene progresses.
+3. Chat as normal. The AI starts, changes and stops the device as the scene progresses. Before the first motion, the **New session: same setup?** box asks you to confirm your calibration or recalibrate (Part 5).
 4. Use the panel while playing:
 
 | Button | Effect |
@@ -427,6 +430,8 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Intensity slider** | Overall intensity of the current act |
 | **⭐** | Save exactly what's playing as a named favorite |
 | **Favorites dropdown** | Replay a saved favorite |
+| **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
+| **Style line** (bottom, in italics) | The style of the character in control, in plain words |
 | **⌄** (top right) | Collapse the panel |
 
 5. You can always take over manually with the panel. The AI picks up from the new state on its next reply. Your feedback since its last reply is passed to it, so the character can react ("You like it slower like this?").
@@ -590,6 +595,18 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 
 **Trainer: "no matching .funscript, skipping"**
 - The script must have the same name as the video (e.g. `scene01.mp4` + `scene01.funscript`).
+
+**Tip and base feel wrong this session**
+- The Handy sits at a different height or angle than when you calibrated. Press the 📏 ruler on the panel (or **Recalibrate** in the session question); it starts from last time's positions.
+
+**Every character feels the same**
+- Turn on *Give each character their own stroking style*.
+- The card may have no words about how they'd move. Add a personality line ("shy and inexperienced", "dominant, loves teasing", "wild and insatiable") and press **Re-read card** under Character styles, or set the sliders yourself.
+- Styles shape the motion within your speed and stroke limits. With a low **Max speed**, fast characters are capped and differ less.
+
+**A character's style feels wrong**
+- Move the sliders under Character styles (your settings then stay even if the card changes), or press **Forget learning** to drop what feedback taught them.
+- In a group chat, the style follows whoever wrote the last message that moved the device.
 
 **An act feels repetitive or wrong**
 - Add more varied examples for it, check its labels, rebuild, re-import.

@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.4.1)
+// Handy Adaptive — SillyTavern extension (v0.5.0)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -7,6 +7,7 @@
 // a fallback (<handy pattern="wave" .../>).
 
 import { synthesize, resolveAct, targetFor, posAt, exploration, reinforce, REWARD, STARTER_LIBRARY } from './synth.js';
+import { TRAITS, seedStyle, effect as styleEffect, describe as describeStyle, EMPTY_LEARNED, textHash } from './charstyle.js';
 
 const MODULE = 'handy_adaptive';
 const ctx = () => SillyTavern.getContext();
@@ -36,6 +37,8 @@ const DEFAULTS = {
     detectClimax: true,         // notice "I'm close" / "I'm cumming" in your own messages
     safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
+    charStyles: true,           // each character moves the Handy their own way (read from the card, refined by feedback)
+    characters: {},             // character key (avatar) -> their style and history with you
     library: null,              // imported motion_library.json (null = starter profiles)
     profile: null,
 };
@@ -243,6 +246,7 @@ const actEngine = {
             if (iv !== undefined) this.intent.intensity = iv;
             if (vv !== undefined) this.intent.variation = vv;
             if (dv !== undefined) this.intent.depth = dv;
+            if (cmd.act || iv !== undefined) chars.noteTag(act, iv);
             if (cmd.blend !== undefined && cmd.blend !== true) this.intent.blend = parseBlend(cmd.blend);
             lastActivity = Date.now();
             clearTimeout(this.durTimer);   // a "for N seconds" from an earlier tag must not fire into this one
@@ -258,7 +262,7 @@ const actEngine = {
 
     limits() { const s = S(); return { floor: s.strokeFloor, ceil: s.strokeCeil, maxVel: capBody(), minMs: 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
-        const r = synthesize({ lib: LIB(), intent: this.intent, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
+        const r = synthesize({ lib: LIB(), intent: { ...this.intent, style: chars.effect() }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
         this.lastMotif = r.lastMotif;
         return { actions: r.actions.map((a) => ({ at: a.at + startAt, pos: a.pos })), used: r.used.map((u) => ({ ...u, from: u.from + startAt, to: u.to + startAt })) };
     },
@@ -545,7 +549,7 @@ const actEngine = {
     describe() {
         const i = this.intent;
         if (!this.running || !i.act) return 'stopped';
-        const tg = targetFor(LIB(), i.act, i, S().profile);
+        const tg = targetFor(LIB(), i.act, { ...i, style: chars.effect() }, S().profile);
         const bl = Object.entries(i.blend || {}).map(([k, v]) => `${k} ${v}`).join(', ');
         return `act ${i.act}${bl ? ` (blended with ${bl})` : ''}, intensity ${i.intensity.toFixed(2)}, ≈${tg.rate.toFixed(1)} strokes/s, range ${Math.round(tg.center - tg.amp / 2)}-${Math.round(tg.center + tg.amp / 2)}`;
     },
@@ -634,26 +638,107 @@ function stopAll(reason) {
     return done;
 }
 
+// ---------------------------------------------------------------- character styles
+// Every character gets their own way of moving the Handy: read from their card, shaped by your feedback
+// while they are in control, and remembered. The character in control is whoever wrote the last message
+// with a tag (so group chats work), else the chat's character.
+const chars = {
+    who: null,          // key of the character whose tag is driving the device
+    seen: new Set(),    // keys whose card was checked for changes this session
+    keyOf(msg) {
+        const c = ctx();
+        if (msg?.original_avatar) return msg.original_avatar;   // group chats tag each message with its character
+        if (!c.groupId) { const ch = c.characters?.[c.characterId]; if (ch?.avatar) return ch.avatar; }
+        const byName = Array.isArray(c.characters) ? c.characters.find((x) => x?.name && x.name === msg?.name) : null;
+        if (byName?.avatar) return byName.avatar;
+        return msg?.name ? `name:${msg.name}` : null;
+    },
+    chatDefault() { const c = ctx(); return c.groupId ? null : (c.characters?.[c.characterId]?.avatar ?? null); },
+    activeKey() { return S().charStyles ? (this.who ?? this.chatDefault()) : null; },
+    card(key) {
+        const list = ctx().characters;
+        const ch = Array.isArray(list) ? list.find((x) => x?.avatar === key) : null;
+        if (!ch) return null;
+        const d = ch.data || {};
+        const tags = ch.tags || d.tags || [];
+        const text = [ch.description ?? d.description, ch.personality ?? d.personality, ch.scenario ?? d.scenario, Array.isArray(tags) ? tags.join(', ') : '']
+            .filter(Boolean).join('\n');
+        return { name: ch.name, text };
+    },
+    // The stored record for a character, created (and read from the card) the first time they are seen.
+    get(key) {
+        if (!key) return null;
+        const all = (S().characters ??= {});
+        let r = all[key];
+        const card = this.seen.has(key) && r ? null : this.card(key);
+        this.seen.add(key);
+        if (!r) {
+            const seed = seedStyle(card?.text || '');
+            r = all[key] = { name: card?.name || key.replace(/^name:/, '').replace(/\.png$/i, ''), traits: seed.traits, hits: seed.hits, custom: false,
+                hash: card ? textHash(card.text) : null, learned: EMPTY_LEARNED(), motifs: {}, acts: {},
+                minutes: 0, loves: 0, nopes: 0, edges: 0, finishes: 0, intensity: null, since: new Date().toISOString().slice(0, 10) };
+            save();
+        } else if (card) {
+            r.name = card.name || r.name;
+            const h = textHash(card.text);
+            if (h !== r.hash && !r.custom) {   // the card was edited: read it again (what you taught them is kept)
+                const seed = seedStyle(card.text); r.traits = seed.traits; r.hits = seed.hits; r.hash = h; save();
+            }
+        }
+        r.learned = { ...EMPTY_LEARNED(), ...r.learned }; r.motifs ??= {}; r.acts ??= {};
+        return r;
+    },
+    current() { return this.get(this.activeKey()); },
+    // What the synthesizer needs: the style's effect on motion, plus the character's own favourite phrases.
+    effect() { const r = this.current(); return r ? { ...styleEffect(r.traits, r.learned), motifs: r.motifs } : null; },
+    act(r, act) { return (r.acts[act] ??= { n: 0, score: 0 }); },
+    // A tag (or your choice on the panel) while this character is in control: remember their habits.
+    noteTag(act, intensity) {
+        const r = this.current(); if (!r || !act) return;
+        this.act(r, act).n++;
+        if (intensity !== undefined) r.intensity = r.intensity == null ? intensity : r.intensity + 0.2 * (intensity - r.intensity);
+        r.updated = Date.now();
+    },
+    text() {
+        const r = this.current(); if (!r) return '';
+        const acts = Object.entries(r.acts).filter(([, a]) => a.n > 0).sort((a, b) => (b[1].score + 0.1 * b[1].n) - (a[1].score + 0.1 * a[1].n));
+        const fav = acts.filter(([, a]) => a.score > 0.5).slice(0, 3).map(([k]) => k);
+        const hist = [r.minutes ? `${r.minutes} min together` : '', r.edges ? `brought them to the edge ${r.edges}×` : '', r.finishes ? `made them finish ${r.finishes}×` : '',
+            fav.length ? `the user loves it when ${r.name} does ${fav.join(', ')}` : '', r.intensity != null && acts.length ? `usually goes at intensity ~${r.intensity.toFixed(1)}` : ''].filter(Boolean);
+        return `CHARACTER STYLE: ${r.name} moves the device their own way: ${describeStyle(r.traits, r.learned)}. The device already plays it in that style; choose acts and intensity the way ${r.name} would${hist.length ? `. History with the user: ${hist.join('; ')}` : ''}.`;
+    },
+    summary(r) { return r ? `${r.name}: ${describeStyle(r.traits, r.learned)}` : ''; },
+};
+
 // ---------------------------------------------------------------- learning
 function actPrefs(act) {
     return (S().profile.acts[act] ??= { rateMul: 1, ampMul: 1, centerShift: 0, variation: 0.35, score: 0, n: 0, loves: 0, keptSec: 0 });
 }
 // Fold the user's live adjustments into the act's long-term preferences.
+// With a character in control, half of each adjustment is theirs (how you like it when THEY do it) and half
+// is your general taste for the act, so the total change is the same as before.
 function absorb(alpha) {
     const i = actEngine.intent; if (!i.act) return;
-    const a = actPrefs(i.act);
+    const a = actPrefs(i.act), r = chars.current(), w = r ? 0.5 : 0, L = r?.learned;
     const k = (m) => Math.pow(m, alpha);
     const sm = k(i.speedMul), am = k(i.ampMul);
-    a.rateMul = clamp(a.rateMul * sm, 0.3, 3); i.speedMul /= sm;
-    a.ampMul = clamp(a.ampMul * am, 0.3, 2.5); i.ampMul /= am;
-    a.centerShift = clamp(a.centerShift + 25 * i.depthOff * alpha, -40, 40); i.depthOff *= 1 - alpha;
+    a.rateMul = clamp(a.rateMul * Math.pow(sm, 1 - w), 0.3, 3); i.speedMul /= sm;
+    a.ampMul = clamp(a.ampMul * Math.pow(am, 1 - w), 0.3, 2.5); i.ampMul /= am;
+    a.centerShift = clamp(a.centerShift + 25 * i.depthOff * alpha * (1 - w), -40, 40);
     const baseVar = i.variation ?? a.variation;
-    a.variation = clamp(a.variation + (baseVar + i.varOff - a.variation) * alpha, 0, 1); i.varOff *= 1 - alpha;
+    a.variation = clamp(a.variation + (baseVar + i.varOff * (1 - w) - a.variation) * alpha, 0, 1);
+    if (L) {
+        L.rateMul = clamp(L.rateMul * Math.pow(sm, w), 0.5, 2);
+        L.ampMul = clamp(L.ampMul * Math.pow(am, w), 0.5, 2);
+        L.centerShift = clamp(L.centerShift + 25 * i.depthOff * alpha * w, -30, 30);
+        L.varOff = clamp(L.varOff + i.varOff * alpha * w, -0.4, 0.4);
+    }
+    i.depthOff *= 1 - alpha; i.varOff *= 1 - alpha;
 }
 // Rate the phrases that were playing, and the phrase-to-phrase transitions
 // into them, so the engine learns both what you like and what to chain.
 function creditMotifs(reward, windowMs = 8000, alpha = 0.3) {
-    const pr = S().profile, now = Date.now();
+    const pr = S().profile, now = Date.now(), r = chars.current();
     const seq = actEngine.used.filter((u) => u.motif && u.from < now).sort((a, b) => a.from - b.from);
     for (let i = 0; i < seq.length; i++) {
         const u = seq[i];
@@ -661,11 +746,13 @@ function creditMotifs(reward, windowMs = 8000, alpha = 0.3) {
         // a phrase you already rated and that has since been replaced keeps that verdict
         if (u.rated && u.to <= now && Math.sign(u.rated) !== Math.sign(reward)) continue;
         reinforce(pr.motifs, u.motif, reward, alpha);
+        if (r) reinforce(r.motifs, u.motif, reward, alpha);   // and this character's own favourites
         if (i > 0) reinforce(pr.trans, `${seq[i - 1].motif}>${u.motif}`, reward, alpha);
         if (!u.rated || Math.sign(u.rated) !== Math.sign(reward)) countRating(u.motif, reward);
         u.rated = reward;
     }
     pruneTrans();
+    if (r) { const k = Object.keys(r.motifs); if (k.length > 400) k.sort((x, y) => Math.abs(r.motifs[x]) - Math.abs(r.motifs[y])).slice(0, k.length - 300).forEach((x) => delete r.motifs[x]); }
 }
 // A phrase you have turned down three times, more than twice as often as you liked it, is retired
 // for good (Reset under Learned taste brings it back). Up to then, "Not this" only makes it rarer.
@@ -696,7 +783,13 @@ function implicitLearn() {
     if (Date.now() - lastImplicit < 60000) return;
     lastImplicit = Date.now();
     if (actEngine.running && Date.now() - lastActivity < 180000) {
-        absorb(0.05); settlePhrases(); actPrefs(actEngine.intent.act).score += 0.1; save();
+        absorb(0.05); settlePhrases(); actPrefs(actEngine.intent.act).score += 0.1;
+        const r = chars.current();
+        if (r) {   // time together: an inexperienced character slowly grows more confident with you
+            r.minutes++;
+            if (r.traits.exp + r.learned.expGain < 0.85) r.learned.expGain = Math.min(0.45, r.learned.expGain + 0.008);
+        }
+        save();
     }
 }
 function logEvent(kind) {
@@ -731,7 +824,11 @@ function closeSignal(fromText = false) {
     edges++;
     const s = S(), pull = s.closeAction !== 'ai';
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
-    if (actEngine.running) { creditMotifs(0.6, 10000, 0.2); const a = actPrefs(actEngine.intent.act); a.edges = (a.edges || 0) + 1; save(); }
+    if (actEngine.running) {
+        creditMotifs(0.6, 10000, 0.2); const a = actPrefs(actEngine.intent.act); a.edges = (a.edges || 0) + 1;
+        const r = chars.current(); if (r) { r.edges++; chars.act(r, actEngine.intent.act).score += 0.6; }
+        save();
+    }
     if (actEngine.running && pull) {
         actEngine.intent.intensity = clamp(actEngine.intent.intensity * 0.3, 0.05, 1);
         clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
@@ -748,7 +845,11 @@ let finishes = 0, windTimer = null;
 function finishSignal(fromText = false) {
     finishes++;
     const s = S();
-    if (actEngine.running) { creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1; save(); }
+    if (actEngine.running) {
+        creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
+        const r = chars.current(); if (r) { r.finishes++; chars.act(r, actEngine.intent.act).score += 1; }
+        save();
+    }
     logEvent('finished');
     if (s.finishAction === 'stop') stopAll('you finished');
     else if (s.finishAction === 'winddown') {
@@ -774,6 +875,11 @@ function feedback(kind) {
         if (f.act) { f.act(i); absorb(0.15); }
         if (kind === 'love') { absorb(0.5); creditMotifs(REWARD.love); a.score = a.score * 0.9 + 1.5; a.loves++; }
         if (kind === 'nope') { creditMotifs(REWARD.nope); a.score = a.score * 0.9 - 1.5; actEngine.recordKept(); }
+        const r = chars.current();
+        if (r && (kind === 'love' || kind === 'nope')) {
+            const ca = chars.act(r, i.act); ca.score = ca.score * 0.9 + (kind === 'love' ? 1 : -1);
+            if (kind === 'love') { r.loves++; if (r.traits.exp + r.learned.expGain < 0.85) r.learned.expGain = Math.min(0.45, r.learned.expGain + 0.01); } else r.nopes++;
+        }
         a.n++;
         if (f.act || kind === 'nope') { clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), S().transport === 'hssp' ? 700 : 150); }
     } else if (hamp.running) {
@@ -979,6 +1085,8 @@ function profileText() {
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     if (loves.length) L.push(`Recently loved: ${loves.map((e) => `${e.act} @ intensity ${e.intensity}`).join(', ')}.`);
     if (pr.favorites.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${pr.favorites.map((f) => `"${f.name}"`).join(', ')}.`);
+    const cs = S().charStyles ? chars.text() : '';
+    if (cs) L.push(cs);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
     const FB = { close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
@@ -1005,6 +1113,8 @@ function handleMessage(id) {
     const tags = [...msg.mes.matchAll(TAG_RE)];
     pending = [];
     if (tags.length) {
+        const who = chars.keyOf(msg);
+        if (who && who !== chars.who) { chars.who = who; if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); }   // a different character takes over
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
         // In order, one at a time. A stop tag acts at once and cancels the tags before it.
         for (const t of tags) { const a = parseAttrs(t[1]); if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
@@ -1078,6 +1188,18 @@ const ui = {
       <div id="handy_cal_clear" class="menu_button">Clear calibration</div>
     </div>
     <hr>
+    <b>Character styles</b>
+    <label class="checkbox_label"><input type="checkbox" id="handy_charstyles"> Give each character their own stroking style</label>
+    <small>Read from the character card (personality, description, scenario, tags), shaped by your feedback while they're in control, and remembered per character.</small>
+    <select id="handy_char_sel" class="text_pole"></select>
+    <div id="handy_char_desc" class="handy-lib"></div>
+    <div id="handy_char_traits" class="handy-traits">${Object.entries(TRAITS).map(([k, t]) => `<label title="${esc(t.low)} ↔ ${esc(t.high)}"><span>${esc(t.label)}</span><small>${esc(t.low)}</small><input type="range" data-trait="${k}" min="${t.min}" max="${t.max}" step="0.05"><small>${esc(t.high)}</small></label>`).join('')}</div>
+    <div class="flex-container">
+      <div id="handy_char_reread" class="menu_button" title="Read the card again and use that as the starting style (keeps what your feedback taught)">Re-read card</div>
+      <div id="handy_char_forget" class="menu_button" title="Forget what your feedback taught this character">Forget learning</div>
+      <div id="handy_char_delete" class="menu_button redWarningBG" title="Remove this character's style entirely">Delete</div>
+    </div>
+    <hr>
     <b>Motion library</b>
     <div id="handy_lib_summary" class="handy-lib"></div>
     <div class="flex-container">
@@ -1114,6 +1236,22 @@ const ui = {
         bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
+        bind('#handy_charstyles', 'charStyles', 'checked');
+        const selChar = () => S().characters?.[$('#handy_char_sel').val()];
+        const restyle = () => { if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); ui.refresh(); updatePrompt(); };
+        $('#handy_char_sel').on('change', () => ui.refresh());
+        $('#handy_char_traits').on('change', 'input[data-trait]', function () {
+            const r = selChar(); if (!r) return;
+            r.traits[this.dataset.trait] = +this.value; r.custom = true; save(); restyle();
+        });
+        $('#handy_char_reread').on('click', () => {
+            const key = $('#handy_char_sel').val(), r = selChar(); if (!r) return;
+            const card = chars.card(key);
+            if (!card) return toast('That character is not loaded in SillyTavern right now.', 'warning');
+            const seed = seedStyle(card.text); Object.assign(r, { traits: seed.traits, hits: seed.hits, custom: false, hash: textHash(card.text) }); save(); restyle();
+        });
+        $('#handy_char_forget').on('click', () => { const r = selChar(); if (r && confirm(`Forget what your feedback taught ${r.name}? (Their card-based style stays.)`)) { Object.assign(r, { learned: EMPTY_LEARNED(), motifs: {}, acts: {}, loves: 0, nopes: 0, intensity: null }); save(); restyle(); } });
+        $('#handy_char_delete').on('click', () => { const key = $('#handy_char_sel').val(), r = selChar(); if (r && confirm(`Delete ${r.name}'s style and history?`)) { delete S().characters[key]; chars.seen.delete(key); save(); restyle(); } });
         $('#handy_cal_start').on('click', () => calib.start());
         $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; save(); ui.refresh(); } });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
@@ -1149,6 +1287,7 @@ const ui = {
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div id="handy_now" class="handy-small"></div>
+    <div id="handy_who" class="handy-small handy-who"></div>
   </div>
 </div>`);
         $('body').append(`
@@ -1208,6 +1347,15 @@ const ui = {
         $('#handy_favs').html(`<option value="">— favorites —</option>` + pr.favorites.map((f) => `<option>${esc(f.name)}</option>`).join(''));
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
+        const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
+        $('#handy_who').text(cur_r ? `Style · ${chars.summary(cur_r)}` : '');
+        const keys = Object.keys(s.characters || {}).sort((a, b) => (s.characters[b].updated || 0) - (s.characters[a].updated || 0));
+        const sel = keys.includes($('#handy_char_sel').val()) ? $('#handy_char_sel').val() : (ak && keys.includes(ak) ? ak : keys[0]);
+        $('#handy_char_sel').html(keys.length ? keys.map((k) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(s.characters[k].name)}${k === ak ? ' (in control)' : ''}</option>`).join('') : '<option value="">— no characters yet —</option>');
+        const sr = sel ? s.characters[sel] : null;
+        $('#handy_char_desc').text(sr ? `${describeStyle(sr.traits, sr.learned)}.${sr.hits?.length && !sr.custom ? ` From the card: ${sr.hits.slice(0, 8).join(', ')}.` : sr.custom ? ' Adjusted by you.' : ' Nothing in the card suggested a style, so it starts balanced.'}${sr.minutes ? ` ${sr.minutes} min together.` : ''}${sr.loves || sr.nopes ? ` ❤ ${sr.loves} · 👎 ${sr.nopes}.` : ''}` : 'Open a chat with a character and they will get a style.');
+        for (const k of Object.keys(TRAITS)) $(`#handy_char_traits input[data-trait="${k}"]`).val(sr ? sr.traits[k] : TRAITS[k].neutral);
+        $('#handy_char_traits, #handy_char_reread, #handy_char_forget, #handy_char_delete').toggle(!!sr);
         const c = cal();
         $('#handy_cal_summary').text(c ? `Calibrated${c.at ? ` on ${c.at}` : ''}: your base is device position ${c.base}, your tip ${c.tip}. Tip, base and the stroke limits now refer to your body.` : 'Not calibrated: motion uses the full device range (0 = bottom, 100 = top).');
         $('#handy_lib_summary').html(lib.starter
@@ -1260,7 +1408,7 @@ jQuery(() => {
     const ev = c.eventTypes || c.event_types;
     c.eventSource.on(ev.MESSAGE_RECEIVED, handleMessage);
     if (ev.MESSAGE_SENT) c.eventSource.on(ev.MESSAGE_SENT, handleUserMessage);
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; updatePrompt(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;
@@ -1270,5 +1418,5 @@ jQuery(() => {
         if (S().appId) api3.stop(true).catch(() => {});
     });
     S().profile.sessions++; save(); updatePrompt();
-    window.handyAdaptive = { actEngine, hamp, calib, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

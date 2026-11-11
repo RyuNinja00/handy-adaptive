@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.4)
+// Handy Adaptive — SillyTavern extension (v0.7.5)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -141,6 +141,10 @@ const api = {
     hampStop: (k = false) => api.call('PUT', '/hamp/stop', undefined, k),
     velocity: (v) => api.call('PUT', '/hamp/velocity', { velocity: Math.round(v) }),
     slide: (min, max) => api.call('PUT', '/slide', { min: Math.round(min), max: Math.round(max) }),
+    // Positions sent to the device are a share of its stroke range ("slide"). A range narrowed by the Handy app,
+    // the device's buttons or an old pattern tag would squeeze every stroke and shift the calibration, so
+    // the full range is restored whenever acts or calibration start. Your limits are applied here instead.
+    fullRange: () => api.slide(0, 100).catch(() => {}),
     // HDSP
     xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: Math.round(position), duration: Math.round(duration), stopOnTarget: true }),
     // HSSP
@@ -327,6 +331,7 @@ const actEngine = {
         this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
         if (!this.running) {
             try { await api.mode(2); } catch (e) { this.buf = []; toast(`Handy start failed: ${e.message}`, 'error'); return; }
+            await api.fullRange();
             if (my !== epoch) { this.buf = []; return; }   // stopped while the device was switching mode
             const t = Date.now();
             this.shift(Math.max(0, t + api.rtt / 2 + 60 - this.buf[0].at));
@@ -421,7 +426,7 @@ const actEngine = {
             await api.syncTime(); if (my !== epoch) return;
             const url = await api.upload(g.actions.map((a) => ({ at: a.at, pos: Math.round(toDev(a.pos)) }))); if (my !== epoch) return;
             const tSetup = Date.now();
-            if (!swapping) await api.mode(1);
+            if (!swapping) { await api.mode(1); await api.fullRange(); }
             if (my !== epoch) return;
             await api.call('PUT', '/hssp/setup', { url });
             if (my !== epoch) return;
@@ -1366,8 +1371,12 @@ const calib = {
     // ---- session check: before the first motion after SillyTavern loads, ask whether the setup is the same.
     // Returns true when it has taken the command (it runs later, if you confirm).
     gate(run) {
+        // Calibrating: nothing else may move the device, whatever asked (an AI tag, Play, Finish me, a favorite).
+        if (this.active && this.step !== -1) {
+            if (Date.now() - (this.toldAt || 0) > 4000) { this.toldAt = Date.now(); toast('Finish or cancel the calibration first.', 'info'); }
+            return true;
+        }
         if (!S().sessionCheck || sessionChecked || anyRunning()) return false;
-        if (this.active && this.step !== -1) return true;   // calibrating: nothing else moves the device
         this.pending = run;                                 // the latest command wins
         if (!this.active) { this.active = true; this.step = -1; ui.calib(); ui.refresh(); }
         return true;
@@ -1394,6 +1403,7 @@ const calib = {
         const my = this.my;
         try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
         catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
+        await (this.v3() ? api3.stroke(0, 1).catch(() => {}) : api.fullRange());   // calibrate against the whole device range
         if (!this.active || my !== epoch) return;
         // We can't know where it is resting, so the first move is timed for the longest possible trip, and the
         // buttons only appear once it has had time to arrive.

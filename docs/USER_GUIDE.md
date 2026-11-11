@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.7.4.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.7.5.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -156,6 +156,10 @@ Out of the box, "tip" and "base" mean the ends of the device's travel, which rar
 5. Press **Test** for two slow full strokes. If they feel right, press **Save**. Otherwise use **Back**: the sleeve returns to the mark you're adjusting (base first, then tip), and you fine-tune it up or down from there.
 
 Calibration moves are deliberately slow and one step at a time, so they look stepwise; that's expected and separate from how play feels.
+
+While the calibration is open, nothing else can move the device: Play, Finish me, favorites and the AI's tags are held off until you save or cancel.
+
+The extension uses the device's whole stroke range and applies your calibration and stroke limits itself. A stroke range set in the Handy app or with the device's buttons is reset to full when an act or the calibration starts, because it would otherwise squeeze every stroke and shift your calibration.
 
 Calibration moves are slow (25%/s at most). STOP, Esc, a typed "stop" and the device's own button all work, and AI tags are ignored until you finish. The **Stroke limits** now apply within your calibrated range (0 = your base, 100 = your tip), and the **Max speed** stays a limit on the device itself. **Clear calibration** returns to the full device range.
 

@@ -117,6 +117,52 @@ server.listen(0, async () => {
     const wound = await p.evaluate(() => handyAdaptive.actEngine.intent.intensity);
     await p.click('#handy_stop'); await p.waitForTimeout(300);
     check('panel: every feedback button, the intensity slider, Finished and STOP act on the device', !dead.length && slid === 0.8 && wound <= 0.05 && !(await p.evaluate(() => handyAdaptive.actEngine.running)), dead.length ? `no effect: ${dead.join(', ')}` : '');
+    // every button and control in the settings drawer
+    await p.$eval('#extensions_settings2 .inline-drawer-content', (e) => { e.style.display = 'block'; });
+    p.on('filechooser', (fc) => fc.setFiles([]).catch(() => {}));   // Import buttons open a file picker
+    await p.click('#handy_test'); await p.waitForTimeout(400);
+    const status = await p.textContent('#handy_status');
+    check('settings: Test connection reports the result', /connected/.test(status), status);
+
+    await p.click('#handy_setup_save'); await p.waitForTimeout(150);                    // prompt() answers 'x'
+    const saved = (await st()).setups.some((x) => x.name === 'x');
+    await p.click('#handy_setup_del'); await p.waitForTimeout(150);
+    const deleted = !(await st()).setups.some((x) => x.name === 'x');
+    check('settings: Save current as… and Delete setup work', saved && deleted);
+    await p.evaluate(() => handyAdaptive.chars.current()); await p.waitForTimeout(200);
+    await p.$eval('#handy_char_traits input[data-trait="tempo"]', (el) => { el.value = '0.6'; el.dispatchEvent(new Event('change', { bubbles: true })); });
+    const slid2 = (await st()).characters['vex.png'].traits.tempo === 0.6;
+    await p.click('#handy_char_reread'); await p.waitForTimeout(150);
+    const reread = (await st()).characters['vex.png'].custom === false;
+    await p.click('#handy_char_forget'); await p.waitForTimeout(150);
+    await p.evaluate(() => { stCtx.extensionSettings.handy_adaptive.characters['vex.png'].minutes = 42; });
+    await p.click('#handy_char_delete'); await p.waitForTimeout(150);
+    const fresh = (await st()).characters['vex.png'];   // the character in control is read again from the card, with no history
+    check('settings: character sliders, Re-read card, Forget learning and Delete work', slid2 && reread && (!fresh || fresh.minutes === 0), `slider ${slid2}, re-read ${reread}, after delete minutes ${fresh?.minutes}`);
+    let dl = 0; p.on('download', () => dl++);
+    await p.click('#handy_export'); await p.waitForTimeout(300);
+    await p.click('#handy_import'); await p.waitForTimeout(150);
+    await p.click('#handy_lib_import'); await p.waitForTimeout(150);
+    await p.click('#handy_lib_reset'); await p.waitForTimeout(150);
+    await p.click('#handy_reset'); await p.waitForTimeout(150);
+    check('settings: Export downloads a file; Import, library buttons and Reset run without error', dl === 1 && (await st()).profile.sessions === 0, `${dl} download(s)`);
+    for (const [sel, key, val] of [['#handy_maxspeed', 'maxSpeed', '45'], ['#handy_floor', 'strokeFloor', '10'], ['#handy_ceil', 'strokeCeil', '90'], ['#handy_idle', 'idleStopSec', '300'], ['#handy_wpm', 'readWpm', '180'], ['#handy_safeword', 'safeword', 'pineapple']]) {
+        if (!(await p.$(sel))) continue;
+        await p.fill(sel, val); await p.dispatchEvent(sel, 'change');
+    }
+    const s2 = await st();
+    check('settings: number and text fields are saved', +s2.maxSpeed === 45 && +s2.strokeFloor === 10 && +s2.strokeCeil === 90 && +s2.idleStopSec === 300 && +s2.readWpm === 180);
+    const boxes = await p.$$eval('#extensions_settings2 input[type=checkbox]', (els) => els.map((e) => e.id));
+    for (const id of boxes) { if (id === 'handy_enabled' || id === 'handy_show_panel') continue; await p.click('#' + id); await p.waitForTimeout(30); await p.click('#' + id); }
+    for (const sel of await p.$$eval('#extensions_settings2 select', (els) => els.map((e) => e.id))) {
+        const vals = await p.$$eval(`#${sel} option`, (o) => o.map((x) => x.value));
+        for (const v of vals) { await p.selectOption('#' + sel, v).catch(() => {}); await p.waitForTimeout(30); }
+    }
+    await p.click('#handy_cal_clear'); await p.waitForTimeout(150);
+    await p.click('#handy_cal_start'); await p.waitForTimeout(200);
+    const opened = await p.isVisible('#handy_calib');
+    await p.click('#handy_calib_cancel'); await p.waitForTimeout(200);
+    check('settings: every checkbox and menu can be toggled; Clear calibration and Calibrate to my body work', (await st()).calibration === null && opened && boxes.length >= 8, `${boxes.length} checkboxes`);
     const errs = await p.evaluate(() => errors);
     check('no page errors', !errs.length, errs.join(' | '));
     await b.close(); server.close();

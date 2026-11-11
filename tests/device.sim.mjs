@@ -255,11 +255,13 @@ for (const [label, opts] of [['150 ms round trip', { rtt: 150 }], ['400 ms round
 }
 
 // ---- calibration ----
+// Wait until a calibration move has finished (the dialog won't take "This is my tip" while it moves).
+async function settle(h) { for (let i = 0; i < 200 && h.H.calib.moving; i++) await h.advance(100); }
 async function calibrate(h, tip, base) {
     h.H.calib.start(); await h.advance(500);
-    h.H.calib.begin(); await h.advance(5000);
-    const jogTo = async (p) => { while (h.H.calib.pos !== p) { h.H.calib.jog(Math.max(-10, Math.min(10, p - h.H.calib.pos))); await h.advance(600); } };
-    await jogTo(tip); h.H.calib.mark(); await jogTo(base); h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
+    h.H.calib.begin(); await h.advance(5000); await settle(h);
+    const jogTo = async (p) => { while (h.H.calib.pos !== p) { h.H.calib.jog(Math.max(-10, Math.min(10, p - h.H.calib.pos))); await h.advance(600); } await settle(h); };
+    await jogTo(tip); h.H.calib.mark(); await settle(h); await jogTo(base); h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
 }
 for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 25, 'hsp']]) {
     const h = await boot({ seed: 150 + tip, settings: { ...v3, transport } });
@@ -287,6 +289,26 @@ for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 2
     check('during calibration AI tags are ignored, and STOP ends it', ignored && !h.H.calib.active && !h.H.active());
     const moves = h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v);
     check('calibration moves are slow (≤ 25 %/s)', Math.max(...moves) <= 26, `fastest ${Math.round(Math.max(...moves))} %/s`);
+}
+
+// ---- calibration buttons: both directions, whenever they are pressed ----
+for (const transport of ['hdsp', 'hsp']) {
+    const h = await boot({ seed: 175, startPos: 0, settings: { transport, appId: 'APP', calibration: { base: 20, tip: 80 } } });
+    const c = h.H.calib;
+    c.start(); await h.advance(300); c.begin(); await h.advance(700);
+    for (let i = 0; i < 4; i++) { c.jog(-2); await h.advance(400); }   // pressed while it is still travelling up from the bottom
+    const early = c.step === 0;
+    await h.advance(4000); await settle(h);
+    const press = async (d) => { const a = h.devPos(); c.jog(d); await h.advance(700); await settle(h); return h.devPos() - a; };
+    const moves = [await press(-2), await press(-10), await press(2), await press(10)];
+    for (let i = 0; i < 5; i++) { c.jog(-2); await h.advance(60); } await settle(h);
+    const fast = Math.round(h.devPos());
+    c.jog(-10); await h.advance(150); c.jog(10); c.jog(10); await settle(h);
+    const v = Math.max(...h.dev.cmds.filter((x) => !x.rejected).map((x) => x.v));
+    check(`(${transport}) calibration: the arrow buttons only appear once the sleeve has arrived`, early && c.step === 1);
+    check(`(${transport}) calibration: ▼ lowers and ▲ raises the sleeve by the amount shown`, Math.round(moves[0]) === -2 && Math.round(moves[1]) === -10 && Math.round(moves[2]) === 2 && Math.round(moves[3]) === 10, moves.map((m) => Math.round(m)).join(', '));
+    check(`(${transport}) calibration: quick presses add up, and a change of mind mid-move lands where you asked`, fast === 70 && Math.round(h.devPos()) === 80 && c.pos === 80, `5×▼ → ${fast}, then ▼10 ▲10 ▲10 → ${Math.round(h.devPos())}`);
+    check(`(${transport}) calibration: no move is ever faster than 25 %/s`, v <= 25 * 1.05, `${Math.round(v)} %/s`);
 }
 
 // ---- session question and quick re-check ----
@@ -318,14 +340,14 @@ for (const transport of ['hdsp', 'hsp']) {
     h.H.calib.begin(); await h.advance(5000);
     const atOldTip = h.H.calib.step === 1 && h.H.calib.pos === 80 && Math.abs(h.devPos() - 80) < 1;
     h.H.calib.jog(2); await h.advance(400); h.H.calib.jog(2); await h.advance(400);   // the Handy sits 4 higher today
-    h.H.calib.mark(); await h.advance(4000);
+    await settle(h); h.H.calib.mark(); await h.advance(4000); await settle(h);
     // last base 20 shifted by +4 = 24, stopped 10% short toward the tip = 30
     const pre = h.H.calib.step === 2 && h.H.calib.pos === 30 && Math.abs(h.devPos() - 30) < 1;
     const deepest = Math.min(...h.dev.traj.filter((x) => x.t > 0).map((x) => x.p ?? 100), h.devPos());
     check('"Recalibrate" drops the waiting command and starts at last time\'s tip', opened && atOldTip, `pos ${h.H.calib.pos}, device ${Math.round(h.devPos())}`);
     check('after the tip, the sleeve waits just short of the shifted base (never deeper than before)', pre && deepest >= 24, `pos ${h.H.calib.pos}, deepest ${Math.round(deepest)}`);
     h.H.calib.jog(-2); await h.advance(400); h.H.calib.jog(-2); await h.advance(400); h.H.calib.jog(-2); await h.advance(400);
-    h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
+    await settle(h); h.H.calib.mark(); h.H.calib.finish(); await h.advance(500);
     const c = h.st.extensionSettings.handy_adaptive.calibration;
     h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(5000);
     check('a finished recalibration counts as the session check', c.tip === 84 && c.base === 24 && !h.H.calib.active && h.H.actEngine.running, `tip ${c.tip} base ${c.base}`);

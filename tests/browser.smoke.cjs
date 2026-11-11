@@ -58,6 +58,18 @@ server.listen(0, async () => {
     await p.setViewportSize({ width: 390, height: 600 }); await p.waitForTimeout(100);
     const r = await p.$eval('#handy_panel', (e) => e.getBoundingClientRect().top);
     check('on a short phone screen the panel stays on screen', r >= 0, `top ${Math.round(r)}`);
+    // calibration dialog: the real ▼ / ▲ buttons
+    await p.setViewportSize({ width: 1280, height: 800 });
+    await p.$eval('#handy_calib_btn', (e) => e.click()); await p.waitForTimeout(300);
+    await p.click('#handy_calib_next'); await p.waitForTimeout(300);
+    const hidden = !(await p.isVisible('[data-jog="-2"]'));
+    await p.waitForFunction(() => handyAdaptive.calib.step === 1, null, { timeout: 8000 });
+    const pos = () => p.evaluate(() => handyAdaptive.calib.pos);
+    const p0 = await pos(); await p.click('[data-jog="-2"]'); await p.waitForTimeout(700);
+    const p1 = await pos(); await p.click('[data-jog="10"]'); await p.waitForTimeout(900);
+    const p2 = await pos();
+    check('calibration: arrows hidden while the sleeve travels; ▼ and ▲ move it down and up', hidden && p1 === p0 - 2 && p2 === p1 + 10, `${p0} → ${p1} → ${p2}`);
+    await p.click('#handy_calib_cancel'); await p.waitForTimeout(200);
     const errs = await p.evaluate(() => errors);
     check('no page errors', !errs.length, errs.join(' | '));
     await b.close(); server.close();

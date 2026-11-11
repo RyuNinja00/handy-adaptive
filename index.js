@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.2)
+// Handy Adaptive — SillyTavern extension (v0.7.3)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -1297,17 +1297,35 @@ function handleUserMessage(id) {
 // ---------------------------------------------------------------- guided calibration
 // Wear the Handy, move the sleeve to your tip and then to your base with the buttons, and save. Moves are
 // slow (25 %/s) and every stop path works: the STOP button, Esc, a typed stop and the device's own button.
+//
+// The sleeve is driven one move at a time: each move is timed from where the sleeve really is (it is only
+// "known" once a move has had time to finish), and button presses during a move just change the target,
+// which the next move goes to. So ▲ and ▼ always go the way they say, and nothing is ever faster than 25 %/s,
+// even if you press while the sleeve is still travelling.
 const calib = {
     active: false, step: 0, pos: 50, tip: null, base: null, my: 0, pending: null, prev: null,
+    at: null,        // where the sleeve is, once its last move has finished (null: not known)
+    moving: false,
+    SPEED: 25,       // %/s for every calibration move
     v3: () => S().transport === 'hsp',
-    async move(p, ms = 0) {
-        p = Math.round(clamp(p, 0, 100));
-        const d = Math.abs(p - this.pos);
-        ms = Math.max(ms, (d / 25) * 1000, 150);
-        this.pos = p; $('#handy_calib_pos').text(p);
-        try { await (this.v3() ? api3.xpt(p, ms) : api.xpt(p, ms)); }
-        catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); }
-        return ms;
+    // Set where the sleeve should go. It gets there by drive(), one finished move at a time.
+    target(p) { this.pos = Math.round(clamp(p, 0, 100)); $('#handy_calib_pos').text(this.pos); return this.drive(); },
+    async drive() {
+        if (this.moving) return;   // already driving: it will pick up the new target when this move finishes
+        const my = this.my;
+        this.moving = true; ui.calib();
+        try {
+            while (this.active && my === epoch && this.at !== this.pos) {
+                const p = this.pos;
+                // Unknown start: allow the longest possible trip (all 100 % at 25 %/s).
+                const ms = Math.round(this.at === null ? (100 / this.SPEED) * 1000 : Math.max((Math.abs(p - this.at) / this.SPEED) * 1000, 200));
+                try { await (this.v3() ? api3.xpt(p, ms) : api.xpt(p, ms)); }
+                catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); this.at = null; break; }
+                await new Promise((r) => setTimeout(r, ms + 150));   // let it arrive before the next move
+                if (!this.active || my !== epoch) break;
+                this.at = p;
+            }
+        } finally { this.moving = false; if (this.active && my === epoch) ui.calib(); }
     },
     // ---- session check: before the first motion after SillyTavern loads, ask whether the setup is the same.
     // Returns true when it has taken the command (it runs later, if you confirm).
@@ -1329,23 +1347,28 @@ const calib = {
     async start() {
         await stopAll();
         const my = epoch; this.my = my;
-        this.active = true; this.step = 0; this.tip = null; this.base = null;
+        this.active = true; this.step = 0; this.tip = null; this.base = null; this.at = null; this.moving = false;
         // Quick re-check: start from last session's tip, so a small change of height or angle is a few taps.
         this.prev = cal();
         this.pos = this.prev ? this.prev.tip : 50;
         ui.calib(); ui.refresh();
     },
     async begin() {
+        if (this.step !== 0 || this.moving) return;
         const my = this.my;
         try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
         catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
         if (!this.active || my !== epoch) return;
-        // We can't know where it is resting, so the first move is timed for the longest possible trip.
-        await this.move(this.pos, 4000);   // 100% of travel in 4 s at most: 25 %/s wherever it starts
+        // We can't know where it is resting, so the first move is timed for the longest possible trip, and the
+        // buttons only appear once it has had time to arrive.
+        this.at = null;
+        await this.target(this.pos);
+        if (!this.active || my !== epoch || this.at === null) return;
         this.step = 1; ui.calib();
     },
-    jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.move(this.pos + delta); },
+    jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.target(this.pos + delta); },
     mark() {
+        if (this.moving || this.at !== this.pos) return toast('Wait until the sleeve stops, then press again.', 'info');
         if (this.step === 1) {
             this.tip = this.pos; this.step = 2;
             // Last session's base, shifted by however far the tip moved, then stopped 10% short (toward the tip)
@@ -1353,7 +1376,7 @@ const calib = {
             const p = this.prev;
             if (p) {
                 const shifted = p.base + (this.tip - p.tip), target = Math.round(clamp(shifted + (this.tip - shifted) * 0.1, 0, 100));
-                if (Math.abs(target - this.tip) >= 10) this.move(target);
+                if (Math.abs(target - this.tip) >= 10) this.target(target);
             }
         }
         else if (this.step === 2) {
@@ -1362,14 +1385,13 @@ const calib = {
         }
         ui.calib();
     },
-    back() { if (this.step > 1) { this.step--; ui.calib(); } },
+    back() { if (this.step > 1 && !this.moving) { this.step--; ui.calib(); } },
     async test() {
-        if (this.step !== 3) return;
+        if (this.step !== 3 || this.moving) return;
         const my = this.my;
         for (const p of [this.base, this.tip, this.base, this.tip]) {
-            const ms = await this.move(p, (Math.abs(p - this.pos) / 30) * 1000);
-            await new Promise((r) => setTimeout(r, ms + 100));
-            if (!this.active || my !== epoch) return;
+            await this.target(p);
+            if (!this.active || my !== epoch || this.step !== 3) return;
         }
     },
     finish() {
@@ -1387,7 +1409,7 @@ const calib = {
     async abort() {
         if (!this.active) return;
         const asking = this.step === -1;
-        this.active = false; this.pending = null; ui.calib(); ui.refresh();
+        this.active = false; this.pending = null; this.at = null; ui.calib(); ui.refresh();
         if (asking) return;   // only the question was open: nothing was sent to the device
         try { await (this.v3() ? api3.mode(0) : api.mode(0)); } catch { /* the device button always works */ }
     },
@@ -1799,8 +1821,8 @@ const ui = {
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
     calib() {
         const c = calib, old = c.prev, saved = cal(), steps = [
-            [old ? `Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to where your tip was last time (${old.tip}). STOP, Esc and the button on the device all work at any point.`
-                 : 'Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. STOP, Esc and the button on the device all work at any point.', 'Start'],
+            [old ? `Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to where your tip was last time (${old.tip}). It can take a few seconds; the arrow buttons appear when it gets there. STOP, Esc and the button on the device all work at any point.`
+                 : 'Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. It can take a few seconds; the arrow buttons appear when it gets there. STOP, Esc and the button on the device all work at any point.', 'Start'],
             [(old ? 'This is where your tip was last time. ' : '') + 'Move the sleeve with the buttons (or the ↑ ↓ keys, Shift for bigger steps) until it sits at your <b>tip</b>: as far out as it should ever go.', 'This is my tip'],
             [old ? 'The sleeve has moved to just short of where your base should be now. Move it to your <b>base</b>: as deep as it should ever go.'
                  : 'Now move it to your <b>base</b>: as deep as it should ever go.', 'This is my base'],
@@ -1829,7 +1851,8 @@ const ui = {
         $('#handy_calib_back').toggle(c.step > 1);
         $('#handy_calib_test').toggle(asking || c.step === 3);
         $('#handy_calib_pos').text(c.pos);
-        $('#handy_calib_marks').text([c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
+        $('#handy_calib_marks').text([c.moving ? 'moving…' : '', c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
+        $('#handy_calib_next, #handy_calib_back, #handy_calib_test').toggleClass('disabled', !!c.moving && c.step !== -1);
     },
 };
 

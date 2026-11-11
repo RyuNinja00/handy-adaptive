@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.7.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.7.1.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -113,7 +113,7 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable.
 8. **Auto-stop after idle**: stops the device if nothing happens for this many seconds. An AI command, a button press and any message you send all count, so the device keeps going while you're chatting and stops if you walk away. The default is 600 (10 minutes). 0 turns it off. Leaving it on is recommended.
 9. **Esc key stops the device**: leave on. Esc becomes a panic button.
-10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt.
+10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt. Expect roughly 600 to 1,000 tokens per prompt once styles, memory and the arousal estimate are in play.
 11. **AI replies automatically to ❤/👎**: when on, pressing ❤ or 👎 makes the character respond in-story a few seconds later. Optional.
 12. **When I press "I'm close"**: *Ease off at once, then the AI reacts* (default) drops the intensity immediately, because an AI reply takes seconds. *Let the AI decide* leaves the motion alone and asks the AI to reply right away, so it can pull back, hold you there or push you over.
 13. **When I press "Finished"**: *Wind down gently for 20 s, then stop* (default), *Stop at once*, or *Let the AI decide*.
@@ -518,7 +518,7 @@ Negations count: "not shy at all" isn't read as shy. Sentences about you ("{{use
 
 **What the style does.** The same tag feels different from different characters. A shy virgin goes slower, with shorter, slightly uneven strokes, while she finds a rhythm. A wild character goes faster and longer. A teasing one stops and holds still between phrases now and then. An expert's timing is precise. The AI is told the character's style, so it picks acts and intensity the way that character would. Speed limits, stroke limits and calibration always apply on top.
 
-**Who is in control.** It's the character whose message held the last tag. In a group chat each character keeps their own style, and the control passes to whoever is acting.
+**Who is in control.** It's the character whose message held the last tag. In a group chat each character keeps their own style, and the control passes to whoever is acting. Before each group member writes, the AI is given that member's own style, session memory and signature moves, and is told who is moving the device at the moment.
 
 **How a style is refined and remembered.** While a character is in control, half of each Faster / Slower / Longer / Shorter / Tip / Base / Wilder / Smoother adjustment that sticks goes to that character ("how I like it when *they* do it"), and half goes to your general taste for the act. ❤ and 👎 also build the character's own favourite phrases, and their acts, edges and finishes are remembered and shown to the AI. Time together counts too: an inexperienced character slowly grows more confident, about +0.1 experience every 12 minutes of play. Styles are saved per character and carry over to every chat with them.
 

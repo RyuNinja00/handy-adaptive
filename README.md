@@ -15,12 +15,15 @@ The AI writes hidden tags, for example:
 <handy act="blowjob" intensity="0.4" depth="0.3"/>
 <handy act="blowjob" intensity="0.8" blend="handjob:0.4"/>
 <handy act="cowgirl" intensity="0.6" variation="0.7"/>
+<handy climax="30"/>
+<handy save="Velvet Spiral"/>
 <handy stop/>
 ```
+Several tags in one reply play in order at reading pace, so a reply's build and release happen as you read them. `climax` builds steadily to a peak using what has made you finish before; `save` lets a character name a signature move it can call back with `favorite`.
 It doesn't choose speeds or patterns directly. It chooses the act, how intense it is, tip vs base, and optionally a blend with other acts. The engine then builds the motion from phrases learned from your scripted videos. It starts out exploring, then increasingly chains the phrases and phrase combinations you've rated highly for that act, using your learned speed, length and depth settings. See TRAINING.md §7. The old `<handy pattern="wave" .../>` tags still work as a simple fallback.
 
 ## Panel
-STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · 🥂 Finished (winds down gently, then stops; the strongest learning signal) · a live position bar (base ↔ tip) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu · 📏 calibrate · the style of the character in control.
+STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smoother · ❤ Love this · 👎 Not this · 🔥 I'm close (edging: eases off at once and tells the AI, which decides whether to pull back, hold or push you over) · ⚡ Finish me (climax push) · 🥂 Finished (winds down gently, then stops; the strongest learning signal) · arousal bar · a live position bar (base ↔ tip) · act picker + ▶ · intensity slider · ⭐ save favorite · favorites menu · 📏 calibrate · the style of the character in control.
 
 ## Safety
 - Big STOP button; **Esc** stops; a short message such as “stop”, “stop, please” or “ok halt” stops at once without waiting for the AI (“don't stop” and questions never do), and so does your optional safeword anywhere in a message; auto-stop when idle (default 10 min), on chat change and on page close. Stop holds the device where it is, and also cancels a start that is still in progress.
@@ -31,7 +34,13 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 
 ## Notes
 - **Buffered streaming (firmware 4, API v3)** keeps ~5 s of motion stored on the device and tops it up, so motion stays smooth on slow networks and in background tabs, and changes still land in ~½ s at a turning point. It needs an API v3 Application ID from Handy's developer portal, and falls back to Streaming if v3 isn't available.
-- **Character styles**: every character gets their own way of moving the Handy (tempo, stroke length, focus, wildness, teasing, eagerness, experience), read from their card. It is refined by your feedback while they're in control and remembered per character, and it works in group chats. Inexperienced characters grow more confident over time. View or adjust styles under *Character styles* in the settings.
+- **Following the story**: a reply with no tag still nudges the motion from what it describes (faster, slower, deeper, pauses). It never starts or stops the device.
+- **Detail touches**: flutters at the tip, slow drags and deep pulses between phrases, chosen per act and character and rated like any phrase.
+- **Two characters at once**: `with="NAME"` on a tag makes two characters take turns in their own styles, or move as one.
+- **Saved setups**: a calibration per position (lying down, sitting, a mount), switched from the panel.
+- **Session memory**: each character keeps short recaps of your sessions and can refer back to them.
+- **Arousal estimate**: a running guess at how close you are, from motion, time and your own signals. It is shown on the panel and given to the AI for pacing. It never claims the edge without your "I'm close", and it learns your pace.
+- **Character styles**: every character gets their own way of moving the Handy (tempo, stroke length, focus, wildness, teasing, eagerness, experience), read from their card. It is refined by your feedback while they're in control and remembered per character, and it works in group chats. Inexperienced characters grow more confident over time. Cards are read by a connection profile of your choice (e.g. a local model), with a keyword reading as the fallback. View or adjust styles under *Character styles* in the settings.
 - **Calibration**: *Calibrate to my body* walks you through moving the sleeve to your tip and your base; all motion is then mapped onto that range, so "tip" means your tip. A ruler button on the panel recalibrates mid-session, starting from last time's positions, and before the first motion of each session it asks whether the setup is the same (nothing moves until you answer).
 - *Streaming* needs the SillyTavern tab to stay visible: browsers slow the timers of background tabs to about one per second, which reduces streaming to roughly one stroke per second. If SillyTavern will be hidden behind another tab or a full-screen window, use *Script sync*, where the device plays the script by itself.
 - *Streaming* also depends on network delay. **Test connection** shows the round trip in ms. When the network can't keep up with a fast rhythm, the motion slows down smoothly; it never skips strokes or speeds past your limit.

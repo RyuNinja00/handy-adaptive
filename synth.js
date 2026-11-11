@@ -62,7 +62,8 @@ export function targetFor(lib, actName, intent, prefs, tMs = 0, drift = null) {
     const st = intent.style || {};   // the character in control (charstyle.js effect()), if any
     const intensity = clamp(fin(intent.intensity, 0.5), 0, 1);
     const felt = clamp(intensity + fin(st.intensityBias, 0), 0, 1);
-    const variation = clamp(fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0) + fin(st.varOff, 0), 0, 1);
+    // a climax push is steady and insistent: much less wandering
+    const variation = clamp((fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0) + fin(st.varOff, 0)) * (intent.climax ? 0.5 : 1), 0, 1);
     const explore = exploration(prefs, actName);
     const d = drift ? 1 + 0.15 * variation * Math.sin((2 * Math.PI * tMs) / drift.period + drift.phase) : 1;
     const rate = clamp(fin(prof.rate?.mean, 1.5) * lerp(0.6, 1.5, felt) * fin(ap.rateMul, 1) * fin(intent.speedMul, 1) * fin(st.rateMul, 1) * d, 0.15, 6);
@@ -91,7 +92,8 @@ export function reinforce(map, key, reward, alpha = 0.3) {
  * With experience: strongly prefers phrases you rated highly AND phrases you've
  * liked coming right after the previous one (learned combinations).
  */
-export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false, own = null) {
+export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false, own = null, climax = false) {
+    const finishers = climax ? prefs?.finishers || {} : null;
     const scores = prefs?.motifs || {}, trans = prefs?.trans || {};
     const beta = curious ? 0.3 : lerp(3.0, 0.8, explore);  // how greedy the choice is
     return pickWeighted(motifs, (m) => {
@@ -107,6 +109,8 @@ export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, 
         if (!(tk > 0.4)) value -= 0.5 * (recent[m.id] ?? 0);
         // the character in control has favourite phrases of their own (what you loved when they did it)
         if (own && own[m.id] !== undefined) value += 1.5 * own[m.id];
+        // pushing you over: what has made you finish before comes first
+        if (finishers && finishers[m.id]) value += 1.2 * Math.min(3, finishers[m.id]);
         const fit = Math.exp(-1.5 * Math.abs(Math.log(m.rate / rate)));
         return Math.exp(beta * clamp(value, -6, 6)) * fit;
     });
@@ -169,6 +173,61 @@ function procedural(tg, phraseMs, lastPos) {
     return { strokes, motif: null };
 }
 
+// ---- detail: small mouth-and-hand touches between phrases ----
+// flutter = quick little strokes at the tip; drag = one slow pull to the tip and a slow slide back to a held
+// base; pulse = short, close strokes held deep. Which ones suit an act comes from its name; how often they
+// appear follows variation and the character (experts and teases use more); and each is rated like any
+// phrase (❤ / 👎 while it plays), so the ones you like come back and the ones you turn down are retired.
+const ORN_BY_ACT = [
+    [/blow|oral|lick|suck|teas|kiss|tongue|mouth/i, { flutter: 1, drag: 0.7, pulse: 0.1 }],
+    [/deep|throat/i, { drag: 1, pulse: 0.8, flutter: 0.2 }],
+    [/hand|strok|jerk|rub/i, { flutter: 0.8, drag: 0.8, pulse: 0.3 }],
+    [/./, { pulse: 1, drag: 0.6, flutter: 0.2 }],
+];
+export function pickOrnament(act, tg, it, prefs) {
+    const st = it.style || {};
+    const chance = 0.22 * fin(it.ornaments, 0) * (0.5 + tg.variation) * (0.6 + 0.8 * fin(st.exp, 0.5)) * (tg.intensity > 0.85 ? 0.4 : 1);
+    if (!(Math.random() < chance)) return null;
+    const w = ORN_BY_ACT.find(([re]) => re.test(String(act)))[1];
+    const opts = [];
+    for (const kind of Object.keys(w)) {
+        const id = `orn:${kind}:${act}`;
+        if (prefs?.banned?.[id]) continue;
+        const bias = kind === 'flutter' ? 1 + fin(st.tease, 0) + Math.max(0, fin(st.centerShift, 0)) / 14
+            : kind === 'pulse' ? 1 + Math.max(0, -fin(st.centerShift, 0)) / 14 : 1;
+        opts.push({ kind, id, weight: w[kind] * bias * Math.exp(1.5 * fin(prefs?.motifs?.[id], 0) + fin(st.motifs?.[id], 0)) });
+    }
+    return opts.length ? pickWeighted(opts, (o) => o.weight) : null;
+}
+export function ornamentStrokes(kind, tg, lastPos) {
+    const out = [], speed = Math.max(20, 2 * tg.amp * tg.rate), half = 1000 / (2 * tg.rate);
+    const top = clamp(tg.center + tg.amp / 2, 12, 100), bottom = clamp(tg.center - tg.amp / 2, 0, 88);
+    const reach = (p, from) => clamp((Math.abs(p - from) / speed) * 1000, 80, 1500);
+    if (kind === 'flutter') {
+        const a = clamp(tg.amp * 0.2, 8, 14), h = 1000 / (2 * clamp(tg.rate * 2.2, 3.5, 5.5)), n = 6 + Math.floor(Math.random() * 7);
+        out.push([reach(top, lastPos), top]);
+        for (let i = 0; i < n; i++) out.push([h * (1 + gauss() * 0.06), i % 2 ? top : top - a]);
+    } else if (kind === 'pulse') {
+        const a = clamp(tg.amp * 0.22, 8, 16), h = 1000 / (2 * clamp(tg.rate * 1.6, 2.5, 4.5)), n = 6 + Math.floor(Math.random() * 5);
+        out.push([reach(bottom, lastPos), bottom]);
+        for (let i = 0; i < n; i++) out.push([h * (1 + gauss() * 0.06), i % 2 ? bottom : bottom + a]);
+    } else {   // drag
+        out.push([clamp(2.2 * half * (Math.abs(top - lastPos) / Math.max(8, tg.amp)), 500, 2500), top]);
+        out.push([clamp(2.6 * half * ((top - bottom) / Math.max(8, tg.amp)), 600, 3000), bottom]);
+        out.push([rnd(300, 700), null]);   // held at the base
+    }
+    return out;
+}
+
+// Two characters moving as one: the midpoint of their styles, and both of their favourite phrases.
+export function mergeStyles(list) {
+    const out = {}, n = list.length;
+    for (const k of ['rateMul', 'ampMul', 'centerShift', 'varOff', 'tease', 'intensityBias', 'jitterMul', 'exp']) out[k] = list.reduce((a, s) => a + fin(s?.[k], k.endsWith('Mul') ? 1 : 0), 0) / n;
+    out.motifs = {};
+    for (const s of list) for (const [id, v] of Object.entries(s?.motifs || {})) out.motifs[id] = (out.motifs[id] ?? 0) + v / n;
+    return out;
+}
+
 /**
  * Build `durationMs` of motion starting at time 0 from `startPos`, continuing
  * after phrase `prevMotif` (so learned transitions carry across chunks).
@@ -183,26 +242,34 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
     const recent = {};
 
     let first = true;
+    // Two characters at once: they take turns phrase by phrase (each in their own style), or move as one.
+    const duo = Array.isArray(intent.styles) && intent.styles.length > 1 ? intent.styles : null;
+    const together = duo && intent.duet === 'together' ? mergeStyles(duo) : null;
+    let turn = intent.turn | 0;
     while (t < durationMs) {
+        let it = intent, who = null;
+        if (together) it = { ...intent, style: together };
+        else if (duo) { who = turn % duo.length; it = { ...intent, style: duo[who] }; turn++; }
         // A teasing character now and then stops between phrases and holds still for a moment.
-        const tease = fin(intent.style?.tease, 0);
-        if (!first && tease > 0.05 && Math.random() < 0.35 * tease) {
+        const tease = fin(it.style?.tease, 0);
+        if (!first && !intent.climax && tease > 0.05 && Math.random() < 0.35 * tease) {
             t += rnd(400, 1000) * (0.6 + tease);
             actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) });
         }
         first = false;
         const act = pickWeighted(mix, ([, w]) => w)[0];
-        const tg = targetFor(lib, act, intent, prefs, t, drift);
+        const tg = targetFor(lib, act, it, prefs, t, drift);
         // phrase length: your learned "how long before I want a change", else 4-12 s
         const kept = prefs?.acts?.[act]?.keptSec;
-        const phraseMs = kept && tg.explore < 0.6 ? clamp(kept * 1000 * rnd(0.6, 1.1), 3000, 30000) : rnd(4000, 12000);
+        const phraseMs = who !== null ? rnd(4000, 8000)   // turns short enough to feel the hand-over
+            : kept && tg.explore < 0.6 ? clamp(kept * 1000 * rnd(0.6, 1.1), 3000, 30000) : rnd(4000, 12000);
         const motifs = (tg.prof.motifs || []).filter((m) => validMotif(m) && !prefs?.banned?.[m.id]);   // phrases you firmly rejected never come back
-        const useProcedural = !motifs.length || Math.random() < 0.3 * tg.explore + 0.1 * tg.variation;
+        const useProcedural = !motifs.length || Math.random() < (0.3 * tg.explore + 0.1 * tg.variation) * (intent.climax ? 0.3 : 1);
         const phrase = useProcedural
             ? procedural(tg, phraseMs, clamp(pos, 0, 100))
             // now and then, even when dialed in, try a less-proven phrase (that's how new favorites and combos get found)
             : fromMotif(pickMotif(motifs, prefs, act, prev, tg.rate, tg.explore, recent,
-                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore), intent.style?.motifs), tg, phraseMs, clamp(pos, 0, 100));
+                !intent.climax && Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore), it.style?.motifs, !!intent.climax), tg, phraseMs, clamp(pos, 0, 100));
         const i0 = actions.length - 1;
         for (const [dur, p] of phrase.strokes) {
             t += dur;
@@ -211,7 +278,16 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
             if (t >= durationMs) break;
         }
         if (actions.length - 1 === i0) { t += 250; actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) }); }   // never spin without advancing
-        used.push({ i0, i1: actions.length - 1, act, motif: phrase.motif });
+        used.push({ i0, i1: actions.length - 1, act, motif: phrase.motif, who });
+        const orn = !intent.climax && t < durationMs ? pickOrnament(act, tg, it, prefs) : null;
+        if (orn) {
+            const j0 = actions.length - 1;
+            for (const [dur, p] of ornamentStrokes(orn.kind, tg, clamp(pos, 0, 100))) {
+                t += dur; if (p !== null) pos = p;
+                actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) });
+            }
+            used.push({ i0: j0, i1: actions.length - 1, act, motif: orn.id, who, orn: true });
+        }
         if (phrase.motif) {
             prev = phrase.motif;
             for (const k in recent) recent[k] *= 0.6;
@@ -220,7 +296,7 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
     }
     // Speed limiting stretches time, so report each phrase's span on the final timeline (feedback is credited by time).
     const out = enforceLimits(actions, limits);
-    return { actions: out, used: used.map((u) => ({ from: out[u.i0].at, to: out[u.i1].at, act: u.act, motif: u.motif })), lastMotif: prev };
+    return { actions: out, used: used.map((u) => ({ from: out[u.i0].at, to: out[u.i1].at, act: u.act, motif: u.motif, who: u.who, ...(u.orn ? { orn: true } : {}) })), lastMotif: prev, turn };
 }
 
 /** Clamp positions and slow down any move faster than the user's limit. */

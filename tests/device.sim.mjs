@@ -291,6 +291,23 @@ for (const [tip, base, transport] of [[80, 20, 'hdsp'], [15, 85, 'hdsp'], [75, 2
     check('calibration moves are slow (≤ 25 %/s)', Math.max(...moves) <= 26, `fastest ${Math.round(Math.max(...moves))} %/s`);
 }
 
+// ---- streaming on an uneven connection: strokes glide through late commands instead of stalling ----
+for (const [rtt, jitter, most] of [[250, 0.5, 12], [400, 0.6, 45]]) {
+    const h = await boot({ seed: 11, rtt, jitter, settings: { ornaments: false } });
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(8000);
+    let last = h.devPos(), run = 0, stalls = 0;
+    for (let i = 0; i < 12000; i++) { await h.advance(10); const p = h.devPos(); if (Math.abs(p - last) < 0.02) run += 10; else { if (run >= 60 && run < 1000) stalls++; run = 0; } last = p; }
+    // and with narrow limits: the glide past a turn must stop at them
+    const h2 = await boot({ seed: 12, rtt, jitter, settings: { ornaments: false, strokeFloor: 10, strokeCeil: 90 } });
+    h2.message('<handy act="handjob" intensity="0.9"/>'); await h2.advance(8000);
+    let lo = 100, hi = 0;
+    for (let i = 0; i < 6000; i++) { await h2.advance(10); const p = h2.devPos(); lo = Math.min(lo, p); hi = Math.max(hi, p); }
+    const v = Math.max(...[...h.dev.cmds, ...h2.dev.cmds].filter((c) => !c.rejected).map((c) => c.v));
+    check(`streaming, ${rtt} ms round trip varying ±${jitter * 100}%: few stalls at the turns`, stalls / 2 <= most, `${(stalls / 2).toFixed(0)} per minute (was ${rtt === 250 ? 48 : 95})`);
+    check(`streaming, ${rtt} ms uneven: run-on stays inside the stroke limits and the speed cap`, lo >= 10 - 0.01 && hi <= 90 + 0.01 && v <= (60 + 0.8 * 540) * 1.03, `range ${lo.toFixed(0)}-${hi.toFixed(0)}, fastest ${Math.round(v)} %/s`);
+    if (rtt === 400) check('a slow connection is pointed out once, with the smoother transport named', h.toasts.filter((t) => /Script sync is smoother/.test(t.m)).length === 1);
+}
+
 // ---- calibration buttons: both directions, whenever they are pressed ----
 for (const transport of ['hdsp', 'hsp']) {
     const h = await boot({ seed: 175, startPos: 0, settings: { transport, appId: 'APP', calibration: { base: 20, tip: 80 } } });

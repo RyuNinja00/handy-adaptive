@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.3)
+// Handy Adaptive — SillyTavern extension (v0.7.4)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -115,6 +115,7 @@ const api = {
     busy: false,
     offset: 0, offsetAt: 0,
     rtt: 150,
+    jit: 40,   // how much round trips vary (mean deviation, ms): commands are sent this much earlier
     async call(method, path, body, keepalive = false) {
         const s = S();
         if (!s.connectionKey) throw new Error('No connection key set');
@@ -125,7 +126,9 @@ const api = {
             headers: { 'X-Connection-Key': s.connectionKey, 'Content-Type': 'application/json', Accept: 'application/json' },
             body: body ? JSON.stringify(body) : undefined,
         });
-        api.rtt = api.rtt * 0.8 + (performance.now() - t0) * 0.2;
+        const took = performance.now() - t0;
+        api.jit = api.jit * 0.85 + Math.abs(took - api.rtt) * 0.15;
+        api.rtt = api.rtt * 0.8 + took * 0.2;
         let json = {};
         try { json = await res.json(); } catch { /* empty */ }
         if (!res.ok || json.error) throw new Error(json?.error?.message || `HTTP ${res.status}`);
@@ -275,7 +278,9 @@ const actEngine = {
         } finally { this.starting--; ui.refresh(); updatePrompt(); }
     },
 
-    limits() { const [floor, ceil] = strokeRange(); return { floor, ceil, maxVel: capBody(), minMs: 60 }; },
+    // Streaming sends one command per stroke over the internet: a stroke shorter than the connection can
+    // deliver cleanly would stutter, so on a slow link the fastest strokes are stretched a little.
+    limits() { const [floor, ceil] = strokeRange(); return { floor, ceil, maxVel: capBody(), minMs: S().transport === 'hdsp' ? Math.round(clamp(api.rtt <= 260 ? 0.45 * api.rtt : 117 + (api.rtt - 260), 80, 320)) : 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
         const cast = chars.cast();   // one character's style, or two taking turns / moving as one
         const r = synthesize({ lib: LIB(), intent: { ...this.intent, ...cast.intent, ornaments: S().ornaments ? 1 : 0, turn: this.turn | 0 }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
@@ -344,10 +349,24 @@ const actEngine = {
             settlePhrases();
             this.used = this.used.filter((u) => u.to > now - 30000);
         }
+        // Streaming depends on the connection. On a slow or uneven one, say so once: Script sync plays on the device.
+        if (!this.slowTold && now - this.startedAt > 15000 && (api.rtt > 320 || api.jit > 110)) {
+            this.slowTold = true;
+            toast(`Your connection to the Handy is slow or uneven (about ${Math.round(api.rtt)} ms per command), which can make Streaming feel choppy. Motion transport → Script sync is smoother on a connection like this.`, 'warning');
+        }
         if (this.buf.length < 2 || this.inflight >= 2) return;   // at most two commands on the wire
         const lead = api.rtt / 2;                                // one-way trip to the device
-        const prev = this.buf[0], next = this.buf[1];
+        const prev = this.buf[0];
         if (now < prev.at - lead) return;
+        // One command per stroke: points in the middle of a stroke would each make the device stop and wait
+        // for the next command. Send the whole run to its turning point (Script sync and Buffered streaming
+        // keep the finer shape, because the device plays those itself).
+        while (this.buf.length > 2) {
+            const d1 = this.buf[1].pos - prev.pos, d2 = this.buf[2].pos - this.buf[1].pos;
+            if (!d1 || !d2 || Math.sign(d1) !== Math.sign(d2) || this.buf[2].at - prev.at > 3000) break;
+            this.buf.splice(1, 1);
+        }
+        const next = this.buf[1];
         // The command lands at `arrive`. Nothing here is synced to a video, so when we are behind
         // (slow network, throttled tab) the plan slides later; strokes are never skipped and never
         // squeezed into less time. A stroke runs at most ~10% faster than planned and never above the cap.
@@ -356,15 +375,32 @@ const actEngine = {
         // On a fresh start the device could be at either end (after power-on, or moved by the Handy app),
         // so the first move is timed for the longest trip it might really make.
         const dev = toDev(next.pos);
-        const travel = this.known ? Math.abs(dev - toDev(from)) : Math.max(dev, 100 - dev);   // device %
+        // The sleeve may have glided on past `from` toward the last aim if this command is late (see run-on
+        // below), so the speed cap is checked against the longest trip it could really have to make.
+        const far = this.seg ? toDev(this.seg.p1) : toDev(from);
+        const travel = this.known ? Math.max(Math.abs(dev - toDev(from)), Math.abs(dev - far)) : Math.max(dev, 100 - dev);   // device %
         const floor = Math.max(50, 0.9 * (next.at - prev.at), (travel / maxVel()) * 1000);
         let dur = next.at - arrive;
         if (dur < floor) { this.shift(floor - dur, 1); dur = floor; }
-        this.seg = { p0: from, t0: arrive, p1: next.pos, t1: arrive + dur };
+        // Run-on: every command travels over the internet and lands a little early or late. If the stroke
+        // ended exactly at its turning point, a late command would leave the sleeve standing still until it
+        // arrived, and that standing still at every turn is what feels choppy. So when the next stroke
+        // reverses, this one is aimed a little past its turning point at the same speed: on time, the next
+        // command catches the sleeve right at the turn; late, the sleeve is still gliding. The run-on never
+        // leaves your stroke limits, is never faster than the stroke itself, and is not used before a pause.
+        let aim = next.pos, sendDur = dur;
+        const after = this.buf[2], span1 = next.pos - from;
+        if (this.known && after && Math.abs(span1) > 2 && Math.sign(after.pos - next.pos) === -Math.sign(span1)) {
+            const [lo, hi] = strokeRange();
+            const slack = clamp(2 * api.jit + 20, 30, 220);                         // ms of glide to cover a late command
+            aim = clamp(next.pos + (span1 / dur) * slack, lo, hi);
+            sendDur = dur * ((aim - from) / span1);
+        }
+        this.seg = { p0: from, t0: arrive, p1: aim, t1: arrive + sendDur };
         this.known = true;
         this.buf.shift();
         this.inflight++;
-        api.xpt(dev, dur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
+        api.xpt(toDev(aim), sendDur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
         ui.live(next.pos);
     },
     sendFailed(e) {
@@ -1376,8 +1412,9 @@ const calib = {
             const p = this.prev;
             if (p) {
                 const shifted = p.base + (this.tip - p.tip), target = Math.round(clamp(shifted + (this.tip - shifted) * 0.1, 0, 100));
-                if (Math.abs(target - this.tip) >= 10) this.target(target);
+                if (Math.abs(target - this.tip) >= 10 && this.base === null) this.target(target);
             }
+            if (this.base !== null && Math.abs(this.base - this.tip) >= 10) this.target(this.base);   // came Back: return to the base you had set
         }
         else if (this.step === 2) {
             if (Math.abs(this.pos - this.tip) < 10) return toast('Tip and base must be at least 10 apart. Move further and try again.', 'warning');
@@ -1385,7 +1422,13 @@ const calib = {
         }
         ui.calib();
     },
-    back() { if (this.step > 1 && !this.moving) { this.step--; ui.calib(); } },
+    // Back returns the sleeve to the mark you are about to adjust, so you fine-tune from where you set it.
+    back() {
+        if (this.step <= 1 || this.moving) return;
+        this.step--; ui.calib();
+        const to = this.step === 1 ? this.tip : this.base;
+        if (to !== null && to !== undefined) this.target(to);
+    },
     async test() {
         if (this.step !== 3 || this.moving) return;
         const my = this.my;

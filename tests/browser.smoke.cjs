@@ -69,7 +69,54 @@ server.listen(0, async () => {
     const p1 = await pos(); await p.click('[data-jog="10"]'); await p.waitForTimeout(900);
     const p2 = await pos();
     check('calibration: arrows hidden while the sleeve travels; ▼ and ▲ move it down and up', hidden && p1 === p0 - 2 && p2 === p1 + 10, `${p0} → ${p1} → ${p2}`);
-    await p.click('#handy_calib_cancel'); await p.waitForTimeout(200);
+    // every button and key of the dialog, start to finish
+    const still = () => p.waitForFunction(() => !handyAdaptive.calib.moving, null, { timeout: 10000 });
+    const sent = () => p.evaluate(() => calls.filter((c) => c.startsWith('/hdsp/xpt')).length);
+    const step = () => p.evaluate(() => handyAdaptive.calib.step);
+    const moves = [];
+    for (const [sel, d] of [['[data-jog="-10"]', -10], ['[data-jog="-2"]', -2], ['[data-jog="2"]', 2], ['[data-jog="10"]', 10]]) {
+        await still(); const a = await pos(), n = await sent(); await p.click(sel); await p.waitForTimeout(250); await still();
+        moves.push((await pos()) === Math.max(0, Math.min(100, a + d)) && (await sent()) > n);
+    }
+    for (const [key, shift, d] of [['ArrowDown', false, -2], ['ArrowUp', false, 2], ['ArrowDown', true, -10], ['ArrowUp', true, 10]]) {
+        await still(); const a = await pos(); await p.keyboard.press(shift ? `Shift+${key}` : key); await p.waitForTimeout(250); await still();
+        moves.push((await pos()) === Math.max(0, Math.min(100, a + d)));
+    }
+    check('calibration: all four arrow buttons and the ↑ ↓ keys (with Shift) move the sleeve the right way and reach the device', moves.every(Boolean), moves.map((m) => (m ? 'ok' : 'NO')).join(' '));
+    await still(); const tipAt = await pos();
+    await p.click('#handy_calib_next'); await p.waitForTimeout(300); await still();
+    const afterTip = await step();
+    await p.click('#handy_calib_back'); await p.waitForTimeout(250); await still(); const backTo = (await step()) === 1 && (await pos()) === tipAt ? 1 : -9;   // Back also returns the sleeve to the tip you set
+    await p.click('#handy_calib_next'); await p.waitForTimeout(300); await still();
+    // fine-tune the base both ways, then lock it in
+    await p.click('[data-jog="-10"]'); await p.waitForTimeout(200); await still(); await p.click('[data-jog="2"]'); await p.waitForTimeout(200); await still(); await p.click('[data-jog="-2"]'); await p.waitForTimeout(200); await still();
+    const baseAt = await pos();
+    await p.click('#handy_calib_next'); await p.waitForTimeout(200);
+    const afterBase = await step();
+    const n0 = await sent(); await p.click('#handy_calib_test'); await p.waitForTimeout(600); const testing = await p.evaluate(() => handyAdaptive.calib.moving); await p.waitForFunction(() => !handyAdaptive.calib.moving, null, { timeout: 30000 });
+    const testMoves = (await sent()) - n0;
+    await p.click('#handy_calib_next'); await p.waitForTimeout(300);
+    s = await st();
+    check('calibration: This is my tip, Back, This is my base, Test and Save all work, and the values you set are the ones saved',
+        afterTip === 2 && backTo === 1 && afterBase === 3 && testing && testMoves >= 3 && s.calibration.tip === tipAt && s.calibration.base === baseAt && !(await p.isVisible('#handy_calib')),
+        `tip ${tipAt}, base ${baseAt} → saved tip ${s.calibration.tip}, base ${s.calibration.base}; ${testMoves} test moves`);
+    await p.$eval('#handy_calib_btn', (e) => e.click()); await p.waitForTimeout(200); await p.click('#handy_calib_next'); await p.waitForTimeout(400);
+    await p.click('#handy_calib_cancel'); await p.waitForTimeout(300);
+    check('calibration: STOP / cancel closes it and keeps the saved values', !(await p.isVisible('#handy_calib')) && (await st()).calibration.tip === tipAt);
+    // every feedback button on the panel reaches the engine
+    await p.click('#handy_play'); await p.waitForTimeout(600);
+    const dead = [];
+    for (const fb of ['faster', 'slower', 'longer', 'shorter', 'up', 'down', 'more', 'less', 'love', 'nope', 'close']) {
+        const before = await p.evaluate(() => JSON.stringify([handyAdaptive.actEngine.intent, handyAdaptive.profile().log.length]));
+        await p.click(`[data-fb="${fb}"]`); await p.waitForTimeout(120);
+        if (before === await p.evaluate(() => JSON.stringify([handyAdaptive.actEngine.intent, handyAdaptive.profile().log.length]))) dead.push(fb);
+    }
+    await p.$eval('#handy_intensity', (e) => { e.value = '0.8'; e.dispatchEvent(new Event('change', { bubbles: true })); }); await p.waitForTimeout(300);
+    const slid = await p.evaluate(() => handyAdaptive.actEngine.intent.intensity);
+    await p.click('[data-fb="finish"]'); await p.waitForTimeout(300);
+    const wound = await p.evaluate(() => handyAdaptive.actEngine.intent.intensity);
+    await p.click('#handy_stop'); await p.waitForTimeout(300);
+    check('panel: every feedback button, the intensity slider, Finished and STOP act on the device', !dead.length && slid === 0.8 && wound <= 0.05 && !(await p.evaluate(() => handyAdaptive.actEngine.running)), dead.length ? `no effect: ${dead.join(', ')}` : '');
     const errs = await p.evaluate(() => errors);
     check('no page errors', !errs.length, errs.join(' | '));
     await b.close(); server.close();

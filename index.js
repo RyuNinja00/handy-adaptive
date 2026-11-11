@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.1)
+// Handy Adaptive — SillyTavern extension (v0.7.2)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -77,7 +77,8 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // Today's date where you are (not UTC: an evening session must not be filed under tomorrow).
 const today = (t = Date.now()) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const esc = (t) => $('<div>').text(String(t)).html();
-const maxVel = () => 60 + (S().maxSpeed / 100) * 540;   // %/s: 80% cap ≈ 490 %/s
+const maxPct = () => clamp(Number.isFinite(+S().maxSpeed) ? +S().maxSpeed : 80, 5, 100);   // a typed 250 is still 100 %
+const maxVel = () => 60 + (maxPct() / 100) * 540;   // %/s: 80% cap ≈ 490 %/s
 
 // Models write numbers loosely (“0.6”, 70%, 7/10, "high"). Read what can be read; anything else is
 // ignored, so one sloppy tag can never leave the engine holding a NaN.
@@ -175,6 +176,8 @@ const span = () => { const c = cal(); return c ? Math.abs(c.tip - c.base) / 100 
 const toDev = (p) => { const c = cal(); const x = clamp(+p || 0, 0, 100); return c ? c.base + (x / 100) * (c.tip - c.base) : x; };
 // The speed cap is a physical limit on the device; in body units it is wider when your range is shorter.
 const capBody = () => maxVel() / span();
+// Your stroke limits, whichever way round they were typed, within 0-100.
+const strokeRange = () => { const s = S(), a = clamp(+s.strokeFloor || 0, 0, 100), b = clamp(Number.isFinite(+s.strokeCeil) && s.strokeCeil !== '' ? +s.strokeCeil : 100, 0, 100); return [Math.min(a, b), Math.max(a, b)]; };
 
 // ---------------------------------------------------------------- device API v3 (firmware 4): buffered streaming
 // HSP keeps a few seconds of timed points on the device itself, so motion stays smooth whatever the
@@ -258,7 +261,7 @@ const actEngine = {
             if (iv !== undefined) this.intent.intensity = iv;
             if (vv !== undefined) this.intent.variation = vv;
             if (dv !== undefined) this.intent.depth = dv;
-            if (cmd.act || iv !== undefined) chars.noteTag(act, iv);
+            if (!cmd._cue && (cmd.act || iv !== undefined)) chars.noteTag(act, iv);
             if (cmd.blend !== undefined && cmd.blend !== true) this.intent.blend = parseBlend(cmd.blend);
             lastActivity = Date.now();
             clearTimeout(this.durTimer);   // a "for N seconds" from an earlier tag must not fire into this one
@@ -272,7 +275,7 @@ const actEngine = {
         } finally { this.starting--; ui.refresh(); updatePrompt(); }
     },
 
-    limits() { const s = S(); return { floor: s.strokeFloor, ceil: s.strokeCeil, maxVel: capBody(), minMs: 60 }; },
+    limits() { const [floor, ceil] = strokeRange(); return { floor, ceil, maxVel: capBody(), minMs: 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
         const cast = chars.cast();   // one character's style, or two taking turns / moving as one
         const r = synthesize({ lib: LIB(), intent: { ...this.intent, ...cast.intent, ornaments: S().ornaments ? 1 : 0, turn: this.turn | 0 }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
@@ -588,11 +591,18 @@ const PATTERNS = {
     edge:   (t, p) => { const c = t % (p.period * 1.4); return c < p.period ? { speed: p.speed * (0.4 + 0.6 * (c / p.period)), min: p.min, max: p.max } : { speed: Math.max(5, p.speed * 0.15), min: p.min, max: p.max }; },
     deep:   (t, p) => ({ speed: p.speed, min: Math.min(p.min, 5), max: Math.max(p.max, 95) }),
 };
+// A legacy pattern, played by the act engine instead: speed becomes intensity, the stroke range becomes depth.
+function patternAsAct(pattern, params = {}) {
+    const p = { ...hamp.params, ...params }, act = actEngine.intent.act || Object.keys(LIB().acts)[0];
+    const mid = (clamp(+p.min || 0, 0, 100) + clamp(+p.max || 100, 0, 100)) / 2;
+    return { act: pattern === 'tease' ? (resolveAct(LIB(), 'teasing') || act) : act, intensity: clamp((+p.speed || 30) / 100, 0.05, 1), depth: clamp((mid - 50) / 25, -1, 1) };
+}
 const hamp = {
     running: false, starting: 0, pattern: 'steady', params: { speed: 30, min: 10, max: 90, period: 12, depth: 15 },
     startedAt: 0, sent: { speed: -1, min: -1, max: -1 }, timer: null,
     async play(pattern, params = {}) {
         if (!S().enabled) return;
+        if (S().transport === 'hsp') return actEngine.apply(patternAsAct(pattern, params));   // pattern mode uses API v2; firmware 4 streams through v3
         if (calib.gate(() => this.play(pattern, params))) return;
         const my = epoch; this.starting++;
         try {
@@ -623,7 +633,8 @@ const hamp = {
         if (!this.running || api.busy) return;
         if (s.idleStopSec > 0 && Date.now() - lastActivity > s.idleStopSec * 1000) return stopAll('idle timeout');
         const r = PATTERNS[this.pattern]((Date.now() - this.startedAt) / 1000, { ...this.params, period: Math.max(2, this.params.period) });
-        const tg = { speed: clamp(r.speed, s.minSpeed, s.maxSpeed), min: clamp(r.min, s.strokeFloor, s.strokeCeil), max: clamp(r.max, s.strokeFloor, s.strokeCeil) };
+        const [lo, hi] = strokeRange();
+        const tg = { speed: clamp(r.speed, Math.min(s.minSpeed, maxPct()), maxPct()), min: clamp(r.min, lo, hi), max: clamp(r.max, lo, hi) };
         api.busy = true;
         try {
             if (Math.abs(tg.min - this.sent.min) >= 3 || Math.abs(tg.max - this.sent.max) >= 3) {
@@ -1188,7 +1199,7 @@ function feedback(kind) {
     } else if (hamp.running) {
         const s = S(), p = hamp.params;
         f.pat?.(p);
-        p.speed = clamp(p.speed, s.minSpeed, s.maxSpeed); p.min = clamp(p.min, 0, 95); p.max = clamp(p.max, p.min + 5, 100); p.depth = clamp(p.depth, 0, 40);
+        p.speed = clamp(p.speed, Math.min(s.minSpeed, maxPct()), maxPct()); p.min = clamp(p.min, 0, 95); p.max = clamp(p.max, p.min + 5, 100); p.depth = clamp(p.depth, 0, 40);
         const P = (S().profile.patterns[hamp.pattern] ??= { score: 0, n: 0 });
         if (kind === 'love') P.score += 1.5; if (kind === 'nope') P.score -= 1.5; P.n++;
     }
@@ -1272,7 +1283,7 @@ function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg || !msg.is_user) return;
     lastActivity = Date.now();   // you are here and taking part: the idle timer and the learning both count it
-    if (!S().enabled || !anyActive()) return;
+    if (!S().enabled || !(anyActive() || beats.length)) return;
     if (isUserStop(msg.mes)) {
         logEvent('stop');
         stopAll('you said stop');
@@ -1550,7 +1561,7 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
-    <label class="checkbox_label"><input type="checkbox" id="handy_panel"> Show control panel</label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_show_panel"> Show control panel</label>
     <hr>
     <label>API v3 Application ID (buffered streaming only) <input type="password" id="handy_appid" class="text_pole" placeholder="from Handy's developer portal"></label>
     <hr>
@@ -1614,14 +1625,18 @@ const ui = {
         bind('#handy_enabled', 'enabled', 'checked'); bind('#handy_key', 'connectionKey'); bind('#handy_transport', 'transport');
         bind('#handy_minspeed', 'minSpeed'); bind('#handy_maxspeed', 'maxSpeed');
         bind('#handy_floor', 'strokeFloor'); bind('#handy_ceil', 'strokeCeil'); bind('#handy_idle', 'idleStopSec');
+        $('#handy_enabled').on('change', () => { if (!S().enabled) stopAll('extension turned off'); });
+        // A new speed cap, stroke range or transport takes effect at the next turning point, not after the stored plan runs out.
+        let replanT = null;
+        $('#handy_maxspeed, #handy_floor, #handy_ceil, #handy_transport').on('change', () => { clearTimeout(replanT); replanT = setTimeout(() => { if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); }, 300); });
         bind('#handy_esc', 'escStops', 'checked'); bind('#handy_inject', 'injectProfile', 'checked');
-        bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_panel', 'showPanel', 'checked');
+        bind('#handy_auto', 'autoReplyOnFeedback', 'checked'); bind('#handy_show_panel', 'showPanel', 'checked');
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
         bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked');
         bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
-        $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.warned = false; save(); ui.refresh(); });
+        $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.seen.clear(); chars.warned = false; save(); chars.current(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
         const restyle = () => { if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); ui.refresh(); updatePrompt(); };
         $('#handy_char_sel').on('change', () => ui.refresh());
@@ -1639,8 +1654,8 @@ const ui = {
         $('#handy_char_forget').on('click', () => { const r = selChar(); if (r && confirm(`Forget what your feedback taught ${r.name}? (Their card-based style stays.)`)) { Object.assign(r, { learned: EMPTY_LEARNED(), motifs: {}, acts: {}, loves: 0, nopes: 0, intensity: null }); save(); restyle(); } });
         $('#handy_char_delete').on('click', () => { const key = $('#handy_char_sel').val(), r = selChar(); if (r && confirm(`Delete ${r.name}'s style and history?`)) { delete S().characters[key]; chars.seen.delete(key); save(); restyle(); } });
         $('#handy_cal_start').on('click', () => calib.start());
-        $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; S().setupName = null; save(); ui.refresh(); } });
-        $('#handy_setup_sel, #handy_setup, #handy_calib_setup').on('change', function () { if (this.value) setups.use(this.value); });
+        $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { if (anyRunning()) stopAll('calibration cleared'); S().calibration = null; S().setupName = null; save(); ui.refresh(); } });
+        $(document).on('change', '#handy_setup_sel, #handy_setup, #handy_calib_setup', function () { if (this.value) setups.use(this.value); });   // the panel and the session question are added below
         $('#handy_setup_save').on('click', () => { const n = prompt('Name this setup (e.g. Lying down):', S().setupName || ''); if (n) setups.save(n); });
         $('#handy_setup_del').on('click', () => { const n = S().setupName; if (n && confirm(`Delete the setup “${n}”? (Your current calibration stays.)`)) setups.remove(n); });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');

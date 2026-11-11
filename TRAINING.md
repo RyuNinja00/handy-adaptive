@@ -125,6 +125,8 @@ In a simulated test with a user who mostly said nothing and only occasionally ra
 
 **Tip:** press ❤ at the moment something feels great, not afterwards. Feedback applies to the last ~8 seconds.
 
+The extension also learns from 🔥 I'm close and 🥂 Finished, keeps a separate style and history for each character, and remembers which phrases were playing when you finished. See Part 13 of the [User Guide](docs/USER_GUIDE.md#part-13--teaching-it-your-taste).
+
 Add more videos any time: put them in `training/`, run `analyze` and then `build`, and re-import. Your taste profile is stored separately and survives library updates, though ratings only apply to phrases that are still in the library. Export it from the settings to back it up.
 
 ## Troubleshooting

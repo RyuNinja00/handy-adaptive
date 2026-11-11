@@ -691,6 +691,51 @@ for (const transport of ['hdsp', 'hsp']) {
     check('a later session starts fresh, and the last one is passed to the AI as a recap', r.recaps.length === 1 && r.now.finishes === 0 && /earlier sessions: [^\n]*finished 1× \(during blowjob, the signature move "Velvet Spiral"/.test(p2), (p2.match(/SESSION MEMORY[^\n]*/) || [''])[0].slice(0, 200));
 }
 
+// ---- second review: limits, stops and fallbacks ----
+{
+    const h = await boot({ seed: 520, settings: { maxSpeed: 250, library: lib } });
+    h.message('<handy act="doggy" intensity="1"/>'); await h.advance(20000);
+    const v = Math.max(...h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v));
+    check('a max speed typed above 100 is treated as 100 %', v <= 600 * 1.03, `fastest ${Math.round(v)} %/s`);
+    const h2 = await boot({ seed: 521, settings: { strokeFloor: 70, strokeCeil: 30 } });
+    h2.message('<handy act="handjob" intensity="0.6"/>'); await h2.advance(10000);
+    const ps = h2.dev.cmds.filter((c) => !c.rejected).map((c) => c.p1);
+    check('stroke limits typed the wrong way round still give a range', Math.min(...ps) >= 30 && Math.max(...ps) <= 70 && Math.max(...ps) - Math.min(...ps) > 15, `${Math.min(...ps)}-${Math.max(...ps)}`);
+    const h3 = await boot({ seed: 522 });
+    h3.message('<handy act="handjob" intensity="0.6"/>'); await h3.advance(8000);
+    h3.st.extensionSettings.handy_adaptive.maxSpeed = 20;   // no new instruction: streaming checks the cap on every stroke
+    await h3.advance(3000); const t = h3.now(); await h3.advance(8000);
+    const late = h3.dev.cmds.filter((c) => !c.rejected && c.t > t).map((c) => c.v);
+    check('a lower max speed takes effect within seconds, mid-play', Math.max(...late) <= (60 + 0.2 * 540) * 1.03, `fastest after ${Math.round(Math.max(...late))} %/s`);
+}
+{
+    const w = (n) => Array.from({ length: n }, (_, i) => 'w' + i).join(' ');
+    const h = await boot({ seed: 523 });
+    h.message(`<handy stop/> ${w(80)} <handy act="handjob" intensity="0.7"/>`); await h.advance(5000);
+    h.say('stop'); await h.advance(30000);
+    check('a typed "stop" also cancels tags still waiting in the reply', !h.H.active());
+    const h2 = await boot({ seed: 524 });
+    Object.assign(h2.st, { characters: [{ name: 'Vex', avatar: 'vex.png', description: 'dominant' }], characterId: 0 });
+    h2.message('<handy act="handjob" intensity="0.5"/>'); await h2.advance(4000);
+    for (let i = 0; i < 4; i++) { h2.message('She speeds up. Then she slows down.'); await h2.advance(15000); }
+    check('story cues are not counted as the character\'s own habits', h2.st.extensionSettings.handy_adaptive.characters['vex.png'].acts.handjob.n === 1);
+}
+{
+    const h = await boot({ seed: 525, settings: { transport: 'hsp', appId: 'APP' } });
+    h.message('<handy pattern="wave" speed="60" min="20" max="80"/>'); await h.advance(6000);
+    const v2 = h.dev.calls.filter((c) => !c.v3 && /hamp|slide|velocity/.test(c.path));
+    check('pattern tags under buffered streaming play through API v3 (the act engine)', h.H.actEngine.running && !v2.length && Math.abs(h.H.actEngine.intent.intensity - 0.6) < 1e-9, `${v2.length} old-API pattern calls`);
+}
+{
+    const h = await boot({ seed: 526, settings: { styleProfile: '' } });
+    Object.assign(h.st, { characters: [{ name: 'Vex', avatar: 'vex.png', description: 'A dominant succubus.' }], characterId: 0 });
+    h.st.extensionSettings.connectionManager = { profiles: [{ id: 'bg', name: 'Background' }] };
+    let n = 0; h.st.ConnectionManagerRequestService = { sendRequest: async () => { n++; return { content: '{"tempo":0,"reach":0,"focus":0,"wild":0,"tease":1,"eager":-1,"exp":1,"why":"x"}' }; } };
+    h.message('<handy act="handjob" intensity="0.5"/>'); await h.advance(3000);
+    h.st.extensionSettings.handy_adaptive.styleProfile = 'Background'; h.H.chars.tried.clear(); h.H.chars.seen.clear(); h.H.chars.current(); await h.advance(2000);
+    check('choosing a card-reading profile reads the character in control right away', n === 1 && h.st.extensionSettings.handy_adaptive.characters['vex.png'].source === 'ai');
+}
+
 // ---- learning ----
 {
     const h = await boot({ seed: 180, settings: { library: lib } });

@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.0)
+// Handy Adaptive — SillyTavern extension (v0.7.1)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -74,6 +74,8 @@ function S() {
 const LIB = () => S().library || STARTER_LIBRARY;
 const save = () => ctx().saveSettingsDebounced();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// Today's date where you are (not UTC: an evening session must not be filed under tomorrow).
+const today = (t = Date.now()) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const esc = (t) => $('<div>').text(String(t)).html();
 const maxVel = () => 60 + (S().maxSpeed / 100) * 540;   // %/s: 80% cap ≈ 490 %/s
 
@@ -700,7 +702,7 @@ const setups = {
         const c = cal(); name = String(name || '').trim().slice(0, 30);
         if (!name) return false;
         if (!c) { toast('Calibrate first, then save it as a setup.', 'warning'); return false; }
-        const ex = this.find(name), rec = { name: ex?.name || name, base: c.base, tip: c.tip, at: c.at || new Date().toISOString().slice(0, 10) };
+        const ex = this.find(name), rec = { name: ex?.name || name, base: c.base, tip: c.tip, at: c.at || today() };
         if (ex) Object.assign(ex, rec); else this.list().push(rec);
         S().setupName = rec.name; save(); ui.refresh();
         toast(`Saved setup “${rec.name}”`, 'success');
@@ -835,6 +837,7 @@ const chars = {
     who: null,          // key of the character whose tag is driving the device
     seen: new Set(),    // keys whose card was checked for changes this session
     reading: new Set(), tried: new Set(), warned: false,
+    speaker: null,                  // group chats: the character about to write (their style and memory go in the prompt)
     partner: null, duet: 'turns',   // a second character acting together with the one in control
     lastMove: null,                 // the signature move last played: { name, act, t }
     keyOf(msg) {
@@ -868,7 +871,7 @@ const chars = {
             const seed = seedStyle(card?.text || '');
             r = all[key] = { name: card?.name || key.replace(/^name:/, '').replace(/\.png$/i, ''), traits: seed.traits, hits: seed.hits, custom: false,
                 source: 'words', hash: card ? textHash(card.text) : null, learned: EMPTY_LEARNED(), motifs: {}, acts: {},
-                minutes: 0, loves: 0, nopes: 0, edges: 0, finishes: 0, intensity: null, since: new Date().toISOString().slice(0, 10) };
+                minutes: 0, loves: 0, nopes: 0, edges: 0, finishes: 0, intensity: null, since: today() };
             save();
         } else if (card) {
             r.name = card.name || r.name;
@@ -913,6 +916,7 @@ const chars = {
         } finally { this.reading.delete(key); }
     },
     current() { return this.get(this.activeKey()); },
+    promptKey() { return !S().charStyles ? null : (ctx().groupId && this.speaker) || this.activeKey(); },
     keyByName(name) {
         const n = String(name || '').trim().toLowerCase(); if (!n) return null;
         const list = ctx().characters, ch = Array.isArray(list) ? list.find((x) => x?.name && x.name.toLowerCase() === n) : null;
@@ -924,7 +928,9 @@ const chars = {
     setPartner(name, mode) {
         const off = !name || name === true || /^(none|no one|nobody|solo|alone)$/i.test(String(name).trim());
         const key = off || !S().charStyles ? null : this.keyByName(name);
-        this.partner = key && key !== this.activeKey() ? key : null;
+        // only a character SillyTavern knows (or one you already have a style for): a made-up name is ignored
+        const real = key && (!key.startsWith('name:') || !!S().characters?.[key]);
+        this.partner = real && key !== this.activeKey() ? key : null;
         this.duet = /^(together|both|unison|as one)$/i.test(String(mode || '').trim()) ? 'together' : 'turns';
     },
     partnerRec() { return this.partner && S().charStyles && this.activeKey() ? this.get(this.partner) : null; },
@@ -941,7 +947,7 @@ const chars = {
         const now = Date.now();
         if (!r.now || now - r.now.t > 3 * 3600e3) {   // three quiet hours ends a session
             if (r.now && (r.now.minutes > 0 || r.now.edges || r.now.finishes)) { (r.recaps ??= []).push(r.now); if (r.recaps.length > 5) r.recaps.shift(); }
-            r.now = { date: new Date(now).toISOString().slice(0, 10), t: now, minutes: 0, edges: 0, finishes: 0, loves: 0, acts: {}, finishedWith: [] };
+            r.now = { date: today(now), t: now, minutes: 0, edges: 0, finishes: 0, loves: 0, acts: {}, finishedWith: [] };
         }
         r.now.t = now;
         return r.now;
@@ -963,12 +969,13 @@ const chars = {
         r.updated = Date.now();
     },
     text() {
-        const r = this.current(); if (!r) return '';
+        const key = this.promptKey(), r = this.get(key); if (!r) return '';
+        const mover = key !== this.activeKey() ? this.current() : null;   // someone else's tag is driving the device right now
         const acts = Object.entries(r.acts).filter(([, a]) => a.n > 0).sort((a, b) => (b[1].score + 0.1 * b[1].n) - (a[1].score + 0.1 * a[1].n));
         const fav = acts.filter(([, a]) => a.score > 0.5).slice(0, 3).map(([k]) => k);
         const hist = [r.minutes ? `${r.minutes} min together` : '', r.edges ? `brought them to the edge ${r.edges}×` : '', r.finishes ? `made them finish ${r.finishes}×` : '',
             fav.length ? `the user loves it when ${r.name} does ${fav.join(', ')}` : '', r.intensity != null && acts.length ? `usually goes at intensity ~${r.intensity.toFixed(1)}` : ''].filter(Boolean);
-        return `CHARACTER STYLE: ${r.name} moves the device their own way: ${describeStyle(r.traits, r.learned)}. The device already plays it in that style; choose acts and intensity the way ${r.name} would${hist.length ? `. History with the user: ${hist.join('; ')}` : ''}.${this.memory(r)}${this.duetText()}`;
+        return `CHARACTER STYLE: ${r.name} moves the device their own way: ${describeStyle(r.traits, r.learned)}. The device already plays it in that style; choose acts and intensity the way ${r.name} would${hist.length ? `. History with the user: ${hist.join('; ')}` : ''}.${this.memory(r)}${mover ? ` Right now ${mover.name} is the one moving the device; a tag from ${r.name} hands it over to ${r.name}'s style.` : this.duetText()}`;
     },
     memory(r) {
         const past = (r.recaps || []).slice(-2).map((x) => this.recap(x));
@@ -1356,7 +1363,7 @@ const calib = {
     },
     finish() {
         if (this.step !== 3) return;
-        S().calibration = { base: this.base, tip: this.tip, at: new Date().toISOString().slice(0, 10) };
+        S().calibration = { base: this.base, tip: this.tip, at: today() };
         sessionChecked = true;
         // Recalibrated while a saved setup was in use: it's your call whether this is that setup, adjusted, or a new position.
         const was = S().setupName ? setups.find(S().setupName) : null;
@@ -1395,7 +1402,7 @@ function actLine(name, e) {
 function profileText() {
     const s = S(), lib = LIB(), pr = s.profile;
     const L = [];
-    L.push(`[Device control: you control the user's Handy stroker toy. Write ONE tag in your reply whenever the physical action in the scene starts, changes or should build. Tags are hidden from the user and executed instantly.`);
+    L.push(`[Device control: you control the user's Handy stroker toy. Write a tag in your reply whenever the physical action in the scene starts, changes or should build. Tags are hidden from the user and executed instantly.`);
     L.push(`<handy act="ACT" intensity="0-1" depth="-1..1" variation="0-1" blend="ACT2:0.3" duration="seconds"/>`);
     L.push(`- act = what is physically being done to the user's character right now. The device improvises realistic motion for that act from real examples, so describe the act — don't micromanage speed.`);
     L.push(`- intensity: 0 = slow and gentle, 1 = frantic. Build it gradually as the scene escalates and drop it for teasing or after a peak.`);
@@ -1410,7 +1417,7 @@ function profileText() {
     for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     if (loves.length) L.push(`Recently loved: ${loves.map((e) => `${e.act} @ intensity ${e.intensity}`).join(', ')}.`);
-    const ck = chars.activeKey(), cr = ck ? s.characters?.[ck] : null;
+    const ck = chars.promptKey(), cr = ck ? chars.get(ck) : null;
     const general = pr.favorites.filter((f) => !f.owner), sig = ck ? pr.favorites.filter((f) => f.owner === ck) : [];
     if (general.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${general.map((f) => `"${f.name}"`).join(', ')}.`);
     if (cr) L.push(`${cr.name}'s signature moves${sig.length ? ` (play with <handy favorite="NAME"/>; the user knows them by name, so call back to them): ${sig.map((f) => `"${f.name}"`).join(', ')}` : ': none yet'}. When the user clearly loves what is playing, ${cr.name} may name it as a new signature move with <handy save="A SHORT NAME"/> (rarely; at most a handful).`);
@@ -1472,6 +1479,7 @@ function handleMessage(id) {
         }
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
     }
+    chars.speaker = null;
     updatePrompt();
 }
 // <handy stop/>, and the ways models say the same thing through act/pattern.
@@ -1817,7 +1825,12 @@ jQuery(() => {
     const ev = c.eventTypes || c.event_types;
     c.eventSource.on(ev.MESSAGE_RECEIVED, handleMessage);
     if (ev.MESSAGE_SENT) c.eventSource.on(ev.MESSAGE_SENT, handleUserMessage);
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    // Group chats: before each member writes, give the AI THAT character's style, memory and signature moves.
+    if (ev.GROUP_MEMBER_DRAFTED) c.eventSource.on(ev.GROUP_MEMBER_DRAFTED, (chId) => {
+        const k = ctx().characters?.[chId]?.avatar;
+        if (k && S().charStyles) { chars.speaker = k; updatePrompt(); }
+    });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;

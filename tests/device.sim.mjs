@@ -636,6 +636,23 @@ for (const transport of ['hdsp', 'hsp']) {
     check('"together" moves as one, and a tag without with= goes back to one character', tog && h.H.chars.partner === null && h.H.chars.who === 'lily.png' && h.H.active());
 }
 
+// ---- group chats: the right character's style reaches the AI, and invented partners are ignored ----
+{
+    const h = await boot({ seed: 495, settings: { library: lib } });
+    Object.assign(h.st, { characters: CARDS, groupId: 'g' });
+    h.message('<handy act="blowjob" intensity="0.6"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(4000);
+    h.message('<handy save="Velvet Spiral"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(2000);
+    h.handlers.group_member_drafted(0);   // Lily is about to write
+    const pL = h.st.prompts.filter(Boolean).pop();
+    h.message('Lily watches, blushing.', { name: 'Lily', original_avatar: 'lily.png' }); await h.advance(1000);
+    const pAfter = h.st.prompts.filter(Boolean).pop();
+    check('group chat: the character about to write gets their own style and moves in the prompt', /CHARACTER STYLE: Lily /.test(pL) && /Right now Vex is the one moving the device/.test(pL) && /Lily's signature moves: none yet/.test(pL) && !/"Velvet Spiral"/.test(pL) && /CHARACTER STYLE: Vex /.test(pAfter) && h.H.chars.who === 'vex.png');
+    h.message('<handy act="blowjob" intensity="0.5" with="Zorblax the Unknown"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(3000);
+    check('a partner name that is not a real character is ignored', h.H.chars.partner === null && h.H.active() && !Object.keys(h.st.extensionSettings.handy_adaptive.characters).some((k) => k.startsWith('name:')));
+    const d = new Date(h.now()), local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    check('session records use your local date', h.st.extensionSettings.handy_adaptive.characters['vex.png'].now.date === local);
+}
+
 // ---- saved setups ----
 {
     const h = await boot({ seed: 500 });

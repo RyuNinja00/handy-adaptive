@@ -178,7 +178,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         extensionSettings: { handy_adaptive: undefined }, chat: [], prompts: [],
         saveSettingsDebounced() {}, setExtensionPrompt(_m, text) { st.prompts.push(text); },
         eventSource: { on(ev, fn) { handlers[ev] = fn; } },
-        eventTypes: { MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', CHAT_CHANGED: 'chat_changed' },
+        eventTypes: { MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', CHAT_CHANGED: 'chat_changed', GROUP_MEMBER_DRAFTED: 'group_member_drafted' },
         replies: 0,
         executeSlashCommandsWithOptions: async () => { st.replies++; },
     };

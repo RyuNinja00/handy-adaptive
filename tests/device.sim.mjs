@@ -425,6 +425,144 @@ async function styleRun(card, seed) {
     check('with character styles off, nothing is styled or stored', h3.H.chars.effect() === null && !Object.keys(h3.st.extensionSettings.handy_adaptive.characters).length);
 }
 
+// ---- replies with several tags play at reading pace ----
+{
+    const words = (n) => Array.from({ length: n }, (_, i) => 'word' + i).join(' ');
+    const reply = `She starts slowly. <handy act="handjob" intensity="0.3"/> ${words(110)} <handy intensity="0.9"/> ${words(110)} <handy stop/> ${words(20)}`;
+    const h = await boot({ seed: 400 });   // 220 words/min: the second tag is due at 30 s, the stop at 60 s
+    h.message(reply); await h.advance(8000);
+    const a = h.H.actEngine.intent.intensity, clean = !/<handy/.test(h.st.chat.at(-1).mes);
+    await h.advance(27000); const b = h.H.actEngine.intent.intensity, runB = h.H.active();
+    await h.advance(30000);
+    check('several tags in one reply play in order as you read', a === 0.3 && b === 0.9 && runB && !h.H.active() && clean, `8 s: ${a}, 35 s: ${b}, 65 s: ${h.H.active() ? 'running' : 'stopped'}`);
+    const h2 = await boot({ seed: 401 });
+    h2.message(reply); await h2.advance(8000); h2.H.stop(); await h2.advance(40000);
+    check('STOP drops the tags still waiting in the reply', !h2.H.active());
+    const h3 = await boot({ seed: 402 });
+    h3.message(reply); await h3.advance(8000);
+    h3.message('<handy act="blowjob" intensity="0.5"/> A new reply.'); await h3.advance(60000);
+    check('a new reply replaces the tags still waiting from the old one', h3.H.active() && h3.H.actEngine.intent.act === 'blowjob' && h3.H.actEngine.intent.intensity === 0.5);
+    const h4 = await boot({ seed: 403, settings: { readWpm: 0 } });
+    h4.message(`<handy act="handjob" intensity="0.3"/> ${words(110)} <handy intensity="0.9"/>`); await h4.advance(4000);
+    check('reading speed 0 plays every tag at once, as before', h4.H.actEngine.intent.intensity === 0.9);
+    const h5 = await boot({ seed: 404 });
+    h5.message(`<handy act="handjob" intensity="0.4"/> ${words(60)} <handy stop/> ${words(60)} <handy act="blowjob" intensity="0.6"/>`);
+    await h5.advance(20000); const stopped = !h5.H.active(); await h5.advance(20000);
+    check('a stop in the middle of a reply stops, and the tag after it still plays', stopped && h5.H.active() && h5.H.actEngine.intent.act === 'blowjob');
+}
+
+// ---- idle timer ----
+{
+    const h = await boot({ seed: 410, settings: { idleStopSec: 600 } });
+    h.message('<handy act="handjob" intensity="0.5"/>'); await h.advance(5000);
+    for (let i = 0; i < 12; i++) { await h.advance(60000); h.say('mmm, that feels good'); h.message('She keeps going, humming softly.'); }
+    const alive = h.H.active();
+    await h.advance(11 * 60000);
+    check('chatting counts as activity; silence still stops the device', alive && !h.H.active());
+}
+
+// ---- climax push ----
+for (const transport of ['hdsp', 'hsp']) {
+    const h = await boot({ seed: 420, settings: { library: lib, transport, appId: 'APP' } });
+    h.message('<handy act="blowjob" intensity="0.4"/>'); await h.advance(8000);
+    h.message('Now. <handy climax="20"/>'); await h.advance(1500);
+    const seen = [];
+    for (let i = 0; i < 22; i++) { seen.push(h.H.actEngine.intent.intensity); await h.advance(1000); }
+    const rising = seen.every((v, i) => i === 0 || v >= seen[i - 1] - 1e-9);
+    h.H.feedback('close'); await h.advance(3000);
+    const held = h.H.actEngine.intent.intensity === 1 && h.H.climax.active;
+    const vmax = transport === 'hdsp' ? Math.max(...h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v)) : 0;
+    check(`(${transport}) climax push builds steadily to the peak and stays within the speed cap`, rising && seen[0] <= 0.5 && seen.at(-1) === 1 && h.H.actEngine.intent.act === 'blowjob' && vmax <= (60 + 0.8 * 540) * 1.03, `${seen[0].toFixed(2)} → ${seen.at(-1)}, fastest ${Math.round(vmax)} %/s`);
+    check(`(${transport}) "I'm close" during a climax push keeps going instead of easing off`, held);
+    h.H.feedback('finish'); await h.advance(3000);
+    const pr = h.st.extensionSettings.handy_adaptive.profile;
+    check(`(${transport}) finishing ends the push, winds down, and remembers what was playing`, !h.H.climax.active && h.H.actEngine.intent.intensity <= 0.05 && pr.acts.blowjob.finishes === 1 && Object.keys(pr.finishers).length > 0 && Object.keys(pr.motifs).length > 0, `${Object.keys(pr.finishers).length} finishing phrases`);
+}
+{
+    const h = await boot({ seed: 430, settings: { library: lib } });
+    h.st.extensionSettings.handy_adaptive.profile.acts.doggy = { rateMul: 1, ampMul: 1, centerShift: 0, variation: 0.35, score: 0, n: 0, loves: 0, keptSec: 0, finishes: 3 };
+    h.H.feedback('climax'); await h.advance(4000);
+    const picked = h.H.actEngine.intent.act, told = /ASKED TO BE FINISHED/.test(h.st.prompts.filter(Boolean).pop());
+    check('"Finish me" from a standstill picks the act that has made you finish most, and tells the AI', picked === 'doggy' && h.H.climax.active && told, `picked ${picked}`);
+    await h.advance(95000);
+    const p = h.st.prompts.filter(Boolean).pop();
+    check('a push with no finish eases off after a minute at the peak and tells the AI', !h.H.climax.active && h.H.active() && h.H.actEngine.intent.intensity === 0.6 && /CLIMAX PUSH ENDED WITHOUT A FINISH/.test(p));
+    const h2 = await boot({ seed: 431, settings: { library: lib } });
+    h2.message('<handy climax="30"/>'); await h2.advance(8000);
+    h2.message('<handy act="handjob" intensity="0.3"/>'); await h2.advance(12000);
+    check('a new instruction ends a climax push', !h2.H.climax.active && h2.H.actEngine.intent.intensity === 0.3 && !h2.H.actEngine.intent.climax);
+    const h3 = await boot({ seed: 432, settings: { library: lib } });
+    h3.message('<handy climax="30"/>'); await h3.advance(8000); h3.H.stop(); await h3.advance(40000);
+    check('STOP ends a climax push for good', !h3.H.active() && !h3.H.climax.active);
+}
+
+// ---- arousal estimate ----
+{
+    const h = await boot({ seed: 440 });
+    h.message('<handy act="handjob" intensity="0.8"/>'); await h.advance(90000);
+    const mid = h.H.arousal.level; await h.advance(400000);
+    const capped = h.H.arousal.level, told = /AROUSAL ESTIMATE: about \d+%/.test(h.st.prompts.filter(Boolean).pop());
+    h.H.feedback('close'); const edge = h.H.arousal.level;
+    h.H.feedback('finish'); const after = h.H.arousal.level, label = h.H.arousal.label();
+    check('arousal estimate builds with time, never claims the edge without your signal, and follows your signals',
+        mid > 0.15 && mid < 0.6 && capped <= 0.85 && capped > 0.6 && edge >= 0.92 && after <= 0.1 && /just finished/.test(label) && told, `90 s: ${mid.toFixed(2)}, long: ${capped.toFixed(2)}, close: ${edge.toFixed(2)}, finished: ${after.toFixed(2)}`);
+    const h2 = await boot({ seed: 441 });
+    h2.message('<handy act="handjob" intensity="0.8"/>'); await h2.advance(60000);
+    const k0 = h2.H.arousal.k(); h2.H.feedback('close'); const k1 = h2.H.arousal.k();
+    await h2.advance(2000); h2.H.stop(); await h2.advance(240000);
+    check('it learns your pace from "I\'m close", and fades when nothing is moving', k1 > k0 * 1.1 && h2.st.extensionSettings.handy_adaptive.profile.arousalK === k1 && h2.H.arousal.level < 0.15, `pace x${(k1 / k0).toFixed(2)}, 4 min after stopping: ${h2.H.arousal.level.toFixed(2)}`);
+    const h3 = await boot({ seed: 442, settings: { arousalMeter: false } });
+    h3.message('<handy act="handjob" intensity="0.8"/>'); await h3.advance(30000);
+    check('with the estimate off, the AI is not sent one', !/AROUSAL ESTIMATE/.test(h3.st.prompts.filter(Boolean).pop()));
+}
+
+// ---- reading a card with a model ----
+{
+    const prof = { connectionManager: { profiles: [{ id: 'p-bg', name: 'Background' }] } };
+    const mk = async (seed, sendRequest, extra = {}) => {
+        const h = await boot({ seed, settings: extra });
+        Object.assign(h.st.extensionSettings, prof);
+        const calls = []; h.st.ConnectionManagerRequestService = { sendRequest: async (...a) => { calls.push(a); return sendRequest(...a); } };
+        Object.assign(h.st, { characters: [{ name: 'Mia', avatar: 'mia.png', description: '{{user}} is a shy virgin. Mia hates rough men. She is a calm, experienced courtesan.' }], characterId: 0 });
+        return { h, calls };
+    };
+    const good = await mk(450, async () => ({ content: '<think>…</think>{"tempo": -0.4, "reach": 0.6, "focus": -0.2, "wild": -0.5, "tease": 0.7, "eager": -0.6, "exp": 0.9, "why": "A patient expert."}' }));
+    good.h.message('<handy act="handjob" intensity="0.5"/>'); await good.h.advance(3000);
+    const r = good.h.st.extensionSettings.handy_adaptive.characters['mia.png'];
+    good.h.message('<handy intensity="0.6"/>'); await good.h.advance(3000);
+    check('a character card is read once by the chosen connection profile', r.source === 'ai' && r.traits.tease === 0.7 && r.traits.exp === 0.9 && r.why === 'A patient expert.' && good.calls.length === 1 && good.calls[0][0] === 'p-bg' && /Mia/.test(good.calls[0][1][1].content));
+    const bad = await mk(451, async () => { throw new Error('server not running'); });
+    bad.h.message('<handy act="handjob" intensity="0.5"/>'); await bad.h.advance(3000);
+    const rb = bad.h.st.extensionSettings.handy_adaptive.characters['mia.png'];
+    check('if the model can\'t be reached, the keyword reading is used and you are told once', rb.source === 'words' && rb.traits.exp > 0.6 && rb.traits.tempo === 0 && bad.h.H.active() && bad.h.toasts.filter((t) => /keyword reading/.test(t.m)).length === 1, JSON.stringify(rb.traits));
+    const junk = await mk(452, async () => 'I cannot help with that.');
+    junk.h.message('<handy act="handjob" intensity="0.5"/>'); await junk.h.advance(3000);
+    check('an unusable answer from the model leaves the keyword reading in place', junk.h.st.extensionSettings.handy_adaptive.characters['mia.png'].source === 'words');
+    const off = await mk(453, async () => ({ content: '{}' }), { styleProfile: '' });
+    off.h.message('<handy act="handjob" intensity="0.5"/>'); await off.h.advance(3000);
+    check('"Keywords only" never calls a model', off.calls.length === 0);
+    check('keyword reading ignores sentences about the user and things the character dislikes', rb.hits.join() === 'experienced,courtesan,calm' || (!rb.hits.includes('shy') && !rb.hits.includes('rough')), rb.hits.join(','));
+}
+
+// ---- signature moves ----
+{
+    const h = await boot({ seed: 460, settings: { library: lib } });
+    Object.assign(h.st, { characters: CARDS, groupId: 'g' });
+    h.message('<handy act="blowjob" intensity="0.7" depth="0.5"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(5000);
+    h.message('I call this one mine. <handy save="Velvet Spiral"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(2000);
+    const fav = h.st.extensionSettings.handy_adaptive.profile.favorites.find((f) => f.name === 'Velvet Spiral');
+    const pVex = h.st.prompts.filter(Boolean).pop();
+    h.message('<handy act="handjob" intensity="0.2"/>', { name: 'Lily', original_avatar: 'lily.png' }); await h.advance(4000);
+    const pLily = h.st.prompts.filter(Boolean).pop();
+    h.message('<handy favorite="velvet spiral"/>', { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(5000);
+    const i = h.H.actEngine.intent;
+    check('a character can name what is playing as their signature move', fav?.owner === 'vex.png' && fav.intent.act === 'blowjob' && /Vex's signature moves[^\n]*"Velvet Spiral"/.test(pVex));
+    check('signature moves belong to their character and can be called back by name', /Lily's signature moves: none yet/.test(pLily) && !/"Velvet Spiral"/.test(pLily) && i.act === 'blowjob' && i.intensity === 0.7 && i.depth === 0.5);
+    for (let k = 0; k < 12; k++) { h.message(`<handy save="move ${k}"/>`, { name: 'Vex', original_avatar: 'vex.png' }); await h.advance(600); }
+    const n = h.st.extensionSettings.handy_adaptive.profile.favorites.filter((f) => f.owner === 'vex.png').length;
+    check('the AI can keep at most eight signature moves per character', n === 8, `${n} kept`);
+}
+
 // ---- learning ----
 {
     const h = await boot({ seed: 180, settings: { library: lib } });

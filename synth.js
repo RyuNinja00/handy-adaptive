@@ -62,7 +62,8 @@ export function targetFor(lib, actName, intent, prefs, tMs = 0, drift = null) {
     const st = intent.style || {};   // the character in control (charstyle.js effect()), if any
     const intensity = clamp(fin(intent.intensity, 0.5), 0, 1);
     const felt = clamp(intensity + fin(st.intensityBias, 0), 0, 1);
-    const variation = clamp(fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0) + fin(st.varOff, 0), 0, 1);
+    // a climax push is steady and insistent: much less wandering
+    const variation = clamp((fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0) + fin(st.varOff, 0)) * (intent.climax ? 0.5 : 1), 0, 1);
     const explore = exploration(prefs, actName);
     const d = drift ? 1 + 0.15 * variation * Math.sin((2 * Math.PI * tMs) / drift.period + drift.phase) : 1;
     const rate = clamp(fin(prof.rate?.mean, 1.5) * lerp(0.6, 1.5, felt) * fin(ap.rateMul, 1) * fin(intent.speedMul, 1) * fin(st.rateMul, 1) * d, 0.15, 6);
@@ -91,7 +92,8 @@ export function reinforce(map, key, reward, alpha = 0.3) {
  * With experience: strongly prefers phrases you rated highly AND phrases you've
  * liked coming right after the previous one (learned combinations).
  */
-export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false, own = null) {
+export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false, own = null, climax = false) {
+    const finishers = climax ? prefs?.finishers || {} : null;
     const scores = prefs?.motifs || {}, trans = prefs?.trans || {};
     const beta = curious ? 0.3 : lerp(3.0, 0.8, explore);  // how greedy the choice is
     return pickWeighted(motifs, (m) => {
@@ -107,6 +109,8 @@ export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, 
         if (!(tk > 0.4)) value -= 0.5 * (recent[m.id] ?? 0);
         // the character in control has favourite phrases of their own (what you loved when they did it)
         if (own && own[m.id] !== undefined) value += 1.5 * own[m.id];
+        // pushing you over: what has made you finish before comes first
+        if (finishers && finishers[m.id]) value += 1.2 * Math.min(3, finishers[m.id]);
         const fit = Math.exp(-1.5 * Math.abs(Math.log(m.rate / rate)));
         return Math.exp(beta * clamp(value, -6, 6)) * fit;
     });
@@ -186,7 +190,7 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
     while (t < durationMs) {
         // A teasing character now and then stops between phrases and holds still for a moment.
         const tease = fin(intent.style?.tease, 0);
-        if (!first && tease > 0.05 && Math.random() < 0.35 * tease) {
+        if (!first && !intent.climax && tease > 0.05 && Math.random() < 0.35 * tease) {
             t += rnd(400, 1000) * (0.6 + tease);
             actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) });
         }
@@ -197,12 +201,12 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
         const kept = prefs?.acts?.[act]?.keptSec;
         const phraseMs = kept && tg.explore < 0.6 ? clamp(kept * 1000 * rnd(0.6, 1.1), 3000, 30000) : rnd(4000, 12000);
         const motifs = (tg.prof.motifs || []).filter((m) => validMotif(m) && !prefs?.banned?.[m.id]);   // phrases you firmly rejected never come back
-        const useProcedural = !motifs.length || Math.random() < 0.3 * tg.explore + 0.1 * tg.variation;
+        const useProcedural = !motifs.length || Math.random() < (0.3 * tg.explore + 0.1 * tg.variation) * (intent.climax ? 0.3 : 1);
         const phrase = useProcedural
             ? procedural(tg, phraseMs, clamp(pos, 0, 100))
             // now and then, even when dialed in, try a less-proven phrase (that's how new favorites and combos get found)
             : fromMotif(pickMotif(motifs, prefs, act, prev, tg.rate, tg.explore, recent,
-                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore), intent.style?.motifs), tg, phraseMs, clamp(pos, 0, 100));
+                !intent.climax && Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore), intent.style?.motifs, !!intent.climax), tg, phraseMs, clamp(pos, 0, 100));
         const i0 = actions.length - 1;
         for (const [dur, p] of phrase.strokes) {
             t += dur;

@@ -53,17 +53,26 @@ const LEXICON = [
     [/\b(lick(s|ing)?|kiss(es|ing)? the tip|the tip|kitten licks?)\b/, { focus: 0.25 }],
 ];
 const NEGATION = /\b(not|never|no|isn't|isnt|wasn't|hardly|anything but|far from)\s+(\w+\s+){0,2}$/i;
+// "hates rough men", "afraid of aggressive people": the word describes what they dislike, not how they are.
+const DISLIKE = /\b(hates?|dislikes?|despises?|loathes?|can'?t stand|cannot stand|afraid of|scared of|fears?|avoids?|disgusted by|turned off by|unlike|prefers? not)\s+(\w+\s+){0,3}$/i;
+// Sentences about the user ("{{user}} is shy") say nothing about how the character moves.
+const ABOUT_USER = /\{\{user\}\}|<user>/i;
+const sentences = (text) => String(text || '').split(/(?<=[.!?\n;])\s+|\n+/).filter((x) => x.trim());
 
 /** Read a style from the card text. Returns { traits, hits } (hits: which words counted). */
 export function seedStyle(text) {
-    const t = String(text || '').toLowerCase().replace(/\s+/g, ' ');
+    // Keep sentences that are about the character: one that starts with the user, or only mentions them
+    // as the subject ("{{user}} is a shy student"), is dropped.
+    const kept = sentences(text).filter((x) => !/^\s*(\{\{user\}\}|<user>)/i.test(x) && !/(\{\{user\}\}|<user>)('s)?\s+(is|are|was|has|have|seems?|looks?|feels?)\b/i.test(x));
+    const t = kept.join(' ').toLowerCase().replace(/\s+/g, ' ');
     const sum = Object.fromEntries(Object.keys(TRAITS).map((k) => [k, 0]));
     const hits = [];
     for (const [re, delta] of LEXICON) {
         const g = new RegExp(re.source, 'gi');
         let n = 0, m;
         while ((m = g.exec(t)) && n < 3) {
-            if (NEGATION.test(t.slice(Math.max(0, m.index - 30), m.index))) continue;   // "not shy" says nothing
+            const before = t.slice(Math.max(0, m.index - 40), m.index);
+            if (NEGATION.test(before.slice(-30)) || DISLIKE.test(before)) continue;   // "not shy", "hates rough men" say nothing
             n++; if (n === 1) hits.push(m[0]);
         }
         if (!n) continue;
@@ -127,4 +136,52 @@ export function textHash(s) {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
     return (h >>> 0).toString(36);
+}
+
+// ---- reading a card with a language model (optional; the keyword reading above is the fallback) ----
+
+/** The request sent to the model: the card, and a strict JSON answer format. */
+export function aiPrompt(name, cardText) {
+    const card = String(cardText || '').replace(/\s+\n/g, '\n').slice(0, 6000);
+    return [
+        { role: 'system', content: 'You rate fictional adult characters for a motion engine. Answer with one JSON object and nothing else.' },
+        { role: 'user', content:
+`Character: ${name}
+
+Card:
+"""
+${card}
+"""
+
+From the card, judge how ${name} would physically stroke or pleasure a partner with hands, mouth or body. Judge only ${name}: ignore what the card says about {{user}} or other people, and ignore things ${name} dislikes. If the card gives no hint for a trait, use its neutral value.
+
+Return exactly this JSON (numbers only, one decimal):
+{"tempo": -1..1, "reach": -1..1, "focus": -1..1, "wild": -1..1, "tease": 0..1, "eager": -1..1, "exp": 0..1, "why": "one short sentence"}
+
+tempo: -1 slow and unhurried, 0 neutral, 1 fast
+reach: -1 short strokes, 0 neutral, 1 long full strokes
+focus: -1 deep / at the base, 0 neutral, 1 at the tip
+wild: -1 smooth and steady, 0 neutral, 1 unpredictable
+tease: 0 never pauses, 0.15 neutral, 1 constantly stops and teases
+eager: -1 drags it out / denies, 0 neutral, 1 rushes to make the partner finish
+exp: 0 completely inexperienced, 0.5 neutral, 1 expert` },
+    ];
+}
+
+/** Read the model's answer. Returns { traits, why } or null when it can't be used. */
+export function parseAi(reply) {
+    const text = String(reply ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+    const blocks = text.match(/\{[^{}]*\}/g);
+    if (!blocks) return null;
+    for (const b of blocks.reverse()) {
+        let j; try { j = JSON.parse(b); } catch { continue; }
+        const traits = {};
+        let found = 0;
+        for (const [k, tr] of Object.entries(TRAITS)) {
+            const v = typeof j[k] === 'string' ? parseFloat(j[k]) : j[k];
+            if (Number.isFinite(v)) { traits[k] = +clamp(v, tr.min, tr.max).toFixed(2); found++; } else traits[k] = tr.neutral;
+        }
+        if (found >= 4) return { traits, why: typeof j.why === 'string' ? j.why.slice(0, 200) : '' };
+    }
+    return null;
 }

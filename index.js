@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.5.0)
+// Handy Adaptive — SillyTavern extension (v0.6.0)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -7,7 +7,7 @@
 // a fallback (<handy pattern="wave" .../>).
 
 import { synthesize, resolveAct, targetFor, posAt, exploration, reinforce, REWARD, STARTER_LIBRARY } from './synth.js';
-import { TRAITS, seedStyle, effect as styleEffect, describe as describeStyle, EMPTY_LEARNED, textHash } from './charstyle.js';
+import { TRAITS, seedStyle, effect as styleEffect, describe as describeStyle, EMPTY_LEARNED, textHash, aiPrompt, parseAi } from './charstyle.js';
 
 const MODULE = 'handy_adaptive';
 const ctx = () => SillyTavern.getContext();
@@ -37,6 +37,9 @@ const DEFAULTS = {
     detectClimax: true,         // notice "I'm close" / "I'm cumming" in your own messages
     safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
+    readWpm: 220,               // several tags in one reply play in order at this reading speed (words/min); 0 = all at once
+    arousalMeter: true,         // keep a running arousal estimate and tell the AI
+    styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
     charStyles: true,           // each character moves the Handy their own way (read from the card, refined by feedback)
     characters: {},             // character key (avatar) -> their style and history with you
     library: null,              // imported motion_library.json (null = starter profiles)
@@ -51,6 +54,8 @@ const EMPTY_PROFILE = () => ({
     favorites: [], log: [], sessions: 0,
     motifStats: {}, // motif id -> { love, nope }
     banned: {},     // motif ids you have firmly rejected
+    finishers: {},  // motif id -> how often it was playing when you finished
+    arousalK: null, // learned pace: how fast you build (1 / seconds to the edge at full intensity)
 });
 
 function S() {
@@ -233,6 +238,7 @@ const actEngine = {
         if (calib.gate(() => this.apply(cmd))) return;   // first motion of the session: confirm the setup first
         const my = epoch; this.starting++;
         try {
+            if (!cmd._climax && climax.active) climax.cancel();   // any other instruction ends a climax push
             const act = resolveAct(LIB(), cmd.act) || this.intent.act || Object.keys(LIB().acts)[0];
             if (act !== this.intent.act) {
                 this.recordKept();
@@ -551,7 +557,7 @@ const actEngine = {
         if (!this.running || !i.act) return 'stopped';
         const tg = targetFor(LIB(), i.act, { ...i, style: chars.effect() }, S().profile);
         const bl = Object.entries(i.blend || {}).map(([k, v]) => `${k} ${v}`).join(', ');
-        return `act ${i.act}${bl ? ` (blended with ${bl})` : ''}, intensity ${i.intensity.toFixed(2)}, ≈${tg.rate.toFixed(1)} strokes/s, range ${Math.round(tg.center - tg.amp / 2)}-${Math.round(tg.center + tg.amp / 2)}`;
+        return `act ${i.act}${bl ? ` (blended with ${bl})` : ''}${i.climax ? ', pushing to climax' : ''}, intensity ${i.intensity.toFixed(2)}, ≈${tg.rate.toFixed(1)} strokes/s, range ${Math.round(tg.center - tg.amp / 2)}-${Math.round(tg.center + tg.amp / 2)}`;
     },
 };
 
@@ -629,6 +635,8 @@ const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting 
 function stopAll(reason) {
     epoch++;   // cancels every start that is in progress or queued
     clearTimeout(windTimer);
+    if (!inBeat) clearBeats();   // tags still waiting for their moment in the reply are dropped
+    climax.cancel();
     const jobs = [];
     if (calib.active) jobs.push(calib.abort());
     if (actEngine.running || actEngine.starting > 0) jobs.push(actEngine.stop(reason));
@@ -638,6 +646,110 @@ function stopAll(reason) {
     return done;
 }
 
+// ---------------------------------------------------------------- reply pacing
+// A reply can hold several tags. Each plays when the reader reaches it: the first at once, the rest after
+// the words between them at the reading speed. STOP, a new AI message or a chat change drops what is waiting.
+let beats = [], inBeat = false;
+function clearBeats() { for (const t of beats) clearTimeout(t); beats = []; }
+function runBeat(a) {
+    if (isStop(a)) { inBeat = true; try { stopAll(); } finally { inBeat = false; } return; }   // later tags in the same reply still play
+    enqueue(() => runCommand(a));
+}
+
+// ---------------------------------------------------------------- climax push
+// <handy climax="30"/> or the "Finish me" button: build steadily to a peak over that many seconds, on the act
+// that has made you finish most (unless one is named or already playing), favouring the phrases that were
+// playing when you finished before. It holds the peak for a minute, then eases off if you haven't finished.
+const climax = {
+    active: false, timer: null, t0: 0, ms: 30000, from: 0.5, sent: 0,
+    bestAct() {
+        const pr = S().profile, r = chars.current(), lib = LIB();
+        const score = (a) => 2 * (pr.acts[a]?.finishes || 0) + (pr.acts[a]?.edges || 0) * 0.5 + Math.max(0, r?.acts?.[a]?.score || 0);
+        const best = Object.keys(lib.acts).map((a) => [a, score(a)]).sort((x, y) => y[1] - x[1])[0];
+        return best && best[1] > 0 ? best[0] : (actEngine.intent.act || Object.keys(lib.acts)[0]);
+    },
+    async start(a = {}) {
+        if (!S().enabled) return;
+        if (calib.gate(() => this.start(a))) return;
+        const secs = clamp(num(a.climax) > 0 ? num(a.climax) : num(a.duration) > 0 ? num(a.duration) : 30, 10, 90);
+        const act = resolveAct(LIB(), a.act) || (actEngine.running ? actEngine.intent.act : this.bestAct());
+        const from = clamp(actEngine.running ? actEngine.intent.intensity : 0.45, 0.45, 0.9);
+        this.cancel();
+        Object.assign(this, { active: true, t0: Date.now(), ms: secs * 1000, from, sent: from });
+        actEngine.intent.climax = true;
+        await actEngine.apply({ act, intensity: from, _climax: true });
+        if (!this.active) return;                               // stopped while it was starting
+        if (!actEngine.running) return this.cancel();
+        this.timer = setInterval(() => this.tick(), 1000);
+        ui.refresh(); updatePrompt();
+    },
+    tick() {
+        if (!this.active) return;
+        if (!actEngine.running) return this.cancel();
+        const el = Date.now() - this.t0, k = clamp(el / this.ms, 0, 1);
+        if (el > this.ms + 60000) {   // a minute at the peak and no finish: ease off and let the AI decide what next
+            this.cancel();
+            actEngine.intent.intensity = 0.6;
+            logEvent('climax-missed');
+            enqueue(() => actEngine.running && actEngine.regen());
+            ui.refresh(); return updatePrompt();
+        }
+        const target = this.from + (1 - this.from) * Math.pow(k, 1.4);
+        if (target - this.sent >= 0.08 || (k >= 1 && this.sent < 1)) {   // a handful of steps, each joined at a turning point
+            this.sent = k >= 1 ? 1 : target;
+            actEngine.intent.intensity = this.sent;
+            lastActivity = Date.now();
+            enqueue(() => actEngine.running && this.active && actEngine.regen());
+            ui.refresh();
+        }
+    },
+    cancel() {
+        clearInterval(this.timer); this.timer = null;
+        this.active = false; actEngine.intent.climax = false;
+    },
+};
+
+// ---------------------------------------------------------------- arousal estimate
+// A running guess at how close you are, from what is playing, for how long, and your own signals. It is
+// only an estimate: without an "I'm close" from you it never claims more than 85%, and it learns your pace
+// from when you do signal. The AI is told, so characters can pace, tease and time a finish.
+const arousal = {
+    level: 0, last: Date.now(), edgeUntil: 0, refractoryUntil: 0, atCap: 0, shown: -1,
+    DEFAULT_K: 1 / 240,
+    k() { return S().profile.arousalK ?? this.DEFAULT_K; },
+    setK(v) { S().profile.arousalK = clamp(v, 1 / 900, 1 / 45); save(); },
+    tick(now = Date.now()) {
+        const dt = clamp((now - this.last) / 1000, 0, 5); this.last = now;
+        if (!dt) return;
+        const i = actEngine.running ? clamp(actEngine.intent.intensity, 0, 1) : hamp.running ? clamp(hamp.params.speed / 100, 0, 1) : null;
+        if (i === null) this.level -= (this.level * dt) / 90;   // nothing moving: it fades
+        else {
+            const g = now < this.refractoryUntil ? 0.3 : 1;
+            this.level += dt * (this.k() * g * (0.3 + 0.7 * i) - (this.level * (1 - i) * (1 - i)) / 120);
+        }
+        const cap = now < this.edgeUntil ? 1 : 0.85;
+        if (i !== null && this.level >= cap && cap < 1) {
+            // sitting at "nearly there" for a minute with no word from you: the guess runs fast for you
+            this.atCap += dt;
+            if (this.atCap > 60) { this.atCap = 0; this.setK(this.k() * 0.88); this.level = 0.72; }
+        } else this.atCap = 0;
+        this.level = clamp(this.level, 0, cap);
+        if (Math.abs(this.level - this.shown) >= 0.05) { this.shown = this.level; ui.arousal(); updatePrompt(); }
+    },
+    learn() { if (anyRunning() && this.level < 0.88) this.setK(this.k() * Math.pow(0.9 / Math.max(this.level, 0.25), 0.25)); },   // you got there sooner than guessed
+    close() { this.learn(); this.level = Math.max(this.level, 0.92); this.edgeUntil = Date.now() + 45000; this.shown = this.level; ui.arousal(); },
+    finish() { this.learn(); this.level = 0.05; this.edgeUntil = 0; this.refractoryUntil = Date.now() + 300000; this.shown = this.level; ui.arousal(); },
+    label() {
+        if (Date.now() < this.refractoryUntil && this.level < 0.3) return 'just finished: sensitive and recovering';
+        const l = this.level;
+        return l < 0.15 ? 'not warmed up yet' : l < 0.4 ? 'warming up' : l < 0.65 ? 'building' : l < 0.86 ? 'getting close' : 'on the edge';
+    },
+    text() {
+        if (!S().arousalMeter) return '';
+        return `AROUSAL ESTIMATE: about ${Math.round(this.level * 100)}% (${this.label()}). This is a guess from the motion, the time and the user's own signals; use it to pace the scene (tease and build when it is low, back off or hold to edge them when it is high, <handy climax/> to push them over). Trust what the user says over this number.`;
+    },
+};
+
 // ---------------------------------------------------------------- character styles
 // Every character gets their own way of moving the Handy: read from their card, shaped by your feedback
 // while they are in control, and remembered. The character in control is whoever wrote the last message
@@ -645,6 +757,7 @@ function stopAll(reason) {
 const chars = {
     who: null,          // key of the character whose tag is driving the device
     seen: new Set(),    // keys whose card was checked for changes this session
+    reading: new Set(), tried: new Set(), warned: false,
     keyOf(msg) {
         const c = ctx();
         if (msg?.original_avatar) return msg.original_avatar;   // group chats tag each message with its character
@@ -675,18 +788,50 @@ const chars = {
         if (!r) {
             const seed = seedStyle(card?.text || '');
             r = all[key] = { name: card?.name || key.replace(/^name:/, '').replace(/\.png$/i, ''), traits: seed.traits, hits: seed.hits, custom: false,
-                hash: card ? textHash(card.text) : null, learned: EMPTY_LEARNED(), motifs: {}, acts: {},
+                source: 'words', hash: card ? textHash(card.text) : null, learned: EMPTY_LEARNED(), motifs: {}, acts: {},
                 minutes: 0, loves: 0, nopes: 0, edges: 0, finishes: 0, intensity: null, since: new Date().toISOString().slice(0, 10) };
             save();
         } else if (card) {
             r.name = card.name || r.name;
             const h = textHash(card.text);
             if (h !== r.hash && !r.custom) {   // the card was edited: read it again (what you taught them is kept)
-                const seed = seedStyle(card.text); r.traits = seed.traits; r.hits = seed.hits; r.hash = h; save();
+                const seed = seedStyle(card.text); r.traits = seed.traits; r.hits = seed.hits; r.hash = h; r.source = 'words'; save();
             }
         }
         r.learned = { ...EMPTY_LEARNED(), ...r.learned }; r.motifs ??= {}; r.acts ??= {};
+        // A better reading from a language model, once per card (and again if the card changes).
+        if (card && !r.custom && r.aiHash !== r.hash && !this.tried.has(key + r.hash)) this.aiRead(key).catch(() => {});
         return r;
+    },
+    // The connection profile chosen to read cards, if it exists and this SillyTavern can call profiles.
+    profileId() {
+        const want = String(S().styleProfile || '').trim(); if (!want) return null;
+        const c = ctx(), list = c.extensionSettings?.connectionManager?.profiles;
+        const p = Array.isArray(list) ? list.find((x) => x?.name === want) : null;
+        return p && typeof c.ConnectionManagerRequestService?.sendRequest === 'function' ? p.id : null;
+    },
+    // Ask the model to rate the seven traits from the card. The keyword reading stays if anything goes wrong.
+    async aiRead(key, force = false) {
+        const r = S().characters?.[key], card = this.card(key), id = this.profileId();
+        if (!r || !card || !card.text.trim() || !id || (r.custom && !force) || this.reading.has(key)) return false;
+        const hash = textHash(card.text);
+        this.reading.add(key); this.tried.add(key + hash);
+        try {
+            const res = await ctx().ConnectionManagerRequestService.sendRequest(id, aiPrompt(card.name, card.text), 400);
+            const out = parseAi(typeof res === 'string' ? res : res?.content ?? res?.text ?? res?.choices?.[0]?.message?.content ?? '');
+            if (!out) throw new Error('the model gave no usable answer');
+            const cur = S().characters?.[key];
+            if (!cur || (cur.custom && !force)) return false;   // deleted, or you adjusted it meanwhile
+            Object.assign(cur, { traits: out.traits, why: out.why, source: 'ai', custom: false, hash, aiHash: hash });
+            save();
+            if (actEngine.running && this.activeKey() === key) enqueue(() => actEngine.running && actEngine.regen());
+            ui.refresh(); updatePrompt();
+            return true;
+        } catch (e) {
+            console.warn('[Handy] reading the card with a model failed', e);
+            if (!this.warned) { this.warned = true; toast(`Couldn't read ${card.name}'s card with the "${S().styleProfile}" profile (${e?.message || e}). Using the keyword reading instead.`, 'warning'); }
+            return false;
+        } finally { this.reading.delete(key); }
     },
     current() { return this.get(this.activeKey()); },
     // What the synthesizer needs: the style's effect on motion, plus the character's own favourite phrases.
@@ -814,6 +959,7 @@ const FEEDBACK = {
     love:    { label: 'Love this', icon: 'fa-heart' },
     nope:    { label: 'Not this',  icon: 'fa-thumbs-down' },
     close:   { label: "I'm close", icon: 'fa-fire' },
+    climax:  { label: 'Finish me', icon: 'fa-bolt' },
     finish:  { label: 'Finished',  icon: 'fa-champagne-glasses' },
 };
 
@@ -822,7 +968,8 @@ const FEEDBACK = {
 let edges = 0;
 function closeSignal(fromText = false) {
     edges++;
-    const s = S(), pull = s.closeAction !== 'ai';
+    const s = S(), pull = s.closeAction !== 'ai' && !climax.active;   // during a climax push, "close" means keep going
+    arousal.close();
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
     if (actEngine.running) {
         creditMotifs(0.6, 10000, 0.2); const a = actPrefs(actEngine.intent.act); a.edges = (a.edges || 0) + 1;
@@ -848,8 +995,13 @@ function finishSignal(fromText = false) {
     if (actEngine.running) {
         creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
         const r = chars.current(); if (r) { r.finishes++; chars.act(r, actEngine.intent.act).score += 1; }
+        // remember exactly which phrases were playing: a later climax push reaches for these first
+        const fz = S().profile.finishers, now = Date.now();
+        for (const id of new Set(actEngine.used.filter((u) => u.motif && u.from < now && u.to > now - 20000).map((u) => u.motif))) fz[id] = (fz[id] || 0) + 1;
         save();
     }
+    arousal.finish();
+    climax.cancel();
     logEvent('finished');
     if (s.finishAction === 'stop') stopAll('you finished');
     else if (s.finishAction === 'winddown') {
@@ -870,6 +1022,11 @@ function feedback(kind) {
     lastActivity = Date.now();
     if (kind === 'close') return closeSignal();
     if (kind === 'finish') return finishSignal();
+    if (kind === 'climax') {   // "Finish me": start the push now and tell the AI
+        enqueue(() => climax.start({})); logEvent('finish-me'); updatePrompt();
+        if (S().autoReplyOnFeedback) debouncedReply(800);
+        return;
+    }
     if (actEngine.running) {
         const i = actEngine.intent, a = actPrefs(i.act);
         if (f.act) { f.act(i); absorb(0.15); }
@@ -897,13 +1054,34 @@ function saveFavorite() {
     const label = actEngine.running ? actEngine.intent.act : hamp.pattern;
     const name = prompt('Name this favorite:', label); if (!name) return;
     const pr = S().profile;
-    pr.favorites = pr.favorites.filter((f) => f.name !== name);
+    // Saved while a character is in control, it becomes that character's signature move.
+    const owner = actEngine.running ? chars.activeKey() : null;
+    pr.favorites = pr.favorites.filter((f) => !(f.name === name && (f.owner ?? null) === owner));
     if (actEngine.running) {
         const i = actEngine.intent;
-        pr.favorites.push({ name, kind: 'act', intent: structuredClone({ act: i.act, intensity: i.intensity, variation: i.variation, depth: i.depth, blend: i.blend, speedMul: i.speedMul, ampMul: i.ampMul, depthOff: i.depthOff, varOff: i.varOff }) });
+        pr.favorites.push({ name, kind: 'act', ...(owner ? { owner } : {}), intent: structuredClone({ act: i.act, intensity: i.intensity, variation: i.variation, depth: i.depth, blend: i.blend, speedMul: i.speedMul, ampMul: i.ampMul, depthOff: i.depthOff, varOff: i.varOff }) });
         feedback('love');
     } else pr.favorites.push({ name, kind: 'pattern', pattern: hamp.pattern, params: { ...hamp.params } });
     logEvent('favorite:' + name); save(); ui.refresh(); updatePrompt(); toast(`Saved “${name}”`, 'success');
+}
+// <handy save="NAME"/>: the character names what is playing now as one of their signature moves.
+function saveSignature(raw) {
+    const name = String(raw === true ? '' : raw).replace(/["<>]/g, '').trim().slice(0, 40);
+    if (!name || !actEngine.running) return;
+    const pr = S().profile, owner = chars.activeKey(), i = actEngine.intent, r = chars.current();
+    pr.favorites = pr.favorites.filter((f) => !(f.name.toLowerCase() === name.toLowerCase() && (f.owner ?? null) === owner));
+    pr.favorites.push({ name, kind: 'act', by: 'ai', ...(owner ? { owner } : {}), intent: structuredClone({ act: i.act, intensity: i.intensity, variation: i.variation, depth: i.depth, blend: i.blend, speedMul: i.speedMul, ampMul: i.ampMul, depthOff: i.depthOff, varOff: i.varOff }) });
+    // the AI can keep eight per character; the oldest of its own goes first (yours are never dropped)
+    const mine = pr.favorites.filter((f) => f.by === 'ai' && (f.owner ?? null) === owner);
+    if (mine.length > 8) pr.favorites.splice(pr.favorites.indexOf(mine[0]), 1);
+    save(); ui.refresh(); updatePrompt();
+    toast(`${r?.name || 'The AI'} named a signature move: “${name}”`, 'info');
+}
+// A name belongs first to the character in control, then to you (no owner), then to anyone.
+function findFavorite(name) {
+    const n = String(name).trim().toLowerCase(), key = chars.activeKey();
+    const all = S().profile.favorites.filter((f) => f.name.toLowerCase() === n);
+    return all.find((f) => f.owner && f.owner === key) || all.find((f) => !f.owner) || all[0] || null;
 }
 async function playFavorite(f) {
     if (f.kind === 'act') await actEngine.apply({ act: f.intent.act, preset: f.intent });
@@ -946,7 +1124,9 @@ function climaxCue(text) {
 }
 function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
-    if (!msg || !msg.is_user || !S().enabled || !anyActive()) return;
+    if (!msg || !msg.is_user) return;
+    lastActivity = Date.now();   // you are here and taking part: the idle timer and the learning both count it
+    if (!S().enabled || !anyActive()) return;
     if (isUserStop(msg.mes)) {
         logEvent('stop');
         stopAll('you said stop');
@@ -1079,19 +1259,28 @@ function profileText() {
     L.push(`- depth: -1 = deep/at the base, +1 = shallow/at the tip. variation: 0 = mechanical, 1 = wild and unpredictable (omit to use the user's learned taste).`);
     L.push(`- blend mixes in a little of other acts for transitions or creative combinations (e.g. a blowjob with handjob: act="blowjob" blend="handjob:0.4").`);
     L.push(`- <handy stop/> stops. Don't emit a tag if nothing physical changed.`);
+    L.push(`- A reply may hold several tags. Put each one right where that moment happens in your text: they play in order as the user reads (e.g. a slow start, a tag mid-reply where it speeds up, another where it eases off).`);
+    L.push(`- <handy climax="30"/> pushes the user over the edge: a steady build to a peak over that many seconds (10-90), using what has made them finish before. Use it when the scene calls for the user to cum, not before.`);
     L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
     for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     if (loves.length) L.push(`Recently loved: ${loves.map((e) => `${e.act} @ intensity ${e.intensity}`).join(', ')}.`);
-    if (pr.favorites.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${pr.favorites.map((f) => `"${f.name}"`).join(', ')}.`);
+    const ck = chars.activeKey(), cr = ck ? s.characters?.[ck] : null;
+    const general = pr.favorites.filter((f) => !f.owner), sig = ck ? pr.favorites.filter((f) => f.owner === ck) : [];
+    if (general.length) L.push(`Saved favorites (play with <handy favorite="NAME"/>): ${general.map((f) => `"${f.name}"`).join(', ')}.`);
+    if (cr) L.push(`${cr.name}'s signature moves${sig.length ? ` (play with <handy favorite="NAME"/>; the user knows them by name, so call back to them): ${sig.map((f) => `"${f.name}"`).join(', ')}` : ': none yet'}. When the user clearly loves what is playing, ${cr.name} may name it as a new signature move with <handy save="A SHORT NAME"/> (rarely; at most a handful).`);
     const cs = S().charStyles ? chars.text() : '';
     if (cs) L.push(cs);
+    const ar = arousal.text();
+    if (ar) L.push(ar);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
-    const FB = { close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
+    const FB = { 'finish-me': 'ASKED TO BE FINISHED (the device is already building to a climax: push them over in character)',
+        'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
+        close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
         finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
-    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (FB[e.kind] || e.kind) + (e.act ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : ' The device has already eased off a little.') : ''}`);
+    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (FB[e.kind] || e.kind) + (e.act ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : climax.active ? ' The device is pushing them over: keep going.' : ' The device has already eased off a little.') : ''}`);
     L.push(']');
     return L.join('\n');
 }
@@ -1115,9 +1304,19 @@ function handleMessage(id) {
     if (tags.length) {
         const who = chars.keyOf(msg);
         if (who && who !== chars.who) { chars.who = who; if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); }   // a different character takes over
+        // In order. The first acts at once; each later one waits for the words between it and the first,
+        // at your reading speed, so a reply that builds, peaks and eases off plays out as you read it.
+        const text = msg.mes, wpm = num(S().readWpm);
+        const wordsTo = (idx) => (text.slice(0, idx).replace(TAG_RE, ' ').match(/\S+/g) || []).length;
+        const w0 = wordsTo(tags[0].index);
+        clearBeats();
+        for (const t of tags) {
+            const a = parseAttrs(t[1]);
+            const delay = wpm > 0 ? Math.min(180000, ((wordsTo(t.index) - w0) / wpm) * 60000) : 0;
+            if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
+            else beats.push(setTimeout(() => runBeat(a), delay));
+        }
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
-        // In order, one at a time. A stop tag acts at once and cancels the tags before it.
-        for (const t of tags) { const a = parseAttrs(t[1]); if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
     }
     updatePrompt();
 }
@@ -1126,7 +1325,13 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
-    if (a.favorite) { const f = S().profile.favorites.find((x) => x.name.toLowerCase() === String(a.favorite).toLowerCase()); if (f) return playFavorite(f); }
+    if (a.climax !== undefined) return climax.start(a);
+    const fav = a.favorite ?? a.move;
+    if (fav && fav !== true) { const f = findFavorite(fav); if (f) return playFavorite(f); }
+    if (a.save !== undefined) {   // name what is playing (after applying anything else in the same tag)
+        const rest = { ...a }; delete rest.save;
+        return Promise.resolve(rest.act || rest.intensity !== undefined || rest.blend ? actEngine.apply(rest) : null).then(() => saveSignature(a.save));
+    }
     if (a.act || a.intensity !== undefined || a.blend) return actEngine.apply(a);
     if (!a.pattern && actEngine.running && (a.depth !== undefined || a.variation !== undefined)) return actEngine.apply(a);   // e.g. <handy depth="-0.5"/>
     if (a.pattern) {
@@ -1174,6 +1379,8 @@ const ui = {
         <option value="ai">Let the AI decide</option>
       </select></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_session_check"> Ask me to confirm calibration before the first motion of each session</label>
+    <label>Reading speed for replies with several tags (words/min, 0 = play all at once) <input type="number" id="handy_wpm" class="text_pole" min="0" max="600"></label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
@@ -1191,6 +1398,9 @@ const ui = {
     <b>Character styles</b>
     <label class="checkbox_label"><input type="checkbox" id="handy_charstyles"> Give each character their own stroking style</label>
     <small>Read from the character card (personality, description, scenario, tags), shaped by your feedback while they're in control, and remembered per character.</small>
+    <label>Read character cards with
+      <select id="handy_style_profile" class="text_pole"></select></label>
+    <small>A connection profile reads each card once and rates the character (more accurate than keywords, and it understands context). Pick your local <code>Background</code> profile so it costs nothing. Keywords are used until it answers, or if it can't.</small>
     <select id="handy_char_sel" class="text_pole"></select>
     <div id="handy_char_desc" class="handy-lib"></div>
     <div id="handy_char_traits" class="handy-traits">${Object.entries(TRAITS).map(([k, t]) => `<label title="${esc(t.low)} ↔ ${esc(t.high)}"><span>${esc(t.label)}</span><small>${esc(t.low)}</small><input type="range" data-trait="${k}" min="${t.min}" max="${t.max}" step="0.05"><small>${esc(t.high)}</small></label>`).join('')}</div>
@@ -1237,6 +1447,8 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked');
+        $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.warned = false; save(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
         const restyle = () => { if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); ui.refresh(); updatePrompt(); };
         $('#handy_char_sel').on('change', () => ui.refresh());
@@ -1248,7 +1460,8 @@ const ui = {
             const key = $('#handy_char_sel').val(), r = selChar(); if (!r) return;
             const card = chars.card(key);
             if (!card) return toast('That character is not loaded in SillyTavern right now.', 'warning');
-            const seed = seedStyle(card.text); Object.assign(r, { traits: seed.traits, hits: seed.hits, custom: false, hash: textHash(card.text) }); save(); restyle();
+            const seed = seedStyle(card.text); Object.assign(r, { traits: seed.traits, hits: seed.hits, custom: false, source: 'words', why: '', aiHash: null, hash: textHash(card.text) }); save(); restyle();
+            chars.aiRead(key, true).catch(() => {});
         });
         $('#handy_char_forget').on('click', () => { const r = selChar(); if (r && confirm(`Forget what your feedback taught ${r.name}? (Their card-based style stays.)`)) { Object.assign(r, { learned: EMPTY_LEARNED(), motifs: {}, acts: {}, loves: 0, nopes: 0, intensity: null }); save(); restyle(); } });
         $('#handy_char_delete').on('click', () => { const key = $('#handy_char_sel').val(), r = selChar(); if (r && confirm(`Delete ${r.name}'s style and history?`)) { delete S().characters[key]; chars.seen.delete(key); save(); restyle(); } });
@@ -1270,10 +1483,18 @@ const ui = {
         }));
         $('#handy_lib_reset').on('click', () => { S().library = null; save(); ui.refresh(); updatePrompt(); });
         $('#handy_export').on('click', () => {
-            const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(S().profile, null, 2)], { type: 'application/json' })), download: 'handy-profile.json' }); a.click();
+            const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify({ ...S().profile, characters: S().characters }, null, 2)], { type: 'application/json' })), download: 'handy-profile.json' }); a.click();
         });
-        $('#handy_import').on('click', () => pickFile((j) => { S().profile = { ...EMPTY_PROFILE(), ...j }; save(); ui.refresh(); updatePrompt(); toast('Profile imported', 'success'); }));
-        $('#handy_reset').on('click', () => { if (confirm('Erase everything the AI has learned about your taste? (The motion library is kept.)')) { S().profile = EMPTY_PROFILE(); save(); ui.refresh(); updatePrompt(); } });
+        $('#handy_import').on('click', () => pickFile((j) => {
+            const { characters, ...taste } = j || {};
+            S().profile = { ...EMPTY_PROFILE(), ...taste };
+            if (characters && typeof characters === 'object' && !Array.isArray(characters)) { S().characters = characters; chars.seen.clear(); }
+            save(); ui.refresh(); updatePrompt(); toast('Profile imported', 'success'); }));
+        $('#handy_reset').on('click', () => { if (confirm('Erase everything the AI has learned about your taste? (The motion library is kept.)')) {
+            S().profile = EMPTY_PROFILE();
+            if (Object.keys(S().characters || {}).length && confirm('Also erase every character\'s style and history?')) { S().characters = {}; chars.seen.clear(); chars.tried.clear(); }
+            save(); ui.refresh(); updatePrompt();
+        } });
 
         const fb = Object.entries(FEEDBACK).map(([k, f]) => `<div class="handy-btn ${k}" data-fb="${k}" title="${f.label}"><i class="fa-solid ${f.icon}"></i><span>${f.label}</span></div>`).join('');
         $('body').append(`
@@ -1286,6 +1507,7 @@ const ui = {
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
+    <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
   </div>
@@ -1323,7 +1545,7 @@ const ui = {
         $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
         $('#handy_fav').on('click', saveFavorite);
-        $('#handy_favs').on('change', function () { const f = S().profile.favorites.find((x) => x.name === this.value); if (f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
+        $('#handy_favs').on('change', function () { const f = S().profile.favorites[+this.value]; if (this.value !== '' && f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
         $('#handy_collapse').on('click', () => $('#handy_panel').toggleClass('collapsed'));
         // Live position, from the motion plan itself: no extra requests to the device.
         const dot = document.getElementById?.('handy_pos_dot');
@@ -1344,7 +1566,9 @@ const ui = {
         const cur = actEngine.intent.act || $('#handy_act').val();
         $('#handy_act').html(acts.map((a) => `<option ${a === cur ? 'selected' : ''}>${esc(a)}</option>`).join(''));
         if (actEngine.running) $('#handy_intensity').val(actEngine.intent.intensity);
-        $('#handy_favs').html(`<option value="">— favorites —</option>` + pr.favorites.map((f) => `<option>${esc(f.name)}</option>`).join(''));
+        const akFav = chars.activeKey();
+        const favs = pr.favorites.map((f, i) => ({ f, i })).sort((x, y) => (y.f.owner === akFav && !!akFav) - (x.f.owner === akFav && !!akFav));   // the character in control first
+        $('#handy_favs').html(`<option value="">— favorites and signature moves —</option>` + favs.map(({ f, i }) => `<option value="${i}">${f.owner ? esc(s.characters?.[f.owner]?.name || 'character') + ' · ' : ''}${esc(f.name)}</option>`).join(''));
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
@@ -1353,7 +1577,11 @@ const ui = {
         const sel = keys.includes($('#handy_char_sel').val()) ? $('#handy_char_sel').val() : (ak && keys.includes(ak) ? ak : keys[0]);
         $('#handy_char_sel').html(keys.length ? keys.map((k) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(s.characters[k].name)}${k === ak ? ' (in control)' : ''}</option>`).join('') : '<option value="">— no characters yet —</option>');
         const sr = sel ? s.characters[sel] : null;
-        $('#handy_char_desc').text(sr ? `${describeStyle(sr.traits, sr.learned)}.${sr.hits?.length && !sr.custom ? ` From the card: ${sr.hits.slice(0, 8).join(', ')}.` : sr.custom ? ' Adjusted by you.' : ' Nothing in the card suggested a style, so it starts balanced.'}${sr.minutes ? ` ${sr.minutes} min together.` : ''}${sr.loves || sr.nopes ? ` ❤ ${sr.loves} · 👎 ${sr.nopes}.` : ''}` : 'Open a chat with a character and they will get a style.');
+        const profs = ctx().extensionSettings?.connectionManager?.profiles, names = Array.isArray(profs) ? profs.map((x) => x?.name).filter(Boolean) : [];
+        const want = String(s.styleProfile || '');
+        $('#handy_style_profile').html(`<option value="">Keywords only (no AI)</option>` + names.map((n) => `<option value="${esc(n)}" ${n === want ? 'selected' : ''}>${esc(n)}</option>`).join('') + (want && !names.includes(want) ? `<option value="${esc(want)}" selected>${esc(want)} (not found: using keywords)</option>` : ''));
+        $('#handy_arousal_fill, #handy_arousal_pct').closest('.handy-arousal').toggle(!!s.arousalMeter);
+        $('#handy_char_desc').text(sr ? `${describeStyle(sr.traits, sr.learned)}.${sr.custom ? ' Adjusted by you.' : sr.source === 'ai' ? ` Read by your ${s.styleProfile} model${sr.why ? `: ${sr.why}` : '.'}` : sr.hits?.length ? ` From the card: ${sr.hits.slice(0, 8).join(', ')}.` : ' Nothing in the card suggested a style, so it starts balanced.'}${sr.minutes ? ` ${sr.minutes} min together.` : ''}${sr.loves || sr.nopes ? ` ❤ ${sr.loves} · 👎 ${sr.nopes}.` : ''}` : 'Open a chat with a character and they will get a style.');
         for (const k of Object.keys(TRAITS)) $(`#handy_char_traits input[data-trait="${k}"]`).val(sr ? sr.traits[k] : TRAITS[k].neutral);
         $('#handy_char_traits, #handy_char_reread, #handy_char_forget, #handy_char_delete').toggle(!!sr);
         const c = cal();
@@ -1366,6 +1594,10 @@ const ui = {
         $('#handy_profile_summary').text(trained.length
             ? trained.map(([k, a]) => { const x = exploration(pr, k); return `${k}: ${x > 0.6 ? 'still exploring' : x > 0.25 ? 'learning your taste' : 'dialed in'} (${a.n} ratings), speed x${a.rateMul.toFixed(2)}, length x${a.ampMul.toFixed(2)}, ${a.centerShift >= 0 ? 'tip' : 'base'} ${Math.abs(a.centerShift).toFixed(0)}, ★${a.score.toFixed(1)}`; }).join(' · ') + ` · ${Object.keys(pr.motifs).length} phrases and ${Object.keys(pr.trans).length} combos rated`
             : 'Nothing learned yet — use ❤ / 👎 and the adjust buttons while playing.');
+    },
+    arousal() {
+        const pct = Math.round(arousal.level * 100);
+        $('#handy_arousal_fill').css('width', pct + '%'); $('#handy_arousal_pct').text(pct + '%');
     },
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
     calib() {
@@ -1418,5 +1650,6 @@ jQuery(() => {
         if (S().appId) api3.stop(true).catch(() => {});
     });
     S().profile.sessions++; save(); updatePrompt();
-    window.handyAdaptive = { actEngine, hamp, calib, chars, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    setInterval(() => arousal.tick(), 1000);
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

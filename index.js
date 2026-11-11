@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.7.2)
+// Handy Adaptive — SillyTavern extension (v0.7.5)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -115,6 +115,7 @@ const api = {
     busy: false,
     offset: 0, offsetAt: 0,
     rtt: 150,
+    jit: 40,   // how much round trips vary (mean deviation, ms): commands are sent this much earlier
     async call(method, path, body, keepalive = false) {
         const s = S();
         if (!s.connectionKey) throw new Error('No connection key set');
@@ -125,7 +126,9 @@ const api = {
             headers: { 'X-Connection-Key': s.connectionKey, 'Content-Type': 'application/json', Accept: 'application/json' },
             body: body ? JSON.stringify(body) : undefined,
         });
-        api.rtt = api.rtt * 0.8 + (performance.now() - t0) * 0.2;
+        const took = performance.now() - t0;
+        api.jit = api.jit * 0.85 + Math.abs(took - api.rtt) * 0.15;
+        api.rtt = api.rtt * 0.8 + took * 0.2;
         let json = {};
         try { json = await res.json(); } catch { /* empty */ }
         if (!res.ok || json.error) throw new Error(json?.error?.message || `HTTP ${res.status}`);
@@ -138,6 +141,10 @@ const api = {
     hampStop: (k = false) => api.call('PUT', '/hamp/stop', undefined, k),
     velocity: (v) => api.call('PUT', '/hamp/velocity', { velocity: Math.round(v) }),
     slide: (min, max) => api.call('PUT', '/slide', { min: Math.round(min), max: Math.round(max) }),
+    // Positions sent to the device are a share of its stroke range ("slide"). A range narrowed by the Handy app,
+    // the device's buttons or an old pattern tag would squeeze every stroke and shift the calibration, so
+    // the full range is restored whenever acts or calibration start. Your limits are applied here instead.
+    fullRange: () => api.slide(0, 100).catch(() => {}),
     // HDSP
     xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: Math.round(position), duration: Math.round(duration), stopOnTarget: true }),
     // HSSP
@@ -275,7 +282,9 @@ const actEngine = {
         } finally { this.starting--; ui.refresh(); updatePrompt(); }
     },
 
-    limits() { const [floor, ceil] = strokeRange(); return { floor, ceil, maxVel: capBody(), minMs: 60 }; },
+    // Streaming sends one command per stroke over the internet: a stroke shorter than the connection can
+    // deliver cleanly would stutter, so on a slow link the fastest strokes are stretched a little.
+    limits() { const [floor, ceil] = strokeRange(); return { floor, ceil, maxVel: capBody(), minMs: S().transport === 'hdsp' ? Math.round(clamp(api.rtt <= 260 ? 0.45 * api.rtt : 117 + (api.rtt - 260), 80, 320)) : 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
         const cast = chars.cast();   // one character's style, or two taking turns / moving as one
         const r = synthesize({ lib: LIB(), intent: { ...this.intent, ...cast.intent, ornaments: S().ornaments ? 1 : 0, turn: this.turn | 0 }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
@@ -322,6 +331,7 @@ const actEngine = {
         this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
         if (!this.running) {
             try { await api.mode(2); } catch (e) { this.buf = []; toast(`Handy start failed: ${e.message}`, 'error'); return; }
+            await api.fullRange();
             if (my !== epoch) { this.buf = []; return; }   // stopped while the device was switching mode
             const t = Date.now();
             this.shift(Math.max(0, t + api.rtt / 2 + 60 - this.buf[0].at));
@@ -344,10 +354,24 @@ const actEngine = {
             settlePhrases();
             this.used = this.used.filter((u) => u.to > now - 30000);
         }
+        // Streaming depends on the connection. On a slow or uneven one, say so once: Script sync plays on the device.
+        if (!this.slowTold && now - this.startedAt > 15000 && (api.rtt > 320 || api.jit > 110)) {
+            this.slowTold = true;
+            toast(`Your connection to the Handy is slow or uneven (about ${Math.round(api.rtt)} ms per command), which can make Streaming feel choppy. Motion transport → Script sync is smoother on a connection like this.`, 'warning');
+        }
         if (this.buf.length < 2 || this.inflight >= 2) return;   // at most two commands on the wire
         const lead = api.rtt / 2;                                // one-way trip to the device
-        const prev = this.buf[0], next = this.buf[1];
+        const prev = this.buf[0];
         if (now < prev.at - lead) return;
+        // One command per stroke: points in the middle of a stroke would each make the device stop and wait
+        // for the next command. Send the whole run to its turning point (Script sync and Buffered streaming
+        // keep the finer shape, because the device plays those itself).
+        while (this.buf.length > 2) {
+            const d1 = this.buf[1].pos - prev.pos, d2 = this.buf[2].pos - this.buf[1].pos;
+            if (!d1 || !d2 || Math.sign(d1) !== Math.sign(d2) || this.buf[2].at - prev.at > 3000) break;
+            this.buf.splice(1, 1);
+        }
+        const next = this.buf[1];
         // The command lands at `arrive`. Nothing here is synced to a video, so when we are behind
         // (slow network, throttled tab) the plan slides later; strokes are never skipped and never
         // squeezed into less time. A stroke runs at most ~10% faster than planned and never above the cap.
@@ -356,15 +380,32 @@ const actEngine = {
         // On a fresh start the device could be at either end (after power-on, or moved by the Handy app),
         // so the first move is timed for the longest trip it might really make.
         const dev = toDev(next.pos);
-        const travel = this.known ? Math.abs(dev - toDev(from)) : Math.max(dev, 100 - dev);   // device %
+        // The sleeve may have glided on past `from` toward the last aim if this command is late (see run-on
+        // below), so the speed cap is checked against the longest trip it could really have to make.
+        const far = this.seg ? toDev(this.seg.p1) : toDev(from);
+        const travel = this.known ? Math.max(Math.abs(dev - toDev(from)), Math.abs(dev - far)) : Math.max(dev, 100 - dev);   // device %
         const floor = Math.max(50, 0.9 * (next.at - prev.at), (travel / maxVel()) * 1000);
         let dur = next.at - arrive;
         if (dur < floor) { this.shift(floor - dur, 1); dur = floor; }
-        this.seg = { p0: from, t0: arrive, p1: next.pos, t1: arrive + dur };
+        // Run-on: every command travels over the internet and lands a little early or late. If the stroke
+        // ended exactly at its turning point, a late command would leave the sleeve standing still until it
+        // arrived, and that standing still at every turn is what feels choppy. So when the next stroke
+        // reverses, this one is aimed a little past its turning point at the same speed: on time, the next
+        // command catches the sleeve right at the turn; late, the sleeve is still gliding. The run-on never
+        // leaves your stroke limits, is never faster than the stroke itself, and is not used before a pause.
+        let aim = next.pos, sendDur = dur;
+        const after = this.buf[2], span1 = next.pos - from;
+        if (this.known && after && Math.abs(span1) > 2 && Math.sign(after.pos - next.pos) === -Math.sign(span1)) {
+            const [lo, hi] = strokeRange();
+            const slack = clamp(2 * api.jit + 20, 30, 220);                         // ms of glide to cover a late command
+            aim = clamp(next.pos + (span1 / dur) * slack, lo, hi);
+            sendDur = dur * ((aim - from) / span1);
+        }
+        this.seg = { p0: from, t0: arrive, p1: aim, t1: arrive + sendDur };
         this.known = true;
         this.buf.shift();
         this.inflight++;
-        api.xpt(dev, dur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
+        api.xpt(toDev(aim), sendDur).then(() => { this.fails = 0; }, (e) => this.sendFailed(e)).finally(() => { this.inflight--; });
         ui.live(next.pos);
     },
     sendFailed(e) {
@@ -385,7 +426,7 @@ const actEngine = {
             await api.syncTime(); if (my !== epoch) return;
             const url = await api.upload(g.actions.map((a) => ({ at: a.at, pos: Math.round(toDev(a.pos)) }))); if (my !== epoch) return;
             const tSetup = Date.now();
-            if (!swapping) await api.mode(1);
+            if (!swapping) { await api.mode(1); await api.fullRange(); }
             if (my !== epoch) return;
             await api.call('PUT', '/hssp/setup', { url });
             if (my !== epoch) return;
@@ -1297,23 +1338,45 @@ function handleUserMessage(id) {
 // ---------------------------------------------------------------- guided calibration
 // Wear the Handy, move the sleeve to your tip and then to your base with the buttons, and save. Moves are
 // slow (25 %/s) and every stop path works: the STOP button, Esc, a typed stop and the device's own button.
+//
+// The sleeve is driven one move at a time: each move is timed from where the sleeve really is (it is only
+// "known" once a move has had time to finish), and button presses during a move just change the target,
+// which the next move goes to. So ▲ and ▼ always go the way they say, and nothing is ever faster than 25 %/s,
+// even if you press while the sleeve is still travelling.
 const calib = {
     active: false, step: 0, pos: 50, tip: null, base: null, my: 0, pending: null, prev: null,
+    at: null,        // where the sleeve is, once its last move has finished (null: not known)
+    moving: false,
+    SPEED: 25,       // %/s for every calibration move
     v3: () => S().transport === 'hsp',
-    async move(p, ms = 0) {
-        p = Math.round(clamp(p, 0, 100));
-        const d = Math.abs(p - this.pos);
-        ms = Math.max(ms, (d / 25) * 1000, 150);
-        this.pos = p; $('#handy_calib_pos').text(p);
-        try { await (this.v3() ? api3.xpt(p, ms) : api.xpt(p, ms)); }
-        catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); }
-        return ms;
+    // Set where the sleeve should go. It gets there by drive(), one finished move at a time.
+    target(p) { this.pos = Math.round(clamp(p, 0, 100)); $('#handy_calib_pos').text(this.pos); return this.drive(); },
+    async drive() {
+        if (this.moving) return;   // already driving: it will pick up the new target when this move finishes
+        const my = this.my;
+        this.moving = true; ui.calib();
+        try {
+            while (this.active && my === epoch && this.at !== this.pos) {
+                const p = this.pos;
+                // Unknown start: allow the longest possible trip (all 100 % at 25 %/s).
+                const ms = Math.round(this.at === null ? (100 / this.SPEED) * 1000 : Math.max((Math.abs(p - this.at) / this.SPEED) * 1000, 200));
+                try { await (this.v3() ? api3.xpt(p, ms) : api.xpt(p, ms)); }
+                catch (e) { toast(`Calibration move failed: ${e.message}`, 'error'); this.at = null; break; }
+                await new Promise((r) => setTimeout(r, ms + 150));   // let it arrive before the next move
+                if (!this.active || my !== epoch) break;
+                this.at = p;
+            }
+        } finally { this.moving = false; if (this.active && my === epoch) ui.calib(); }
     },
     // ---- session check: before the first motion after SillyTavern loads, ask whether the setup is the same.
     // Returns true when it has taken the command (it runs later, if you confirm).
     gate(run) {
+        // Calibrating: nothing else may move the device, whatever asked (an AI tag, Play, Finish me, a favorite).
+        if (this.active && this.step !== -1) {
+            if (Date.now() - (this.toldAt || 0) > 4000) { this.toldAt = Date.now(); toast('Finish or cancel the calibration first.', 'info'); }
+            return true;
+        }
         if (!S().sessionCheck || sessionChecked || anyRunning()) return false;
-        if (this.active && this.step !== -1) return true;   // calibrating: nothing else moves the device
         this.pending = run;                                 // the latest command wins
         if (!this.active) { this.active = true; this.step = -1; ui.calib(); ui.refresh(); }
         return true;
@@ -1329,23 +1392,29 @@ const calib = {
     async start() {
         await stopAll();
         const my = epoch; this.my = my;
-        this.active = true; this.step = 0; this.tip = null; this.base = null;
+        this.active = true; this.step = 0; this.tip = null; this.base = null; this.at = null; this.moving = false;
         // Quick re-check: start from last session's tip, so a small change of height or angle is a few taps.
         this.prev = cal();
         this.pos = this.prev ? this.prev.tip : 50;
         ui.calib(); ui.refresh();
     },
     async begin() {
+        if (this.step !== 0 || this.moving) return;
         const my = this.my;
         try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
         catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
+        await (this.v3() ? api3.stroke(0, 1).catch(() => {}) : api.fullRange());   // calibrate against the whole device range
         if (!this.active || my !== epoch) return;
-        // We can't know where it is resting, so the first move is timed for the longest possible trip.
-        await this.move(this.pos, 4000);   // 100% of travel in 4 s at most: 25 %/s wherever it starts
+        // We can't know where it is resting, so the first move is timed for the longest possible trip, and the
+        // buttons only appear once it has had time to arrive.
+        this.at = null;
+        await this.target(this.pos);
+        if (!this.active || my !== epoch || this.at === null) return;
         this.step = 1; ui.calib();
     },
-    jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.move(this.pos + delta); },
+    jog(delta) { if (this.active && this.step >= 1 && this.step <= 2) this.target(this.pos + delta); },
     mark() {
+        if (this.moving || this.at !== this.pos) return toast('Wait until the sleeve stops, then press again.', 'info');
         if (this.step === 1) {
             this.tip = this.pos; this.step = 2;
             // Last session's base, shifted by however far the tip moved, then stopped 10% short (toward the tip)
@@ -1353,8 +1422,9 @@ const calib = {
             const p = this.prev;
             if (p) {
                 const shifted = p.base + (this.tip - p.tip), target = Math.round(clamp(shifted + (this.tip - shifted) * 0.1, 0, 100));
-                if (Math.abs(target - this.tip) >= 10) this.move(target);
+                if (Math.abs(target - this.tip) >= 10 && this.base === null) this.target(target);
             }
+            if (this.base !== null && Math.abs(this.base - this.tip) >= 10) this.target(this.base);   // came Back: return to the base you had set
         }
         else if (this.step === 2) {
             if (Math.abs(this.pos - this.tip) < 10) return toast('Tip and base must be at least 10 apart. Move further and try again.', 'warning');
@@ -1362,14 +1432,19 @@ const calib = {
         }
         ui.calib();
     },
-    back() { if (this.step > 1) { this.step--; ui.calib(); } },
+    // Back returns the sleeve to the mark you are about to adjust, so you fine-tune from where you set it.
+    back() {
+        if (this.step <= 1 || this.moving) return;
+        this.step--; ui.calib();
+        const to = this.step === 1 ? this.tip : this.base;
+        if (to !== null && to !== undefined) this.target(to);
+    },
     async test() {
-        if (this.step !== 3) return;
+        if (this.step !== 3 || this.moving) return;
         const my = this.my;
         for (const p of [this.base, this.tip, this.base, this.tip]) {
-            const ms = await this.move(p, (Math.abs(p - this.pos) / 30) * 1000);
-            await new Promise((r) => setTimeout(r, ms + 100));
-            if (!this.active || my !== epoch) return;
+            await this.target(p);
+            if (!this.active || my !== epoch || this.step !== 3) return;
         }
     },
     finish() {
@@ -1387,7 +1462,7 @@ const calib = {
     async abort() {
         if (!this.active) return;
         const asking = this.step === -1;
-        this.active = false; this.pending = null; ui.calib(); ui.refresh();
+        this.active = false; this.pending = null; this.at = null; ui.calib(); ui.refresh();
         if (asking) return;   // only the question was open: nothing was sent to the device
         try { await (this.v3() ? api3.mode(0) : api.mode(0)); } catch { /* the device button always works */ }
     },
@@ -1799,8 +1874,8 @@ const ui = {
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
     calib() {
         const c = calib, old = c.prev, saved = cal(), steps = [
-            [old ? `Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to where your tip was last time (${old.tip}). STOP, Esc and the button on the device all work at any point.`
-                 : 'Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. STOP, Esc and the button on the device all work at any point.', 'Start'],
+            [old ? `Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to where your tip was last time (${old.tip}). It can take a few seconds; the arrow buttons appear when it gets there. STOP, Esc and the button on the device all work at any point.`
+                 : 'Wear the Handy and keep still. Press <b>Start</b> and the sleeve moves slowly to the middle. It can take a few seconds; the arrow buttons appear when it gets there. STOP, Esc and the button on the device all work at any point.', 'Start'],
             [(old ? 'This is where your tip was last time. ' : '') + 'Move the sleeve with the buttons (or the ↑ ↓ keys, Shift for bigger steps) until it sits at your <b>tip</b>: as far out as it should ever go.', 'This is my tip'],
             [old ? 'The sleeve has moved to just short of where your base should be now. Move it to your <b>base</b>: as deep as it should ever go.'
                  : 'Now move it to your <b>base</b>: as deep as it should ever go.', 'This is my base'],
@@ -1829,7 +1904,8 @@ const ui = {
         $('#handy_calib_back').toggle(c.step > 1);
         $('#handy_calib_test').toggle(asking || c.step === 3);
         $('#handy_calib_pos').text(c.pos);
-        $('#handy_calib_marks').text([c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
+        $('#handy_calib_marks').text([c.moving ? 'moving…' : '', c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));
+        $('#handy_calib_next, #handy_calib_back, #handy_calib_test').toggleClass('disabled', !!c.moving && c.step !== -1);
     },
 };
 

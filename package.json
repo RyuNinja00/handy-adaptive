@@ -1,6 +1,6 @@
 {
   "name": "handy-adaptive",
-  "version": "0.7.2",
+  "version": "0.7.5",
   "private": true,
   "description": "SillyTavern extension: AI-driven, learning motion control for The Handy",
   "type": "module",

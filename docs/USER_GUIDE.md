@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.7.2.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.7.5.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -103,7 +103,7 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 2. **Connection key**: paste the key from Part 2.
 3. Click **Test connection**. You should see ✅ connected and the round-trip time in ms. If you see ❌, check the key and that the Handy is online.
 4. **Motion transport**:
-   - **Streaming (reacts instantly)**: the default, and the right choice on firmware 3 when the SillyTavern tab stays visible. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
+   - **Streaming (reacts instantly)**: the default, and the right choice on firmware 3 when the SillyTavern tab stays visible. Every stroke is sent live over the internet, so feedback buttons take effect within a fraction of a second, but smoothness depends on your connection. Each stroke is aimed slightly past its turning point so a late command finds the sleeve still gliding instead of standing still; on a slow or uneven connection (above roughly 300 ms) it can still feel choppy, and the extension tells you once and suggests Script sync.
    - **Script sync (smooth)**: uploads a 2-minute generated script to the device. Changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
    - **Buffered streaming (Handy firmware 4)**: the recommended choice if your Handy runs firmware 4. The extension keeps about 5 seconds of motion stored on the device and tops it up, using Handy's API v3. Motion stays smooth on a slow network and when SillyTavern is in a background tab, and changes still take effect in about half a second, always at a turning point so nothing jerks. It needs an **API v3 Application ID** (next item). If the Handy servers refuse it, or your firmware is older, the extension tells you and switches to Streaming. If the network drops for more than a few seconds, the extension stops, and the device pauses by itself once its stored motion runs out.
    - **API v3 Application ID**: only for Buffered streaming. Sign in to Handy's developer portal (linked from Handy's developer documentation at handyfeeling.com/api/handy-rest/v3/docs), create an application, and paste its Application ID here. It identifies the app, not you; your connection key is still what grants access to your device.
@@ -150,10 +150,16 @@ Do this before involving the AI, so you know the hardware side works.
 Out of the box, "tip" and "base" mean the ends of the device's travel, which rarely match your body. Calibration fixes that: you move the sleeve to your own tip and base, and from then on every act, every *Tip* / *Base* press and every AI depth request lands where it should.
 
 1. Click the **ruler** button on the floating Handy panel (or **Calibrate to my body** in **Extensions → Handy Adaptive**).
-2. Wear the Handy and keep still. Press **Start**. The sleeve moves slowly to the middle (or, if you have calibrated before, to where your tip was last time).
-3. Use **▲ +2 / ▲▲ +10 / ▼ −2 / ▼▼ −10** (or the **↑ ↓** keys, Shift for big steps) until the sleeve is at your **tip**, as far out as it should ever go. Press **This is my tip**.
+2. Wear the Handy and keep still. Press **Start**. The sleeve moves slowly to the middle (or, if you have calibrated before, to where your tip was last time). This can take up to 4 seconds; the arrow buttons appear once it has arrived.
+3. Use **▲ +2 / ▲▲ +10 / ▼ −2 / ▼▼ −10** (or the **↑ ↓** keys, Shift for big steps) until the sleeve is at your **tip**, as far out as it should ever go. Each press moves it after the previous one finishes, so quick presses add up and the readout shows where it's heading ("moving…" while it travels). Press **This is my tip** once it has stopped.
 4. Move it to your **base**, as deep as it should ever go. Press **This is my base**. (When recalibrating, the sleeve first moves to just short of where your base should be now, worked out from last time and how far your tip moved. It never goes deeper than before; you fine-tune the last bit.)
-5. Press **Test** for two slow full strokes. If they feel right, press **Save**. Otherwise use **Back** and adjust.
+5. Press **Test** for two slow full strokes. If they feel right, press **Save**. Otherwise use **Back**: the sleeve returns to the mark you're adjusting (base first, then tip), and you fine-tune it up or down from there.
+
+Calibration moves are deliberately slow and one step at a time, so they look stepwise; that's expected and separate from how play feels.
+
+While the calibration is open, nothing else can move the device: Play, Finish me, favorites and the AI's tags are held off until you save or cancel.
+
+The extension uses the device's whole stroke range and applies your calibration and stroke limits itself. A stroke range set in the Handy app or with the device's buttons is reset to full when an act or the calibration starts, because it would otherwise squeeze every stroke and shift your calibration.
 
 Calibration moves are slow (25%/s at most). STOP, Esc, a typed "stop" and the device's own button all work, and AI tags are ignored until you finish. The **Stroke limits** now apply within your calibrated range (0 = your base, 100 = your tip), and the **Max speed** stays a limit on the device itself. **Clear calibration** returns to the full device range.
 
@@ -656,7 +662,9 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 **Tags appear in the chat text**
 - They're removed once the message finishes. To hide them during streaming, add the Regex script from Part 6.
 
-**Motion is jerky or lags**
+**Motion is choppy, stuttery or lags**
+- Update to 0.7.4 or later: Streaming was reworked so strokes glide through late commands instead of stopping at every turn.
+- If it's still choppy in Streaming, switch **Motion transport** to **Script sync** (firmware 3) or **Buffered streaming** (firmware 4). The device then plays the motion itself, so the connection no longer matters stroke by stroke.
 - In Streaming mode, keep the SillyTavern tab visible. A tab in the background is limited by the browser to about one command per second.
 - Streaming depends on your network. **Test connection** shows the round trip in ms: under about 250 ms keeps up with fast acts; above that, fast rhythms slow down (they never skip or exceed your speed limit). A wired or 5 GHz connection for the SillyTavern machine helps.
 - Try **Script sync** transport for smoother (but slower-reacting) motion.

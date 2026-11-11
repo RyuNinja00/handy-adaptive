@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.4.1.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.5.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -464,6 +464,35 @@ Each act's status appears in the settings under *Learned taste*: **still explori
 - Use 👎 freely. It's how bad phrases get weeded out. A phrase you turn down three times (and more than twice as often as you liked it) is **retired** and never plays again, however experimental the setting. **Reset** under Learned taste brings retired phrases back.
 - Each act learns separately. Taste for handjobs doesn't change cowgirl.
 - If it feels samey, move **Try new things** up. If it keeps wandering away from what you like, move it down.
+
+### Character styles
+
+Each character moves the Handy their own way. The first time a character appears, their card (description, personality, scenario and tags) is read for words that say how they'd move, and they get a style made of seven traits:
+
+| Trait | Low end | High end | Read from words like |
+|---|---|---|---|
+| Tempo | slow | fast | shy, gentle, lazy ↔ wild, horny, energetic |
+| Stroke length | short | long | timid ↔ rough, experienced, succubus |
+| Focus | the base | the tip | deepthroat, takes it all ↔ teasing, licks |
+| Wildness | smooth | unpredictable | calm, precise, android ↔ wild, playful, clumsy |
+| Teasing | no pauses | lots of pauses | dominant, sadistic, bratty, orgasm control |
+| Eagerness | drags it out | quick to build | dominant, cruel ↔ needy, eager to please, horny |
+| Experience | inexperienced | expert | virgin, inexperienced ↔ experienced, seductive, mature |
+
+Negations count: "not shy at all" isn't read as shy. A card with none of these words starts balanced.
+
+**What the style does.** The same tag feels different from different characters. A shy virgin goes slower, with shorter, slightly uneven strokes, while she finds a rhythm. A wild character goes faster and longer. A teasing one stops and holds still between phrases now and then. An expert's timing is precise. The AI is told the character's style, so it picks acts and intensity the way that character would. Speed limits, stroke limits and calibration always apply on top.
+
+**Who is in control.** It's the character whose message held the last tag. In a group chat each character keeps their own style, and the control passes to whoever is acting.
+
+**How a style is refined and remembered.** While a character is in control, half of each Faster / Slower / Longer / Shorter / Tip / Base / Wilder / Smoother adjustment that sticks goes to that character ("how I like it when *they* do it"), and half goes to your general taste for the act. ❤ and 👎 also build the character's own favourite phrases, and their acts, edges and finishes are remembered and shown to the AI. Time together counts too: an inexperienced character slowly grows more confident, about +0.1 experience every 12 minutes of play. Styles are saved per character and carry over to every chat with them.
+
+**Seeing and changing a style.** Open **Extensions → Handy Adaptive → Character styles**. Pick a character to see their style in words, the card words it came from, and your history together. The sliders change the starting style; once you move one, card edits no longer overwrite it.
+- **Re-read card**: start again from the card. What your feedback taught is kept.
+- **Forget learning**: drop what your feedback taught this character.
+- **Delete**: remove the character's style and history.
+
+The panel shows the style of the character in control. Untick **Give each character their own stroking style** to turn the feature off.
 
 ---
 

@@ -59,15 +59,18 @@ export function exploration(prefs, act) {
 export function targetFor(lib, actName, intent, prefs, tMs = 0, drift = null) {
     const prof = lib?.acts?.[actName] || STARTER_LIBRARY.acts.handjob;
     const ap = prefs?.acts?.[actName] || {};
+    const st = intent.style || {};   // the character in control (charstyle.js effect()), if any
     const intensity = clamp(fin(intent.intensity, 0.5), 0, 1);
-    const variation = clamp(fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0), 0, 1);
+    const felt = clamp(intensity + fin(st.intensityBias, 0), 0, 1);
+    const variation = clamp(fin(intent.variation, fin(ap.variation, 0.35)) + fin(intent.varOff, 0) + fin(st.varOff, 0), 0, 1);
     const explore = exploration(prefs, actName);
     const d = drift ? 1 + 0.15 * variation * Math.sin((2 * Math.PI * tMs) / drift.period + drift.phase) : 1;
-    const rate = clamp(fin(prof.rate?.mean, 1.5) * lerp(0.6, 1.5, intensity) * fin(ap.rateMul, 1) * fin(intent.speedMul, 1) * d, 0.15, 6);
-    const amp = clamp(fin(prof.amp?.mean, 50) * fin(ap.ampMul, 1) * fin(intent.ampMul, 1) * lerp(0.9, 1.1, intensity), 8, 100);
-    const center = clamp(fin(prof.center?.mean, 50) + 25 * (fin(intent.depth, 0) + fin(intent.depthOff, 0)) + fin(ap.centerShift, 0), amp / 2, 100 - amp / 2);
-    // jitter = the organic feel you like (variation) + whatever experimenting is still going on (explore)
-    const jitter = variation * (0.35 + 0.65 * explore);
+    const rate = clamp(fin(prof.rate?.mean, 1.5) * lerp(0.6, 1.5, felt) * fin(ap.rateMul, 1) * fin(intent.speedMul, 1) * fin(st.rateMul, 1) * d, 0.15, 6);
+    const amp = clamp(fin(prof.amp?.mean, 50) * fin(ap.ampMul, 1) * fin(intent.ampMul, 1) * fin(st.ampMul, 1) * lerp(0.9, 1.1, felt), 8, 100);
+    const center = clamp(fin(prof.center?.mean, 50) + 25 * (fin(intent.depth, 0) + fin(intent.depthOff, 0)) + fin(ap.centerShift, 0) + fin(st.centerShift, 0), amp / 2, 100 - amp / 2);
+    // jitter = the organic feel you like (variation) + whatever experimenting is still going on (explore),
+    // made more uneven for an inexperienced character and more precise for an expert one
+    const jitter = clamp(variation * (0.35 + 0.65 * explore) * fin(st.jitterMul, 1) + (fin(st.jitterMul, 1) > 1 ? 0.15 * (st.jitterMul - 1) : 0), 0, 1.5);
     return { rate, amp, center, variation, intensity, explore, jitter, prof };
 }
 
@@ -88,7 +91,7 @@ export function reinforce(map, key, reward, alpha = 0.3) {
  * With experience: strongly prefers phrases you rated highly AND phrases you've
  * liked coming right after the previous one (learned combinations).
  */
-export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false) {
+export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, curious = false, own = null) {
     const scores = prefs?.motifs || {}, trans = prefs?.trans || {};
     const beta = curious ? 0.3 : lerp(3.0, 0.8, explore);  // how greedy the choice is
     return pickWeighted(motifs, (m) => {
@@ -102,6 +105,8 @@ export function pickMotif(motifs, prefs, act, prev, rate, explore, recent = {}, 
         }
         // don't wear one phrase out, unless you've liked it repeating
         if (!(tk > 0.4)) value -= 0.5 * (recent[m.id] ?? 0);
+        // the character in control has favourite phrases of their own (what you loved when they did it)
+        if (own && own[m.id] !== undefined) value += 1.5 * own[m.id];
         const fit = Math.exp(-1.5 * Math.abs(Math.log(m.rate / rate)));
         return Math.exp(beta * clamp(value, -6, 6)) * fit;
     });
@@ -177,7 +182,15 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
     let t = 0, pos = startPos, prev = prevMotif;
     const recent = {};
 
+    let first = true;
     while (t < durationMs) {
+        // A teasing character now and then stops between phrases and holds still for a moment.
+        const tease = fin(intent.style?.tease, 0);
+        if (!first && tease > 0.05 && Math.random() < 0.35 * tease) {
+            t += rnd(400, 1000) * (0.6 + tease);
+            actions.push({ at: Math.round(t), pos: Math.round(clamp(pos, 0, 100)) });
+        }
+        first = false;
         const act = pickWeighted(mix, ([, w]) => w)[0];
         const tg = targetFor(lib, act, intent, prefs, t, drift);
         // phrase length: your learned "how long before I want a change", else 4-12 s
@@ -189,7 +202,7 @@ export function synthesize({ lib, intent, prefs, limits, durationMs, startPos = 
             ? procedural(tg, phraseMs, clamp(pos, 0, 100))
             // now and then, even when dialed in, try a less-proven phrase (that's how new favorites and combos get found)
             : fromMotif(pickMotif(motifs, prefs, act, prev, tg.rate, tg.explore, recent,
-                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore)), tg, phraseMs, clamp(pos, 0, 100));
+                Math.random() < Math.max(0.07 * Math.min(1, prefs?.exploreBias ?? 1), 0.5 * tg.explore), intent.style?.motifs), tg, phraseMs, clamp(pos, 0, 100));
         const i0 = actions.length - 1;
         for (const [dur, p] of phrase.strokes) {
             t += dur;

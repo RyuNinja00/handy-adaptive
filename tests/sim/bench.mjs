@@ -199,7 +199,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
     const H = globalThis.window.handyAdaptive;
     Object.assign(st.extensionSettings.handy_adaptive, { connectionKey: 'KEY', sessionCheck: false, ...settings });   // the start-of-session question has its own checks
     return { H, st, dev, devPos, hspState, advance, flush, now: () => vnow, toasts, errors, handlers, timers: () => timers, mod,
-        message(text) { st.chat.push({ mes: text, is_user: false }); return handlers.message_received(st.chat.length - 1); },
+        message(text, extra = {}) { st.chat.push({ mes: text, is_user: false, ...extra }); return handlers.message_received(st.chat.length - 1); },
         say(text) { st.chat.push({ mes: text, is_user: true }); return handlers.message_sent?.(st.chat.length - 1); } };
 }
 

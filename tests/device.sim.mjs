@@ -338,6 +338,93 @@ for (const transport of ['hdsp', 'hsp']) {
     check('not calibrated: it asks, and "Start without calibrating" starts', asked && h.H.actEngine.running);
 }
 
+// ---- character styles ----
+{
+    const { seedStyle } = await import('../charstyle.js');
+    const shy = seedStyle('Lily is a shy, inexperienced virgin who gets flustered easily.').traits;
+    const dom = seedStyle('Vex is a dominant, sadistic succubus who loves teasing and orgasm control.').traits;
+    const calm = seedStyle('Mira is calm and precise. She is not shy at all.').traits;
+    check('card reading: a shy virgin is slow, short and inexperienced', shy.tempo < -0.3 && shy.reach < 0 && shy.exp < 0.3, JSON.stringify(shy));
+    check('card reading: a dominant succubus teases, holds back and is experienced', dom.tease > 0.6 && dom.eager < -0.3 && dom.exp > 0.75, JSON.stringify(dom));
+    check('card reading: "not shy" is not read as shy', calm.tempo === 0 && calm.exp >= 0.5 && calm.wild < 0, JSON.stringify(calm));
+}
+const CARDS = [
+    { name: 'Lily', avatar: 'lily.png', description: 'A shy, inexperienced virgin. Sweet, gentle and easily flustered.', personality: 'timid, nervous' },
+    { name: 'Rex', avatar: 'rex.png', description: 'Wild, rough and horny. An athletic brute who is aggressive and energetic.', personality: 'insatiable' },
+    { name: 'Vex', avatar: 'vex.png', description: 'A dominant succubus who loves teasing and orgasm control.', personality: 'sadistic, playful' },
+];
+async function styleRun(card, seed) {
+    const h = await boot({ seed });
+    Object.assign(h.st, { characters: CARDS, characterId: CARDS.indexOf(card) });
+    h.message('<handy act="handjob" intensity="0.6"/>', { name: card.name }); await h.advance(2000);
+    const t0 = h.now(); await h.advance(60000);
+    const rec = h.st.extensionSettings.handy_adaptive.characters[card.avatar];
+    const tg = h.H.actEngine.describe();
+    const r = +/≈([\d.]+) strokes/.exec(tg)[1];
+    return { h, rec, rate: r, desc: tg, t0 };
+}
+{
+    const lily = await styleRun(CARDS[0], 300), rex = await styleRun(CARDS[1], 301);
+    const plain = await boot({ seed: 302 });
+    plain.message('<handy act="handjob" intensity="0.6"/>'); await plain.advance(5000);
+    const pr = +/≈([\d.]+) strokes/.exec(plain.H.actEngine.describe())[1];
+    check('the same tag feels different per character: shy Lily slower, wild Rex faster than no character',
+        lily.rate < pr * 0.85 && rex.rate > pr * 1.15, `Lily ${lily.rate}, none ${pr}, Rex ${rex.rate} strokes/s`);
+    const cap = 60 + 0.8 * 540;
+    const seg = (h) => h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v);
+    check('character styles stay within the speed cap', Math.max(...seg(rex.h)) <= cap * 1.03, `fastest ${Math.round(Math.max(...seg(rex.h)))} %/s`);
+    check('each character\'s style is created from the card and remembered', lily.rec?.name === 'Lily' && rex.rec?.traits.tempo > 0.3 && lily.rec.acts.handjob?.n >= 1);
+    check('the AI is told the character\'s style', /CHARACTER STYLE: Lily .*inexperienced/.test(lily.h.st.prompts.filter(Boolean).pop()));
+}
+{
+    // tease: Vex pauses between phrases; Rex doesn't
+    const holds = async (card, seed) => {
+        const h = await boot({ seed });
+        Object.assign(h.st, { characters: CARDS, characterId: CARDS.indexOf(card) });
+        h.message('<handy act="handjob" intensity="0.5"/>'); await h.advance(2000);
+        const r = h.H.actEngine.gen_(0, 50, 300000);
+        let n = 0; for (let i = 1; i < r.used.length; i++) if (r.used[i].from - r.used[i - 1].to >= 380) n++;   // a still gap between two phrases
+        return n;
+    };
+    const v = await holds(CARDS[2], 310), x = await holds(CARDS[1], 311);
+    check('a teasing character holds still between phrases now and then', v >= 5 && v > 3 * x, `Vex ${v} pauses vs Rex ${x} in 5 min`);
+}
+{
+    // group chat: each message is credited to whoever wrote it, and feedback teaches only them
+    const h = await boot({ seed: 320, settings: { library: lib } });
+    Object.assign(h.st, { characters: CARDS, groupId: 'g1' });
+    h.message('<handy act="blowjob" intensity="0.6"/>', { name: 'Lily', original_avatar: 'lily.png' }); await h.advance(6000);
+    const who1 = h.H.chars.who;
+    for (let k = 0; k < 3; k++) { h.H.feedback('faster'); await h.advance(1500); }
+    h.H.feedback('love'); await h.advance(3000);
+    const C = h.st.extensionSettings.handy_adaptive.characters;
+    const lilyRate = C['lily.png'].learned.rateMul, lilyMotifs = Object.keys(C['lily.png'].motifs).length;
+    h.message('<handy act="blowjob" intensity="0.6"/>', { name: 'Rex', original_avatar: 'rex.png' }); await h.advance(4000);
+    check('group chat: the character who sent the tag is in control', who1 === 'lily.png' && h.H.chars.who === 'rex.png');
+    check('feedback while Lily is in control teaches Lily (and your general taste), not Rex',
+        lilyRate > 1.05 && lilyMotifs > 0 && C['rex.png'].learned.rateMul === 1 && Object.keys(C['rex.png'].motifs).length === 0 && h.st.extensionSettings.handy_adaptive.profile.acts.blowjob.rateMul > 1.02,
+        `Lily x${lilyRate.toFixed(2)}, Rex x${C['rex.png'].learned.rateMul}, general x${h.st.extensionSettings.handy_adaptive.profile.acts.blowjob.rateMul.toFixed(2)}, Lily rated ${lilyMotifs} phrases`);
+}
+{
+    // time together: inexperienced Lily grows more confident; style persists into the next session
+    const h = await boot({ seed: 330 });
+    Object.assign(h.st, { characters: CARDS, characterId: 0 });
+    h.message('<handy act="handjob" intensity="0.5"/>'); await h.advance(2000);
+    for (let m = 0; m < 30; m++) { await h.advance(60000); h.H.feedback('slower'); h.H.feedback('faster'); }   // keep it active
+    const rec = h.st.extensionSettings.handy_adaptive.characters['lily.png'];
+    const saved = structuredClone(h.st.extensionSettings.handy_adaptive);
+    const h2 = await boot({ seed: 331, settings: { characters: saved.characters } });
+    Object.assign(h2.st, { characters: CARDS, characterId: 0 });
+    const again = h2.H.chars.current();
+    check('time together makes an inexperienced character more confident', rec.minutes >= 25 && rec.learned.expGain > 0.15, `${rec.minutes} min, experience +${rec.learned.expGain.toFixed(2)}`);
+    check('a character\'s style and history carry over to the next session', again.minutes === rec.minutes && again.learned.expGain === rec.learned.expGain);
+    // you can turn it off
+    const h3 = await boot({ seed: 332, settings: { charStyles: false } });
+    Object.assign(h3.st, { characters: CARDS, characterId: 1 });
+    h3.message('<handy act="handjob" intensity="0.6"/>'); await h3.advance(3000);
+    check('with character styles off, nothing is styled or stored', h3.H.chars.effect() === null && !Object.keys(h3.st.extensionSettings.handy_adaptive.characters).length);
+}
+
 // ---- learning ----
 {
     const h = await boot({ seed: 180, settings: { library: lib } });

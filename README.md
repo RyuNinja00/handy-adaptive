@@ -34,6 +34,11 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 
 ## Notes
 - **Buffered streaming (firmware 4, API v3)** keeps ~5 s of motion stored on the device and tops it up, so motion stays smooth on slow networks and in background tabs, and changes still land in ~½ s at a turning point. It needs an API v3 Application ID from Handy's developer portal, and falls back to Streaming if v3 isn't available.
+- **Following the story**: a reply with no tag still nudges the motion from what it describes (faster, slower, deeper, pauses). It never starts or stops the device.
+- **Detail touches**: flutters at the tip, slow drags and deep pulses between phrases, chosen per act and character and rated like any phrase.
+- **Two characters at once**: `with="NAME"` on a tag makes two characters take turns in their own styles, or move as one.
+- **Saved setups**: a calibration per position (lying down, sitting, a mount), switched from the panel.
+- **Session memory**: each character keeps short recaps of your sessions and can refer back to them.
 - **Arousal estimate**: a running guess at how close you are, from motion, time and your own signals. It is shown on the panel and given to the AI for pacing. It never claims the edge without your "I'm close", and it learns your pace.
 - **Character styles**: every character gets their own way of moving the Handy (tempo, stroke length, focus, wildness, teasing, eagerness, experience), read from their card. It is refined by your feedback while they're in control and remembered per character, and it works in group chats. Inexperienced characters grow more confident over time. Cards are read by a connection profile of your choice (e.g. a local model), with a keyword reading as the fallback. View or adjust styles under *Character styles* in the settings.
 - **Calibration**: *Calibrate to my body* walks you through moving the sleeve to your tip and your base; all motion is then mapped onto that range, so "tip" means your tip. A ruler button on the panel recalibrates mid-session, starting from last time's positions, and before the first motion of each session it asks whether the setup is the same (nothing moves until you answer).

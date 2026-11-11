@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.6.0)
+// Handy Adaptive — SillyTavern extension (v0.7.0)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -37,6 +37,10 @@ const DEFAULTS = {
     detectClimax: true,         // notice "I'm close" / "I'm cumming" in your own messages
     safeword: '',               // a word that stops the device whenever it appears in your message
     showPanel: true,
+    proseCues: true,            // a reply with no tag still adjusts the motion from what it describes (faster, deeper, pauses…)
+    ornaments: true,            // small mouth-and-hand touches between phrases: flutters at the tip, slow drags, deep pulses
+    setups: [],                 // saved calibrations: [{ name, base, tip, at }] (lying down, sitting, a mount…)
+    setupName: null,            // the saved setup in use, if any
     readWpm: 220,               // several tags in one reply play in order at this reading speed (words/min); 0 = all at once
     arousalMeter: true,         // keep a running arousal estimate and tell the AI
     styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
@@ -268,9 +272,10 @@ const actEngine = {
 
     limits() { const s = S(); return { floor: s.strokeFloor, ceil: s.strokeCeil, maxVel: capBody(), minMs: 60 }; },
     gen_(startAt, startPos, ms, prevMotif = this.lastMotif) {
-        const r = synthesize({ lib: LIB(), intent: { ...this.intent, style: chars.effect() }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
-        this.lastMotif = r.lastMotif;
-        return { actions: r.actions.map((a) => ({ at: a.at + startAt, pos: a.pos })), used: r.used.map((u) => ({ ...u, from: u.from + startAt, to: u.to + startAt })) };
+        const cast = chars.cast();   // one character's style, or two taking turns / moving as one
+        const r = synthesize({ lib: LIB(), intent: { ...this.intent, ...cast.intent, ornaments: S().ornaments ? 1 : 0, turn: this.turn | 0 }, prefs: S().profile, limits: this.limits(), durationMs: ms, startPos, prevMotif });
+        this.lastMotif = r.lastMotif; this.turn = r.turn | 0;
+        return { actions: r.actions.map((a) => ({ at: a.at + startAt, pos: a.pos })), used: r.used.map((u) => ({ ...u, who: u.who != null ? cast.keys[u.who] : null, from: u.from + startAt, to: u.to + startAt })) };
     },
 
     // Where the device is at time t, from the move it was last told to make.
@@ -307,7 +312,7 @@ const actEngine = {
         // The phrases after the join are being replaced: end them there, so feedback given later is not credited to them.
         this.used = this.used.filter((u) => u.from < last.at && u.to > now - 20000);
         for (const u of this.used) if (u.to > last.at) u.to = last.at;
-        this.lastMotif = [...this.used].reverse().find((u) => u.motif && u.act === this.intent.act)?.motif ?? null;
+        this.lastMotif = [...this.used].reverse().find((u) => u.motif && !u.orn && u.act === this.intent.act)?.motif ?? null;
         const g = this.gen_(last.at, last.pos, 20000);
         this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
         if (!this.running) {
@@ -424,7 +429,7 @@ const actEngine = {
         const last = this.buf[this.buf.length - 1];
         this.used = this.used.filter((u) => u.from < last.at && u.to > now - 20000);
         for (const u of this.used) if (u.to > last.at) u.to = last.at;
-        this.lastMotif = [...this.used].reverse().find((u) => u.motif && u.act === this.intent.act)?.motif ?? null;
+        this.lastMotif = [...this.used].reverse().find((u) => u.motif && !u.orn && u.act === this.intent.act)?.motif ?? null;
         const g = this.gen_(last.at, last.pos, 20000);
         this.buf.push(...g.actions.slice(1)); this.used.push(...g.used);
         if (live) return this.hspLocked(() => this.hspSend(true));
@@ -635,6 +640,7 @@ const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting 
 function stopAll(reason) {
     epoch++;   // cancels every start that is in progress or queued
     clearTimeout(windTimer);
+    windUntil = 0;
     if (!inBeat) clearBeats();   // tags still waiting for their moment in the reply are dropped
     climax.cancel();
     const jobs = [];
@@ -646,12 +652,83 @@ function stopAll(reason) {
     return done;
 }
 
+// ---------------------------------------------------------------- following the prose
+// When a reply has no tag, read what it describes and nudge the motion that is already playing. It never
+// starts or stops the device: only an explicit tag, a button or your own words do that.
+const CUES = [
+    [/\b(faster|speeds? up|speeding up|quickens?|quickening|picks? up (the|her|his|their) pace|picking up (the|her|his|their) pace|harder|frantic(ally)?|furious(ly)?|relentless(ly)?|pounding|rougher|urgent(ly)?)\b/, { di: 0.15 }],
+    [/\b(slows?( down)?|slowing( down)?|slower|eases? (off|up)|easing (off|up)|gentl(y|er)|languid(ly)?|unhurried|leisurely|lazily|tender(ly)?)\b/, { di: -0.15 }],
+    [/\b(deeper|all the way down|to the (base|hilt|root)|takes? (you|him|it|them) (all|deep|whole)|swallows? (you|him|it|them)|deep[- ]?throats?)\b/, { dd: -0.3 }],
+    [/\b(just the tip|only the tip|around the (tip|head)|at the (tip|head)|shallow(er)?( strokes)?)\b/, { dd: 0.3 }],
+    [/\b(pauses?|pausing|holds? (perfectly )?still|stops? moving|goes still|freezes?|lingers?)\b/, { hold: true }],
+];
+const CUE_NEG = /(n't|\b(?:not|no|never|without|instead of|refus\w+|won't|before|until|if|when you|wants? (me|her|him|them) to|ask\w* (me|her|him|them) to|begs?|pleads?))\b[^.!?]{0,40}$/i;
+function proseCues(text) {
+    const out = [], me = String(ctx().name1 || '').trim().toLowerCase();
+    let offset = 0;
+    for (const sent of String(text).split(/(?<=[.!?…\n])\s+/)) {
+        const at = offset; offset += sent.length + 1;
+        const low = sent.toLowerCase().trim();
+        if (!low || /\?["”'*]?\s*$/.test(low)) continue;                                  // a question decides nothing
+        if (/^["“*_\s]*(you|your)\b/.test(low) || (me && low.replace(/^["“*_\s]+/, '').startsWith(me))) continue;   // what YOU do, not the character
+        for (const [re, eff] of CUES) {
+            const m = re.exec(low);
+            if (!m || CUE_NEG.test(low.slice(0, m.index))) continue;
+            out.push({ idx: at + m.index, ...eff });
+            break;   // one cue per sentence
+        }
+        if (out.length >= 4) break;
+    }
+    return out;
+}
+function runCue(c) {
+    if (!S().enabled || !actEngine.running || climax.active || Date.now() < windUntil || calib.active) return;
+    const i = actEngine.intent, cmd = { _cue: true };
+    if (c.hold) cmd.intensity = clamp(i.intensity * 0.35, 0.05, 1);
+    if (c.di) cmd.intensity = clamp(i.intensity + c.di, 0.05, 1);
+    if (c.dd) cmd.depth = clamp(i.depth + c.dd, -1, 1);
+    return actEngine.apply(cmd);
+}
+
+// ---------------------------------------------------------------- setups
+// Saved calibrations for the different ways you use the Handy (lying down, sitting, a mount). Switching
+// stops any motion first, because the same stroke lands somewhere else on the device.
+const setups = {
+    list: () => (S().setups ??= []),
+    find(name) { const n = String(name || '').trim().toLowerCase(); return this.list().find((x) => x.name.toLowerCase() === n) || null; },
+    save(name) {
+        const c = cal(); name = String(name || '').trim().slice(0, 30);
+        if (!name) return false;
+        if (!c) { toast('Calibrate first, then save it as a setup.', 'warning'); return false; }
+        const ex = this.find(name), rec = { name: ex?.name || name, base: c.base, tip: c.tip, at: c.at || new Date().toISOString().slice(0, 10) };
+        if (ex) Object.assign(ex, rec); else this.list().push(rec);
+        S().setupName = rec.name; save(); ui.refresh();
+        toast(`Saved setup “${rec.name}”`, 'success');
+        return true;
+    },
+    async use(name) {
+        const x = this.find(name); if (!x) return false;
+        if (anyRunning() || actEngine.starting > 0 || hamp.starting > 0) await stopAll('setup changed');
+        S().calibration = { base: x.base, tip: x.tip, at: x.at }; S().setupName = x.name;
+        save(); ui.refresh(); ui.calib(); updatePrompt();
+        if (!calib.active) toast(`Setup “${x.name}”: base at ${x.base}, tip at ${x.tip}`, 'info');
+        return true;
+    },
+    remove(name) {
+        const x = this.find(name); if (!x) return;
+        S().setups = this.list().filter((y) => y !== x);
+        if (S().setupName === x.name) S().setupName = null;
+        save(); ui.refresh();
+    },
+};
+
 // ---------------------------------------------------------------- reply pacing
 // A reply can hold several tags. Each plays when the reader reaches it: the first at once, the rest after
 // the words between them at the reading speed. STOP, a new AI message or a chat change drops what is waiting.
 let beats = [], inBeat = false;
 function clearBeats() { for (const t of beats) clearTimeout(t); beats = []; }
 function runBeat(a) {
+    if (a._cue) return void enqueue(() => runCue(a));
     if (isStop(a)) { inBeat = true; try { stopAll(); } finally { inBeat = false; } return; }   // later tags in the same reply still play
     enqueue(() => runCommand(a));
 }
@@ -758,6 +835,8 @@ const chars = {
     who: null,          // key of the character whose tag is driving the device
     seen: new Set(),    // keys whose card was checked for changes this session
     reading: new Set(), tried: new Set(), warned: false,
+    partner: null, duet: 'turns',   // a second character acting together with the one in control
+    lastMove: null,                 // the signature move last played: { name, act, t }
     keyOf(msg) {
         const c = ctx();
         if (msg?.original_avatar) return msg.original_avatar;   // group chats tag each message with its character
@@ -834,13 +913,52 @@ const chars = {
         } finally { this.reading.delete(key); }
     },
     current() { return this.get(this.activeKey()); },
+    keyByName(name) {
+        const n = String(name || '').trim().toLowerCase(); if (!n) return null;
+        const list = ctx().characters, ch = Array.isArray(list) ? list.find((x) => x?.name && x.name.toLowerCase() === n) : null;
+        if (ch?.avatar) return ch.avatar;
+        const known = Object.entries(S().characters || {}).find(([, r]) => String(r.name).toLowerCase() === n);
+        return known ? known[0] : `name:${String(name).trim()}`;
+    },
+    // with="NAME" on a tag: that character joins in. A tag naming an act without it means one character again.
+    setPartner(name, mode) {
+        const off = !name || name === true || /^(none|no one|nobody|solo|alone)$/i.test(String(name).trim());
+        const key = off || !S().charStyles ? null : this.keyByName(name);
+        this.partner = key && key !== this.activeKey() ? key : null;
+        this.duet = /^(together|both|unison|as one)$/i.test(String(mode || '').trim()) ? 'together' : 'turns';
+    },
+    partnerRec() { return this.partner && S().charStyles && this.activeKey() ? this.get(this.partner) : null; },
+    actives() { return [this.current(), this.partnerRec()].filter(Boolean); },
+    // What the synthesizer needs for whoever is acting: { intent: { style } | { styles, duet }, keys }.
+    cast() {
+        const fx = (r) => ({ ...styleEffect(r.traits, r.learned), motifs: r.motifs });
+        const a = this.current(), b = a ? this.partnerRec() : null;
+        if (a && b) return { intent: { styles: [fx(a), fx(b)], duet: this.duet }, keys: [this.activeKey(), this.partner] };
+        return { intent: { style: a ? fx(a) : null }, keys: [] };
+    },
+    // ---- session memory: what happened with this character, kept as short recaps the AI can refer back to
+    sess(r) {
+        const now = Date.now();
+        if (!r.now || now - r.now.t > 3 * 3600e3) {   // three quiet hours ends a session
+            if (r.now && (r.now.minutes > 0 || r.now.edges || r.now.finishes)) { (r.recaps ??= []).push(r.now); if (r.recaps.length > 5) r.recaps.shift(); }
+            r.now = { date: new Date(now).toISOString().slice(0, 10), t: now, minutes: 0, edges: 0, finishes: 0, loves: 0, acts: {}, finishedWith: [] };
+        }
+        r.now.t = now;
+        return r.now;
+    },
+    recap(x) {
+        const acts = Object.entries(x.acts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k);
+        return [`${x.date}`, x.minutes ? `${x.minutes} min` : 'a short one', acts.length ? `mostly ${acts.join(', ')}` : '', x.edges ? `edged ${x.edges}×` : '',
+            x.finishes ? `finished ${x.finishes}×${x.finishedWith?.length ? ` (${x.finishedWith.slice(-2).join('; ')})` : ''}` : 'did not finish', x.loves ? `${x.loves} ❤` : ''].filter(Boolean).join(', ');
+    },
     // What the synthesizer needs: the style's effect on motion, plus the character's own favourite phrases.
-    effect() { const r = this.current(); return r ? { ...styleEffect(r.traits, r.learned), motifs: r.motifs } : null; },
+    effect() { const r = this.current(); return r ? { ...styleEffect(r.traits, r.learned), motifs: r.motifs } : null; },   // the character in control alone
     act(r, act) { return (r.acts[act] ??= { n: 0, score: 0 }); },
     // A tag (or your choice on the panel) while this character is in control: remember their habits.
     noteTag(act, intensity) {
         const r = this.current(); if (!r || !act) return;
         this.act(r, act).n++;
+        const se = this.sess(r); se.acts[act] = (se.acts[act] || 0) + 1;
         if (intensity !== undefined) r.intensity = r.intensity == null ? intensity : r.intensity + 0.2 * (intensity - r.intensity);
         r.updated = Date.now();
     },
@@ -850,7 +968,17 @@ const chars = {
         const fav = acts.filter(([, a]) => a.score > 0.5).slice(0, 3).map(([k]) => k);
         const hist = [r.minutes ? `${r.minutes} min together` : '', r.edges ? `brought them to the edge ${r.edges}×` : '', r.finishes ? `made them finish ${r.finishes}×` : '',
             fav.length ? `the user loves it when ${r.name} does ${fav.join(', ')}` : '', r.intensity != null && acts.length ? `usually goes at intensity ~${r.intensity.toFixed(1)}` : ''].filter(Boolean);
-        return `CHARACTER STYLE: ${r.name} moves the device their own way: ${describeStyle(r.traits, r.learned)}. The device already plays it in that style; choose acts and intensity the way ${r.name} would${hist.length ? `. History with the user: ${hist.join('; ')}` : ''}.`;
+        return `CHARACTER STYLE: ${r.name} moves the device their own way: ${describeStyle(r.traits, r.learned)}. The device already plays it in that style; choose acts and intensity the way ${r.name} would${hist.length ? `. History with the user: ${hist.join('; ')}` : ''}.${this.memory(r)}${this.duetText()}`;
+    },
+    memory(r) {
+        const past = (r.recaps || []).slice(-2).map((x) => this.recap(x));
+        const cur = r.now && Date.now() - r.now.t < 3 * 3600e3 && (r.now.minutes > 0 || r.now.edges || r.now.finishes) ? this.recap(r.now) : '';
+        if (!past.length && !cur) return '';
+        return ` SESSION MEMORY with ${r.name}:${past.length ? ` earlier sessions: ${past.join(' | ')}.` : ''}${cur ? ` This session so far: ${cur}.` : ''} ${r.name} remembers these and may refer back to them naturally.`;
+    },
+    duetText() {
+        const p = this.partnerRec();
+        return p ? ` ${p.name} has joined in (${this.duet === 'together' ? 'moving as one' : 'taking turns'}): ${p.name}'s style is ${describeStyle(p.traits, p.learned)}.` : '';
     },
     summary(r) { return r ? `${r.name}: ${describeStyle(r.traits, r.learned)}` : ''; },
 };
@@ -864,7 +992,7 @@ function actPrefs(act) {
 // is your general taste for the act, so the total change is the same as before.
 function absorb(alpha) {
     const i = actEngine.intent; if (!i.act) return;
-    const a = actPrefs(i.act), r = chars.current(), w = r ? 0.5 : 0, L = r?.learned;
+    const a = actPrefs(i.act), rs = chars.actives(), w = rs.length ? 0.5 : 0, wr = w / (rs.length || 1);   // two characters share the character half
     const k = (m) => Math.pow(m, alpha);
     const sm = k(i.speedMul), am = k(i.ampMul);
     a.rateMul = clamp(a.rateMul * Math.pow(sm, 1 - w), 0.3, 3); i.speedMul /= sm;
@@ -872,32 +1000,36 @@ function absorb(alpha) {
     a.centerShift = clamp(a.centerShift + 25 * i.depthOff * alpha * (1 - w), -40, 40);
     const baseVar = i.variation ?? a.variation;
     a.variation = clamp(a.variation + (baseVar + i.varOff * (1 - w) - a.variation) * alpha, 0, 1);
-    if (L) {
-        L.rateMul = clamp(L.rateMul * Math.pow(sm, w), 0.5, 2);
-        L.ampMul = clamp(L.ampMul * Math.pow(am, w), 0.5, 2);
-        L.centerShift = clamp(L.centerShift + 25 * i.depthOff * alpha * w, -30, 30);
-        L.varOff = clamp(L.varOff + i.varOff * alpha * w, -0.4, 0.4);
+    for (const r of rs) {
+        const L = r.learned;
+        L.rateMul = clamp(L.rateMul * Math.pow(sm, wr), 0.5, 2);
+        L.ampMul = clamp(L.ampMul * Math.pow(am, wr), 0.5, 2);
+        L.centerShift = clamp(L.centerShift + 25 * i.depthOff * alpha * wr, -30, 30);
+        L.varOff = clamp(L.varOff + i.varOff * alpha * wr, -0.4, 0.4);
     }
     i.depthOff *= 1 - alpha; i.varOff *= 1 - alpha;
 }
 // Rate the phrases that were playing, and the phrase-to-phrase transitions
 // into them, so the engine learns both what you like and what to chain.
 function creditMotifs(reward, windowMs = 8000, alpha = 0.3) {
-    const pr = S().profile, now = Date.now(), r = chars.current();
+    const pr = S().profile, now = Date.now(), all = chars.actives();
     const seq = actEngine.used.filter((u) => u.motif && u.from < now).sort((a, b) => a.from - b.from);
+    const before = (i) => { for (let k = i - 1; k >= 0; k--) if (!seq[k].orn) return seq[k].motif; return null; };   // a detail touch is not a link in the chain
     for (let i = 0; i < seq.length; i++) {
         const u = seq[i];
         if (u.to <= now - windowMs) continue;
         // a phrase you already rated and that has since been replaced keeps that verdict
         if (u.rated && u.to <= now && Math.sign(u.rated) !== Math.sign(reward)) continue;
         reinforce(pr.motifs, u.motif, reward, alpha);
-        if (r) reinforce(r.motifs, u.motif, reward, alpha);   // and this character's own favourites
-        if (i > 0) reinforce(pr.trans, `${seq[i - 1].motif}>${u.motif}`, reward, alpha);
+        // and the favourites of whoever was doing it: in a duet, the one whose turn it was
+        for (const r of (u.who ? [chars.get(u.who)].filter(Boolean) : all)) reinforce(r.motifs, u.motif, reward, alpha);
+        const pv = u.orn ? null : before(i);
+        if (pv) reinforce(pr.trans, `${pv}>${u.motif}`, reward, alpha);
         if (!u.rated || Math.sign(u.rated) !== Math.sign(reward)) countRating(u.motif, reward);
         u.rated = reward;
     }
     pruneTrans();
-    if (r) { const k = Object.keys(r.motifs); if (k.length > 400) k.sort((x, y) => Math.abs(r.motifs[x]) - Math.abs(r.motifs[y])).slice(0, k.length - 300).forEach((x) => delete r.motifs[x]); }
+    for (const r of all) { const k = Object.keys(r.motifs); if (k.length > 400) k.sort((x, y) => Math.abs(r.motifs[x]) - Math.abs(r.motifs[y])).slice(0, k.length - 300).forEach((x) => delete r.motifs[x]); }
 }
 // A phrase you have turned down three times, more than twice as often as you liked it, is retired
 // for good (Reset under Learned taste brings it back). Up to then, "Not this" only makes it rarer.
@@ -916,7 +1048,8 @@ function settlePhrases() {
         u.settled = true;
         if (u.rated) continue;
         reinforce(pr.motifs, u.motif, REWARD.neutral, 0.05);
-        if (i > 0) reinforce(pr.trans, `${seq[i - 1].motif}>${u.motif}`, REWARD.neutral, 0.05);
+        let pv = null; if (!u.orn) for (let k = i - 1; k >= 0 && !pv; k--) if (!seq[k].orn) pv = seq[k].motif;
+        if (pv) reinforce(pr.trans, `${pv}>${u.motif}`, REWARD.neutral, 0.05);
     }
 }
 function pruneTrans() {
@@ -931,7 +1064,7 @@ function implicitLearn() {
         absorb(0.05); settlePhrases(); actPrefs(actEngine.intent.act).score += 0.1;
         const r = chars.current();
         if (r) {   // time together: an inexperienced character slowly grows more confident with you
-            r.minutes++;
+            r.minutes++; chars.sess(r).minutes++;
             if (r.traits.exp + r.learned.expGain < 0.85) r.learned.expGain = Math.min(0.45, r.learned.expGain + 0.008);
         }
         save();
@@ -973,7 +1106,7 @@ function closeSignal(fromText = false) {
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
     if (actEngine.running) {
         creditMotifs(0.6, 10000, 0.2); const a = actPrefs(actEngine.intent.act); a.edges = (a.edges || 0) + 1;
-        const r = chars.current(); if (r) { r.edges++; chars.act(r, actEngine.intent.act).score += 0.6; }
+        const r = chars.current(); if (r) { r.edges++; chars.sess(r).edges++; chars.act(r, actEngine.intent.act).score += 0.6; }
         save();
     }
     if (actEngine.running && pull) {
@@ -988,13 +1121,18 @@ function closeSignal(fromText = false) {
 
 // "Finished": the strongest signal there is about what works. The phrases from the last ~20 s are rated up
 // firmly, the act's finish count is remembered (and shown to the AI), and the device winds down gently.
-let finishes = 0, windTimer = null;
+let finishes = 0, windTimer = null, windUntil = 0;
 function finishSignal(fromText = false) {
     finishes++;
     const s = S();
     if (actEngine.running) {
         creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
-        const r = chars.current(); if (r) { r.finishes++; chars.act(r, actEngine.intent.act).score += 1; }
+        const r = chars.current();
+        if (r) {
+            r.finishes++; chars.act(r, actEngine.intent.act).score += 1;
+            const se = chars.sess(r), mv = chars.lastMove && chars.lastMove.act === actEngine.intent.act && Date.now() - chars.lastMove.t < 600000 ? chars.lastMove.name : null;
+            se.finishes++; se.finishedWith.push(`during ${actEngine.intent.act}${mv ? `, the signature move "${mv}"` : ''}${climax.active ? ', after a climax push' : ''}`);
+        }
         // remember exactly which phrases were playing: a later climax push reaches for these first
         const fz = S().profile.finishers, now = Date.now();
         for (const id of new Set(actEngine.used.filter((u) => u.motif && u.from < now && u.to > now - 20000).map((u) => u.motif))) fz[id] = (fz[id] || 0) + 1;
@@ -1010,6 +1148,7 @@ function finishSignal(fromText = false) {
             clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
         } else if (hamp.running) hamp.params.speed = s.minSpeed;
         clearTimeout(windTimer);
+        windUntil = Date.now() + 20000;
         windTimer = setTimeout(() => anyRunning() && stopAll('wind-down finished'), 20000);
     }
     ui.refresh(); updatePrompt();
@@ -1035,7 +1174,7 @@ function feedback(kind) {
         const r = chars.current();
         if (r && (kind === 'love' || kind === 'nope')) {
             const ca = chars.act(r, i.act); ca.score = ca.score * 0.9 + (kind === 'love' ? 1 : -1);
-            if (kind === 'love') { r.loves++; if (r.traits.exp + r.learned.expGain < 0.85) r.learned.expGain = Math.min(0.45, r.learned.expGain + 0.01); } else r.nopes++;
+            if (kind === 'love') { r.loves++; chars.sess(r).loves++; if (r.traits.exp + r.learned.expGain < 0.85) r.learned.expGain = Math.min(0.45, r.learned.expGain + 0.01); } else r.nopes++;
         }
         a.n++;
         if (f.act || kind === 'nope') { clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), S().transport === 'hssp' ? 700 : 150); }
@@ -1084,7 +1223,7 @@ function findFavorite(name) {
     return all.find((f) => f.owner && f.owner === key) || all.find((f) => !f.owner) || all[0] || null;
 }
 async function playFavorite(f) {
-    if (f.kind === 'act') await actEngine.apply({ act: f.intent.act, preset: f.intent });
+    if (f.kind === 'act') { if (f.owner) chars.lastMove = { name: f.name, act: f.intent.act, t: Date.now() }; await actEngine.apply({ act: f.intent.act, preset: f.intent }); }
     else await hamp.play(f.pattern, { ...f.params });
 }
 
@@ -1219,7 +1358,11 @@ const calib = {
         if (this.step !== 3) return;
         S().calibration = { base: this.base, tip: this.tip, at: new Date().toISOString().slice(0, 10) };
         sessionChecked = true;
-        save(); toast(`Calibrated: base at ${this.base}, tip at ${this.tip}`, 'success');
+        // Recalibrated while a saved setup was in use: it's your call whether this is that setup, adjusted, or a new position.
+        const was = S().setupName ? setups.find(S().setupName) : null;
+        const su = was && confirm(`Update the saved setup “${was.name}” with this calibration?\n\nOK: update it.\nCancel: keep “${was.name}” as it was (save this one under a new name in the settings if you want to keep it).`) ? was : null;
+        if (su) Object.assign(su, S().calibration); else S().setupName = null;
+        save(); toast(`Calibrated: base at ${this.base}, tip at ${this.tip}${su ? ` (setup “${su.name}” updated)` : ''}`, 'success');
         this.close();
     },
     close() { this.active = false; ui.calib(); ui.refresh(); updatePrompt(); try { (this.v3() ? api3.mode(0) : api.mode(0)).catch(() => {}); } catch { /* best effort */ } },
@@ -1260,6 +1403,7 @@ function profileText() {
     L.push(`- blend mixes in a little of other acts for transitions or creative combinations (e.g. a blowjob with handjob: act="blowjob" blend="handjob:0.4").`);
     L.push(`- <handy stop/> stops. Don't emit a tag if nothing physical changed.`);
     L.push(`- A reply may hold several tags. Put each one right where that moment happens in your text: they play in order as the user reads (e.g. a slow start, a tag mid-reply where it speeds up, another where it eases off).`);
+    if (ctx().groupId && s.charStyles) L.push(`- When two characters act on the user together, add with="THE OTHER CHARACTER'S NAME" to the tag (and duet="together" if they move as one; otherwise they take turns). The device then plays both of their styles. Leave it out when one character acts alone.`);
     L.push(`- <handy climax="30"/> pushes the user over the edge: a steady build to a peak over that many seconds (10-90), using what has made them finish before. Use it when the scene calls for the user to cum, not before.`);
     L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
@@ -1301,15 +1445,25 @@ function handleMessage(id) {
     if (!msg || msg.is_user || typeof msg.mes !== 'string') return;
     const tags = [...msg.mes.matchAll(TAG_RE)];
     pending = [];
+    clearBeats();   // a new reply replaces whatever was still waiting from the last one
+    if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
+        // No tag: follow what the reply describes, each change when you'd read it.
+        const wpm = num(S().readWpm), text = msg.mes;
+        let tot = 0;
+        for (const c of proseCues(text)) {
+            if (c.di) { if (Math.abs(tot + c.di) > 0.31) continue; tot += c.di; }
+            const delay = wpm > 0 ? Math.min(180000, ((text.slice(0, c.idx).match(/\S+/g) || []).length / wpm) * 60000) : 0;
+            beats.push(setTimeout(() => runBeat({ _cue: true, ...c }), Math.max(delay, 50)));
+        }
+    }
     if (tags.length) {
         const who = chars.keyOf(msg);
-        if (who && who !== chars.who) { chars.who = who; if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); }   // a different character takes over
+        if (who && who !== chars.who) { chars.who = who; if (chars.partner === who) chars.partner = null; if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); }   // a different character takes over
         // In order. The first acts at once; each later one waits for the words between it and the first,
         // at your reading speed, so a reply that builds, peaks and eases off plays out as you read it.
         const text = msg.mes, wpm = num(S().readWpm);
         const wordsTo = (idx) => (text.slice(0, idx).replace(TAG_RE, ' ').match(/\S+/g) || []).length;
         const w0 = wordsTo(tags[0].index);
-        clearBeats();
         for (const t of tags) {
             const a = parseAttrs(t[1]);
             const delay = wpm > 0 ? Math.min(180000, ((wordsTo(t.index) - w0) / wpm) * 60000) : 0;
@@ -1325,6 +1479,7 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
+    if (a.with !== undefined || (a.act && a.act !== true)) chars.setPartner(a.with, a.duet);   // with="NAME": a second character joins; an act without it: one again
     if (a.climax !== undefined) return climax.start(a);
     const fav = a.favorite ?? a.move;
     if (fav && fav !== true) { const f = findFavorite(fav); if (f) return playFavorite(f); }
@@ -1333,6 +1488,7 @@ function runCommand(a) {
         return Promise.resolve(rest.act || rest.intensity !== undefined || rest.blend ? actEngine.apply(rest) : null).then(() => saveSignature(a.save));
     }
     if (a.act || a.intensity !== undefined || a.blend) return actEngine.apply(a);
+    if (a.with !== undefined && actEngine.running) return actEngine.regen();   // <handy with="NAME"/> alone: join what is playing
     if (!a.pattern && actEngine.running && (a.depth !== undefined || a.variation !== undefined)) return actEngine.apply(a);   // e.g. <handy depth="-0.5"/>
     if (a.pattern) {
         const params = {};
@@ -1380,6 +1536,8 @@ const ui = {
       </select></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_session_check"> Ask me to confirm calibration before the first motion of each session</label>
     <label>Reading speed for replies with several tags (words/min, 0 = play all at once) <input type="number" id="handy_wpm" class="text_pole" min="0" max="600"></label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_prose"> Follow the story when a reply has no tag (faster, slower, deeper, pauses)</label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_ornaments"> Add detail: flutters at the tip, slow drags, deep pulses</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
@@ -1393,6 +1551,12 @@ const ui = {
     <div class="flex-container">
       <div id="handy_cal_start" class="menu_button">Calibrate to my body</div>
       <div id="handy_cal_clear" class="menu_button">Clear calibration</div>
+    </div>
+    <label>Saved setups (lying down, sitting, a mount…)
+      <select id="handy_setup_sel" class="text_pole"></select></label>
+    <div class="flex-container">
+      <div id="handy_setup_save" class="menu_button" title="Save the current calibration under a name">Save current as…</div>
+      <div id="handy_setup_del" class="menu_button">Delete setup</div>
     </div>
     <hr>
     <b>Character styles</b>
@@ -1448,6 +1612,7 @@ const ui = {
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
         bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked');
+        bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
         $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.warned = false; save(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
         const restyle = () => { if (actEngine.running) enqueue(() => actEngine.running && actEngine.regen()); ui.refresh(); updatePrompt(); };
@@ -1466,7 +1631,10 @@ const ui = {
         $('#handy_char_forget').on('click', () => { const r = selChar(); if (r && confirm(`Forget what your feedback taught ${r.name}? (Their card-based style stays.)`)) { Object.assign(r, { learned: EMPTY_LEARNED(), motifs: {}, acts: {}, loves: 0, nopes: 0, intensity: null }); save(); restyle(); } });
         $('#handy_char_delete').on('click', () => { const key = $('#handy_char_sel').val(), r = selChar(); if (r && confirm(`Delete ${r.name}'s style and history?`)) { delete S().characters[key]; chars.seen.delete(key); save(); restyle(); } });
         $('#handy_cal_start').on('click', () => calib.start());
-        $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; save(); ui.refresh(); } });
+        $('#handy_cal_clear').on('click', () => { if (confirm('Clear your calibration and use the full device range?')) { S().calibration = null; S().setupName = null; save(); ui.refresh(); } });
+        $('#handy_setup_sel, #handy_setup, #handy_calib_setup').on('change', function () { if (this.value) setups.use(this.value); });
+        $('#handy_setup_save').on('click', () => { const n = prompt('Name this setup (e.g. Lying down):', S().setupName || ''); if (n) setups.save(n); });
+        $('#handy_setup_del').on('click', () => { const n = S().setupName; if (n && confirm(`Delete the setup “${n}”? (Your current calibration stays.)`)) setups.remove(n); });
         bind('#handy_api', 'apiBase'); bind('#handy_upload', 'uploadUrl');
         const ex = () => { const v = S().profile.exploreBias ?? 1; $('#handy_explore').val(v); $('#handy_explore_v').text(v < 0.4 ? 'stick to favorites' : v > 1.4 ? 'experiment a lot' : 'balanced'); };
         ex(); $('#handy_explore').on('input', function () { S().profile.exploreBias = +this.value; ex(); save(); });
@@ -1506,6 +1674,7 @@ const ui = {
     <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div><div id="handy_calib_btn" class="menu_button" title="Calibrate tip and base (for when the Handy is set up differently)"><i class="fa-solid fa-ruler-vertical"></i></div></div>
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
+    <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
     <div id="handy_now" class="handy-small"></div>
@@ -1517,6 +1686,7 @@ const ui = {
   <div class="handy-calib-box">
     <b id="handy_calib_title">Calibrate to your body</b>
     <p id="handy_calib_text"></p>
+    <label id="handy_calib_setup_row">Setup <select id="handy_calib_setup" class="text_pole"></select></label>
     <div class="handy-calib-pos">Device position <span id="handy_calib_pos">50</span> <span id="handy_calib_marks" class="handy-small"></span></div>
     <div class="handy-calib-jog">
       <div class="menu_button" data-jog="-10">▼▼ −10</div><div class="menu_button" data-jog="-2">▼ −2</div>
@@ -1572,7 +1742,11 @@ const ui = {
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
-        $('#handy_who').text(cur_r ? `Style · ${chars.summary(cur_r)}` : '');
+        const pRec = cur_r ? chars.partnerRec() : null;
+        $('#handy_who').text(cur_r ? `Style · ${chars.summary(cur_r)}${pRec ? ` + ${pRec.name} (${chars.duet === 'together' ? 'as one' : 'taking turns'})` : ''}` : '');
+        const sl = setups.list(), opts = (s.setupName ? '' : '<option value="">— not a saved setup —</option>') + sl.map((x) => `<option value="${esc(x.name)}" ${x.name === s.setupName ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+        $('#handy_setup_sel, #handy_setup').html(opts);
+        $('#handy_setup_row').toggle(sl.length > 0);
         const keys = Object.keys(s.characters || {}).sort((a, b) => (s.characters[b].updated || 0) - (s.characters[a].updated || 0));
         const sel = keys.includes($('#handy_char_sel').val()) ? $('#handy_char_sel').val() : (ak && keys.includes(ak) ? ak : keys[0]);
         $('#handy_char_sel').html(keys.length ? keys.map((k) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(s.characters[k].name)}${k === ak ? ' (in control)' : ''}</option>`).join('') : '<option value="">— no characters yet —</option>');
@@ -1581,7 +1755,7 @@ const ui = {
         const want = String(s.styleProfile || '');
         $('#handy_style_profile').html(`<option value="">Keywords only (no AI)</option>` + names.map((n) => `<option value="${esc(n)}" ${n === want ? 'selected' : ''}>${esc(n)}</option>`).join('') + (want && !names.includes(want) ? `<option value="${esc(want)}" selected>${esc(want)} (not found: using keywords)</option>` : ''));
         $('#handy_arousal_fill, #handy_arousal_pct').closest('.handy-arousal').toggle(!!s.arousalMeter);
-        $('#handy_char_desc').text(sr ? `${describeStyle(sr.traits, sr.learned)}.${sr.custom ? ' Adjusted by you.' : sr.source === 'ai' ? ` Read by your ${s.styleProfile} model${sr.why ? `: ${sr.why}` : '.'}` : sr.hits?.length ? ` From the card: ${sr.hits.slice(0, 8).join(', ')}.` : ' Nothing in the card suggested a style, so it starts balanced.'}${sr.minutes ? ` ${sr.minutes} min together.` : ''}${sr.loves || sr.nopes ? ` ❤ ${sr.loves} · 👎 ${sr.nopes}.` : ''}` : 'Open a chat with a character and they will get a style.');
+        $('#handy_char_desc').text(sr ? `${describeStyle(sr.traits, sr.learned)}.${sr.custom ? ' Adjusted by you.' : sr.source === 'ai' ? ` Read by your ${s.styleProfile} model${sr.why ? `: ${sr.why}` : '.'}` : sr.hits?.length ? ` From the card: ${sr.hits.slice(0, 8).join(', ')}.` : ' Nothing in the card suggested a style, so it starts balanced.'}${sr.minutes ? ` ${sr.minutes} min together.` : ''}${sr.recaps?.length || sr.now ? ` Last session: ${chars.recap(sr.now && (sr.now.minutes || sr.now.finishes || sr.now.edges) ? sr.now : (sr.recaps?.at(-1) || sr.now))}.` : ''}${sr.loves || sr.nopes ? ` ❤ ${sr.loves} · 👎 ${sr.nopes}.` : ''}` : 'Open a chat with a character and they will get a style.');
         for (const k of Object.keys(TRAITS)) $(`#handy_char_traits input[data-trait="${k}"]`).val(sr ? sr.traits[k] : TRAITS[k].neutral);
         $('#handy_char_traits, #handy_char_reread, #handy_char_forget, #handy_char_delete').toggle(!!sr);
         const c = cal();
@@ -1625,6 +1799,9 @@ const ui = {
             $('#handy_calib_test').text('Test');
         }
         $('#handy_calib .handy-calib-pos').toggle(!asking);
+        const sl = setups.list(), cur = S().setupName;
+        $('#handy_calib_setup_row').toggle(asking && sl.length > 0);
+        $('#handy_calib_setup').html((cur ? '' : '<option value="">— current calibration —</option>') + sl.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.name)} (base ${x.base}, tip ${x.tip})</option>`).join(''));
         $('#handy_calib .handy-calib-jog').toggle(c.step === 1 || c.step === 2);
         $('#handy_calib_back').toggle(c.step > 1);
         $('#handy_calib_test').toggle(asking || c.step === 3);
@@ -1640,7 +1817,7 @@ jQuery(() => {
     const ev = c.eventTypes || c.event_types;
     c.eventSource.on(ev.MESSAGE_RECEIVED, handleMessage);
     if (ev.MESSAGE_SENT) c.eventSource.on(ev.MESSAGE_SENT, handleUserMessage);
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.current(); ui.refresh(); updatePrompt(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;
@@ -1651,5 +1828,5 @@ jQuery(() => {
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => arousal.tick(), 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

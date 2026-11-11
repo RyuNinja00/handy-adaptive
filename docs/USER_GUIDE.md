@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.6.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.7.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -120,13 +120,16 @@ Open **Extensions → Handy Adaptive** and go through each setting:
 14. **Notice “I'm close” / “I'm cumming” in my messages** (on by default): for when your hands are busy. Writing "I'm so close" or "gonna cum" acts like the 🔥 button; "I'm cumming" or "I just came" acts like 🥂 Finished. Questions ("are you cumming?"), negations ("I'm not cumming yet") and everyday phrases ("close to the door", "I came home") are ignored.
 15. **Safeword**: optional. If this word appears anywhere in a message you send, the device stops at once. Pick something that won't come up in the story. A short message (up to five words) such as “stop”, “stop, please”, “ok halt” or “red” always stops it too; “don't stop” and questions such as “can you stop?” never do.
 16. **Reading speed for replies with several tags** (words/min, default 220): when a reply holds more than one tag, the first plays at once and each later one waits until you'd have read up to it. Lower it if the motion runs ahead of your reading, raise it if it lags. 0 plays every tag at once.
-17. **Estimate my arousal and tell the AI** (on by default): see *Arousal estimate* in Part 13.
-18. **Ask me to confirm calibration before the first motion of each session** (on by default): before anything moves after SillyTavern loads, it asks whether the Handy is set up as last time, so you can recalibrate first. See *Calibrate to your body* in Part 5.
-19. **Show control panel**: shows or hides the floating panel.
-20. **Give each character their own stroking style** (under Character styles, on by default): each character moves the Handy their own way, read from their card and refined by your feedback. See *Character styles* in Part 13.
-21. **Read character cards with** (under Character styles): the connection profile that reads each card. Choose your local `Background` profile, or *Keywords only (no AI)*.
-22. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
-23. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
+17. **Follow the story when a reply has no tag** (on by default): if the AI describes a change but forgets the tag, the motion that's playing is nudged to match. See *Following the story* in Part 13.
+18. **Add detail** (on by default): small touches between phrases: flutters at the tip, slow drags, deep pulses. See *Detail touches* in Part 13.
+19. **Estimate my arousal and tell the AI** (on by default): see *Arousal estimate* in Part 13.
+20. **Ask me to confirm calibration before the first motion of each session** (on by default): before anything moves after SillyTavern loads, it asks whether the Handy is set up as last time, so you can recalibrate first. See *Calibrate to your body* in Part 5.
+21. **Show control panel**: shows or hides the floating panel.
+22. **Saved setups** (under Calibration): keep a calibration for each way you use the Handy and switch between them. See *Saved setups* in Part 5.
+23. **Give each character their own stroking style** (under Character styles, on by default): each character moves the Handy their own way, read from their card and refined by your feedback. See *Character styles* in Part 13.
+24. **Read character cards with** (under Character styles): the connection profile that reads each card. Choose your local `Background` profile, or *Keywords only (no AI)*.
+25. **Try new things** (under Learned taste): how much it experiments vs. sticks to what you've liked. Leave it in the middle to start.
+26. **Advanced** (rarely needed): the API base URL and script upload URL. Only change these if the Handy's API moves.
 
 ---
 
@@ -161,9 +164,21 @@ The Handy rarely sits at exactly the same height and angle twice, so before the 
 - **Recalibrate**: you've moved it. The calibration opens at your old tip and base, so a re-check takes a few taps. The waiting command is dropped; the next one starts normally once you've saved.
 - **STOP**: nothing moves, and you'll be asked again next time.
 
+If you have saved setups, the box also has a **Setup** menu: pick the one you're using today and press **Use it and start**.
+
 If you have never calibrated, the choices are **Start without calibrating** and **Calibrate now**. Turn the question off with **Ask me to confirm calibration before the first motion of each session** in the settings. You can recalibrate at any time with the ruler button on the panel.
 
 Until you train a library, the acts are rough **starter profiles** (teasing, handjob, blowjob, deepthroat, cowgirl, missionary, doggy). They work, but they're generic. Training is what makes each act feel right.
+
+#### Saved setups
+
+If you use the Handy in more than one way (lying down, sitting, in a mount), save a calibration for each:
+
+1. Calibrate for that position.
+2. In the settings under **Calibration**, press **Save current as…** and name it ("Lying down").
+3. Repeat for the next position.
+
+Switch with the **Setup** menu on the panel, in the settings, or in the start-of-session box. Switching stops any motion first, because the same stroke would land somewhere else on the device. If you recalibrate while a setup is in use, you're asked whether to update that setup or keep it as it was. **Delete setup** removes the one in use and leaves your current calibration alone.
 
 ---
 
@@ -190,6 +205,7 @@ What the AI can send (it learns this from the injected instructions):
 <handy favorite="slow tease"/>                       play a saved favorite or signature move
 <handy save="Velvet Spiral"/>                        name what's playing as the character's signature move
 <handy climax="30"/>                                 build to a peak over 30 s and push you over
+<handy act="blowjob" intensity="0.6" with="Mia"/>   a second character joins in (group chats)
 <handy stop/>                                         stop
 ```
 
@@ -438,6 +454,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Act dropdown + ▶** | Play an act yourself |
 | **Intensity slider** | Overall intensity of the current act |
 | **⭐** | Save exactly what's playing as a named favorite. With a character in control, it becomes that character's signature move. |
+| **Setup menu** | Switch to another saved calibration (shown once you've saved one). Stops any motion first. |
 | **Favorites dropdown** | Replay a saved favorite or signature move (the character in control's come first) |
 | **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
 | **Style line** (bottom, in italics) | The style of the character in control, in plain words |
@@ -512,6 +529,18 @@ Negations count: "not shy at all" isn't read as shy. Sentences about you ("{{use
 
 The panel shows the style of the character in control. Untick **Give each character their own stroking style** to turn the feature off.
 
+### Two characters at once
+
+In a group chat, two characters can act on you together. The AI adds `with="NAME"` to its tag, and the device plays both styles:
+- **Taking turns** (the default): they alternate every few seconds, each in their own style, so you feel the hand-over from one to the other.
+- **As one** (`duet="together"`): one motion at the midpoint of the two styles.
+
+The panel's style line shows both names. ❤ and 👎 go to the character whose turn it was (to both, when they move as one), and your Faster / Slower style adjustments teach both of them. A tag that names an act without `with` goes back to one character.
+
+### Session memory
+
+Each character keeps a short record of your sessions together: how long, which acts, how many edges, whether you finished and what was playing when you did (including a signature move or a climax push). The current session and the last two are given to the AI, so a character can refer back ("last time you didn't last through my Velvet Spiral"). A session ends after three quiet hours; the five most recent are kept, and the last one is shown under **Character styles** in the settings. They are part of the Export file.
+
 ### Signature moves
 
 A character can have named moves of their own. There are two ways one is made:
@@ -529,6 +558,29 @@ The AI sees the character in control's signature moves by name and can call one 
 - **🥂 Finished** ends it with the normal wind-down, and what was playing is remembered for next time.
 - **No finish:** after a minute at the peak it eases off to a moderate pace and the AI is told, so the character decides what happens next.
 - Any new instruction or STOP ends the push. Your speed limit always applies.
+
+### Following the story
+
+If a reply describes a change but has no tag, the extension reads it and nudges what's already playing, at the moment you'd read that sentence:
+
+| The reply says | The motion |
+|---|---|
+| faster, speeds up, harder, frantic | intensity up a step |
+| slows down, eases off, gently | intensity down a step |
+| deeper, to the base, takes you all | deeper |
+| just the tip, around the head | shallower |
+| pauses, holds still, lingers | drops to a near-hold until the next change |
+
+It is deliberately cautious. It never starts or stops the device. It ignores questions ("want me to go faster?"), requests ("beg me to go faster"), negations ("she doesn't slow down") and sentences about what *you* do. It reads at most four cues per reply, does nothing during a climax push or the wind-down after you finish, and stays out of the way whenever the reply has a tag. Turn it off with **Follow the story when a reply has no tag**.
+
+### Detail touches
+
+Between phrases the engine now and then adds a small touch that suits the act:
+- **Flutter**: a run of quick little strokes at the tip.
+- **Drag**: one slow pull up to the tip, a slow slide down and a brief hold at the base.
+- **Pulse**: short, close strokes held deep.
+
+Oral and teasing acts lean to flutters and drags, deep acts to drags and pulses, and thrusting acts to pulses. Experienced and teasing characters use more of them; a wind-up to climax uses none. Each touch is rated like any phrase: ❤ while one plays brings it back more often (for that character too), and one you keep turning down with 👎 is retired. Turn them off with **Add detail**.
 
 ### Arousal estimate
 
@@ -676,6 +728,8 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 | `favorite` | a name | Play a saved favorite or one of the character's signature moves |
 | `save` | a short name | Name what's playing as the character's signature move |
 | `climax` | seconds (10–90, default 30) | Build steadily to a peak and push you over |
+| `with` | a character's name | That character joins in; the device plays both styles. Leave out for one character. |
+| `duet` | `turns` (default) or `together` | With `with`: alternate between the two, or move as one |
 | `stop` | — | Stop. Cancels what earlier tags in the reply started; a tag placed after it in the text still plays when you reach it. `act="stop"` or `act="none"` is treated the same way. |
 
 Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`

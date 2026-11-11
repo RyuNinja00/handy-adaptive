@@ -563,6 +563,117 @@ for (const transport of ['hdsp', 'hsp']) {
     check('the AI can keep at most eight signature moves per character', n === 8, `${n} kept`);
 }
 
+// ---- following the prose when a reply has no tag ----
+{
+    const start = async (seed, settings = {}) => { const h = await boot({ seed, settings }); h.st.name1 = 'Ryan'; h.message('<handy act="handjob" intensity="0.5"/>'); await h.advance(4000); return h; };
+    const after = async (text, settings) => { const h = await start(470, settings); h.message(text); await h.advance(6000); return h.H.actEngine.intent; };
+    const up = await after('She grins and speeds up, her hand a blur.'), down = await after('She slows down, taking her time.');
+    const deep = await after('She takes you deeper with a soft hum.'), hold = await after('She pauses, watching your face.');
+    check('a reply with no tag still steers the motion: faster, slower, deeper, pause', up.intensity === 0.65 && down.intensity === 0.35 && deep.depth === -0.3 && Math.abs(hold.intensity - 0.175) < 1e-9,
+        `faster ${up.intensity}, slower ${down.intensity}, deeper ${deep.depth}, pause ${hold.intensity.toFixed(2)}`);
+    const same = [];
+    for (const t of ['"Do you want me to go faster?"', 'You thrust faster into her hand.', 'Ryan moves faster.', "She doesn't slow down.", 'She keeps the same steady rhythm.', '"Beg me to go faster," she whispers.'])
+        same.push((await after(t)).intensity === 0.5);
+    check('questions, what you do, negations and requests are not read as cues', same.every(Boolean), same.map((x) => (x ? 'ok' : 'CHANGED')).join(' '));
+    const off = await after('She speeds up.', { proseCues: false });
+    const tagged = await after('She speeds up, faster and faster. <handy intensity="0.6"/>');
+    check('the setting turns it off, and a reply with a tag is never second-guessed', off.intensity === 0.5 && tagged.intensity === 0.6);
+    const h = await boot({ seed: 471 });
+    h.message('She strokes you faster and faster.'); await h.advance(5000);
+    const idle = !h.H.active();
+    const h2 = await start(472);
+    h2.H.feedback('finish'); await h2.advance(2000);
+    h2.message('She slows down, gentler now, then speeds up again.'); await h2.advance(30000);
+    check('prose never starts the device, and never interrupts the wind-down after you finish', idle && !h2.H.active());
+    const words = Array.from({ length: 110 }, (_, i) => 'w' + i).join(' ');
+    const h3 = await start(473);
+    h3.message(`${words}. She speeds up.`); await h3.advance(15000); const early = h3.H.actEngine.intent.intensity; await h3.advance(20000);
+    check('prose cues play when you would read them', early === 0.5 && h3.H.actEngine.intent.intensity === 0.65);
+}
+
+// ---- detail touches ----
+{
+    const h = await boot({ seed: 480, settings: { library: lib } });
+    h.message('<handy act="blowjob" intensity="0.5"/>'); await h.advance(3000);
+    const g = h.H.actEngine.gen_(0, 50, 600000), orn = g.used.filter((u) => u.orn);
+    const kinds = new Set(orn.map((u) => u.motif.split(':')[1]));
+    check('detail touches (flutter, drag, pulse) are woven in between phrases', orn.length >= 6 && kinds.size >= 2 && orn.every((u) => /^orn:(flutter|drag|pulse):blowjob$/.test(u.motif)), `${orn.length} in 10 min: ${[...kinds].join(', ')}`);
+    const pr = h.st.extensionSettings.handy_adaptive.profile;
+    const now = h.now();
+    h.H.actEngine.used = [{ from: now - 9000, to: now - 4000, act: 'blowjob', motif: 'm1' }, { from: now - 4000, to: now - 1500, act: 'blowjob', motif: 'orn:flutter:blowjob', orn: true }, { from: now - 1500, to: now + 3000, act: 'blowjob', motif: 'm2' }];
+    h.H.feedback('love');
+    check('a detail touch is rated like any phrase, without breaking the learned chain of phrases', pr.motifs['orn:flutter:blowjob'] > 0 && pr.trans['m1>m2'] > 0 && !Object.keys(pr.trans).some((k) => k.includes('orn:')), Object.keys(pr.trans).join(' '));
+    Object.assign(pr.banned, { 'orn:flutter:blowjob': true, 'orn:drag:blowjob': true });
+    const g2 = h.H.actEngine.gen_(0, 50, 600000).used.filter((u) => u.orn);
+    check('a detail touch you keep turning down is retired', g2.length > 0 && g2.every((u) => u.motif === 'orn:pulse:blowjob'), [...new Set(g2.map((u) => u.motif))].join(','));
+    await h.advance(180000);
+    const vmax = Math.max(...h.dev.cmds.filter((c) => !c.rejected).map((c) => c.v));
+    const h2 = await boot({ seed: 481, settings: { library: lib, ornaments: false } });
+    h2.message('<handy act="blowjob" intensity="0.5"/>'); await h2.advance(3000);
+    check('detail touches stay under the speed cap, and the setting turns them off', vmax <= (60 + 0.8 * 540) * 1.03 && h2.H.actEngine.gen_(0, 50, 600000).used.every((u) => !u.orn), `fastest ${Math.round(vmax)} %/s`);
+}
+
+// ---- two characters at once ----
+{
+    const h = await boot({ seed: 490, settings: { library: lib, ornaments: false } });
+    Object.assign(h.st, { characters: CARDS, groupId: 'g' });
+    h.message('<handy act="blowjob" intensity="0.6" with="Lily"/>', { name: 'Rex', original_avatar: 'rex.png' }); await h.advance(4000);
+    const g = h.H.actEngine.gen_(0, 50, 240000);
+    const rate = (key) => { let n = 0, ms = 0; for (const u of g.used.filter((x) => x.who === key)) { n += g.actions.filter((a) => a.at > u.from && a.at <= u.to).length; ms += u.to - u.from; } return n / 2 / (ms / 1000); };
+    const turns = g.used.every((u, i) => u.who === (i % 2 === 0 ? g.used[0].who : (g.used[0].who === 'rex.png' ? 'lily.png' : 'rex.png')));
+    const p = h.st.prompts.filter(Boolean).pop();
+    check('two characters take turns, each in their own style', h.H.chars.partner === 'lily.png' && turns && rate('rex.png') > rate('lily.png') * 1.4 && /Lily has joined in \(taking turns\)/.test(p) && /with="THE OTHER CHARACTER'S NAME"/.test(p),
+        `Rex ${rate('rex.png').toFixed(1)} vs Lily ${rate('lily.png').toFixed(1)} strokes/s`);
+    const C = h.st.extensionSettings.handy_adaptive.characters, now = h.now();
+    h.H.actEngine.used = [{ from: now - 7000, to: now - 3000, act: 'blowjob', motif: 'mA', who: 'rex.png' }, { from: now - 3000, to: now + 2000, act: 'blowjob', motif: 'mB', who: 'lily.png' }];
+    h.H.feedback('love');
+    check('in a duet, ❤ goes to the character whose turn it was', C['rex.png'].motifs.mA > 0 && C['lily.png'].motifs.mB > 0 && C['rex.png'].motifs.mB === undefined && C['lily.png'].motifs.mA === undefined);
+    for (let k = 0; k < 4; k++) { h.H.feedback('faster'); await h.advance(1200); }
+    check('adjustments in a duet teach both characters and your general taste', C['rex.png'].learned.rateMul > 1.02 && C['lily.png'].learned.rateMul > 1.02 && h.st.extensionSettings.handy_adaptive.profile.acts.blowjob.rateMul > 1.05);
+    h.message('<handy act="blowjob" intensity="0.6" with="Lily" duet="together"/>', { name: 'Rex', original_avatar: 'rex.png' }); await h.advance(3000);
+    const tog = h.H.actEngine.gen_(0, 50, 60000).used.every((u) => u.who == null) && h.H.chars.duet === 'together';
+    h.message('<handy act="doggy" intensity="0.4"/>', { name: 'Lily', original_avatar: 'lily.png' }); await h.advance(3000);
+    check('"together" moves as one, and a tag without with= goes back to one character', tog && h.H.chars.partner === null && h.H.chars.who === 'lily.png' && h.H.active());
+}
+
+// ---- saved setups ----
+{
+    const h = await boot({ seed: 500 });
+    await calibrate(h, 80, 20); h.H.setups.save('Lying down');
+    globalThis.confirm = () => false;   // "is this the same setup, adjusted?" No: a new position
+    await calibrate(h, 70, 30);
+    globalThis.confirm = () => true;
+    const S0 = h.st.extensionSettings.handy_adaptive;
+    const kept = S0.setups[0].tip === 80 && S0.setupName === null;   // answered no: the saved setup is left as it was
+    h.H.setups.save('Sitting');
+    h.message('<handy act="handjob" intensity="0.6"/>'); await h.advance(5000);
+    h.H.setups.use('lying down'); await h.advance(2500);
+    const switched = !h.H.active() && S0.calibration.tip === 80 && S0.calibration.base === 20 && S0.setupName === 'Lying down';
+    await calibrate(h, 84, 24);
+    check('saved setups: switching stops the motion and loads that calibration', kept && switched && S0.setups.length === 2, `setups: ${S0.setups.map((x) => `${x.name} ${x.base}-${x.tip}`).join(', ')}`);
+    check('recalibrating while a setup is in use updates that setup when you confirm', S0.setups.find((x) => x.name === 'Lying down').tip === 84 && S0.setups.find((x) => x.name === 'Sitting').tip === 70);
+    h.H.setups.remove('Sitting');
+    check('a setup can be deleted without touching the current calibration', S0.setups.length === 1 && S0.calibration.tip === 84);
+}
+
+// ---- session memory per character ----
+{
+    const h = await boot({ seed: 510, settings: { library: lib } });
+    Object.assign(h.st, { characters: CARDS, characterId: 2 });
+    h.message('<handy act="blowjob" intensity="0.6"/>'); await h.advance(5000);
+    h.message('<handy save="Velvet Spiral"/>'); await h.advance(125000);
+    h.H.feedback('close'); await h.advance(20000);
+    h.message('<handy favorite="Velvet Spiral"/>'); await h.advance(20000);
+    h.H.feedback('finish'); await h.advance(25000);
+    const r = h.st.extensionSettings.handy_adaptive.characters['vex.png'];
+    const p1 = h.st.prompts.filter(Boolean).pop();
+    check('each character remembers the session: time, edges, and what made you finish', r.now.minutes >= 2 && r.now.edges === 1 && r.now.finishes === 1 && /signature move "Velvet Spiral"/.test(r.now.finishedWith[0]) && /SESSION MEMORY with Vex: This session so far: [^\n]*edged 1×, finished 1×/.test(p1), r.now.finishedWith[0]);
+    await h.advance(4 * 3600e3);
+    h.message('<handy act="handjob" intensity="0.4"/>'); await h.advance(4000);
+    const p2 = h.st.prompts.filter(Boolean).pop();
+    check('a later session starts fresh, and the last one is passed to the AI as a recap', r.recaps.length === 1 && r.now.finishes === 0 && /earlier sessions: [^\n]*finished 1× \(during blowjob, the signature move "Velvet Spiral"/.test(p2), (p2.match(/SESSION MEMORY[^\n]*/) || [''])[0].slice(0, 200));
+}
+
 // ---- learning ----
 {
     const h = await boot({ seed: 180, settings: { library: lib } });

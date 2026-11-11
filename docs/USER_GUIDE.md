@@ -31,7 +31,7 @@ This guide takes you from nothing to an AI that has learned how different acts m
 
 | Item | Notes |
 |---|---|
-| The Handy | Connected to Wi-Fi, with firmware that supports the Handy API v2 (firmware 3 or later) |
+| The Handy | Connected to Wi-Fi. Firmware 3 works with Streaming and Script sync (Handy API v2); firmware 4 works best with Buffered streaming (API v3, needs an Application ID, see Part 4) |
 | SillyTavern | Recent version, running on a PC/Mac/Linux machine or server |
 | A chat model connected to SillyTavern | Any backend works. Larger instruction-following models use the control tags far more reliably than small ones |
 | A browser | Wherever you open SillyTavern. The extension runs in the browser tab, so that tab must stay open while playing |
@@ -74,7 +74,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.7.1.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.7.2.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -99,18 +99,18 @@ Open **Extensions**. You should see a **Handy Adaptive** section, and a small **
 
 Open **Extensions → Handy Adaptive** and go through each setting:
 
-1. **Enabled**: leave on.
+1. **Enabled**: leave on. Unticking it stops the device at once.
 2. **Connection key**: paste the key from Part 2.
 3. Click **Test connection**. You should see ✅ connected and the round-trip time in ms. If you see ❌, check the key and that the Handy is online.
 4. **Motion transport**:
-   - **Streaming (reacts instantly)**: the default and recommended. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
+   - **Streaming (reacts instantly)**: the default, and the right choice on firmware 3 when the SillyTavern tab stays visible. Every stroke is sent live, so feedback buttons take effect within a fraction of a second.
    - **Script sync (smooth)**: uploads a 2-minute generated script to the device. Changes take about a second, and the device pauses for a moment whenever a new script is loaded (on each change, and about every two minutes). If it fails, the extension switches back to Streaming automatically.
    - **Buffered streaming (Handy firmware 4)**: the recommended choice if your Handy runs firmware 4. The extension keeps about 5 seconds of motion stored on the device and tops it up, using Handy's API v3. Motion stays smooth on a slow network and when SillyTavern is in a background tab, and changes still take effect in about half a second, always at a turning point so nothing jerks. It needs an **API v3 Application ID** (next item). If the Handy servers refuse it, or your firmware is older, the extension tells you and switches to Streaming. If the network drops for more than a few seconds, the extension stops, and the device pauses by itself once its stored motion runs out.
    - **API v3 Application ID**: only for Buffered streaming. Sign in to Handy's developer portal (linked from Handy's developer documentation at handyfeeling.com/api/handy-rest/v3/docs), create an application, and paste its Application ID here. It identifies the app, not you; your connection key is still what grants access to your device.
    - **Which to pick:** Buffered streaming on firmware 4. Otherwise, Streaming if the SillyTavern tab stays visible (browsers slow down background tabs and Streaming then drops to about one stroke per second), or Script sync if it will sit behind another tab or a full-screen video.
-5. **Max speed %**: a hard limit on how fast the device may ever move. **Start low (40–50)** and raise it once you trust it. Nothing the AI or the engine does can exceed it.
+5. **Max speed %**: a hard limit on how fast the device may ever move. The default is 80; **start low (40–50)** and raise it once you trust it. Nothing the AI or the engine does can exceed it, values above 100 count as 100, and a change takes effect within a second or two even while it's moving.
 6. **Min speed % (pattern mode)**: only matters for the old pattern mode. Leave it as is.
-7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable.
+7. **Stroke limits (floor / ceiling)**: the lowest and highest positions the device may use (0 = base, 100 = tip). Narrow these if full-length strokes are uncomfortable. Entered the wrong way round, they're swapped.
 8. **Auto-stop after idle**: stops the device if nothing happens for this many seconds. An AI command, a button press and any message you send all count, so the device keeps going while you're chatting and stops if you walk away. The default is 600 (10 minutes). 0 turns it off. Leaving it on is recommended.
 9. **Esc key stops the device**: leave on. Esc becomes a panic button.
 10. **Send acts, learned taste + controls to the AI**: must be **on** for the AI to control the device. It adds the instructions, your act list and your learned preferences to every prompt. Expect roughly 600 to 1,000 tokens per prompt once styles, memory and the arousal estimate are in play.
@@ -139,10 +139,11 @@ Do this before involving the AI, so you know the hardware side works.
 
 1. Put the Handy somewhere safe (not on you yet).
 2. In the **Handy** panel, pick an act from the dropdown (e.g. `handjob`) and press **▶**.
-3. The device should start moving within a second or two. The panel header shows the live position.
-4. Move the **Intensity** slider and watch it respond.
-5. Try **Faster**, **Slower**, **Longer**, **Shorter**, **Tip**, **Base**.
-6. Press **STOP**. It should stop at once. Then try starting it again and pressing **Esc**.
+3. The first time in each session, a **New session: same setup?** box appears before anything moves (see *Each new session* below). For this test, press **Start without calibrating** (or **Use it and start** if you've already calibrated).
+4. The device should start moving within a second or two. The panel header shows the live position.
+5. Move the **Intensity** slider and watch it respond.
+6. Try **Faster**, **Slower**, **Longer**, **Shorter**, **Tip**, **Base**.
+7. Press **STOP**. It should stop at once. Then try starting it again and pressing **Esc**, and once more sending a chat message that says only `stop`.
 
 ### Calibrate to your body (recommended)
 
@@ -168,8 +169,6 @@ If you have saved setups, the box also has a **Setup** menu: pick the one you're
 
 If you have never calibrated, the choices are **Start without calibrating** and **Calibrate now**. Turn the question off with **Ask me to confirm calibration before the first motion of each session** in the settings. You can recalibrate at any time with the ruler button on the panel.
 
-Until you train a library, the acts are rough **starter profiles** (teasing, handjob, blowjob, deepthroat, cowgirl, missionary, doggy). They work, but they're generic. Training is what makes each act feel right.
-
 #### Saved setups
 
 If you use the Handy in more than one way (lying down, sitting, in a mount), save a calibration for each:
@@ -178,7 +177,9 @@ If you use the Handy in more than one way (lying down, sitting, in a mount), sav
 2. In the settings under **Calibration**, press **Save current as…** and name it ("Lying down").
 3. Repeat for the next position.
 
-Switch with the **Setup** menu on the panel, in the settings, or in the start-of-session box. Switching stops any motion first, because the same stroke would land somewhere else on the device. If you recalibrate while a setup is in use, you're asked whether to update that setup or keep it as it was. **Delete setup** removes the one in use and leaves your current calibration alone.
+Switch with the **Setup** menu on the panel, in the settings, or in the start-of-session box. Switching stops any motion first, because the same stroke would land somewhere else on the device (so does **Clear calibration**). If you recalibrate while a setup is in use, you're asked whether to update that setup or keep it as it was. **Delete setup** removes the one in use and leaves your current calibration alone.
+
+Until you train a library, the acts are rough **starter profiles** (teasing, handjob, blowjob, deepthroat, cowgirl, missionary, doggy). They work, but they're generic. Training is what makes each act feel right.
 
 ---
 
@@ -611,7 +612,7 @@ Your taste profile is separate and is kept. Ratings for phrases that came from v
 | Task | How |
 |---|---|
 | Back up your learned taste | Settings → Learned taste → **Export** (saves `handy-profile.json`, including favorites, signature moves and every character's style and history) |
-| Restore it / move to another install | **Import** under Learned taste |
+| Restore it / move to another install | **Import** under Learned taste. It replaces your current taste, and the character styles too when the file has them. |
 | Back up the motion library | Keep your `motion_library.json` file (and ideally `training/` + `handy_cache/`) |
 | Start taste learning over | **Reset** under Learned taste (the motion library is kept). It then asks whether to erase the character styles too. |
 | Go back to starter acts | Motion library → **Use starter defaults** |
@@ -624,9 +625,10 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ## Part 16 — Safety
 
 - **Start with a low Max speed** and narrow stroke limits until you're comfortable.
-- **Ways to stop:** the STOP button, the **Esc** key, a short message such as “stop” or “stop, please”, your safeword anywhere in a message, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once and don't wait for the AI. Story text like “don't stop” never stops the device.
+- **Ways to stop:** the STOP button, the **Esc** key, a short message such as “stop” or “stop, please”, your safeword anywhere in a message, unticking **Enabled**, and the **physical button** on the Handy, which always works even if the browser or network fails. Typed stops act at once, don't wait for the AI, and also cancel any tags still waiting in the reply. Story text like “don't stop” never stops the device.
 - **Auto-stop:** after the idle time, when you switch chats, and when you close or reload the page.
-- In Streaming mode every move is "stop on target": if the connection drops, the device stops where it is instead of continuing.
+- In Streaming mode every move is "stop on target": if the connection drops, the device stops where it is instead of continuing. In Buffered streaming the device holds about 5 seconds of motion, so after a dropped connection it plays out at most that much, then pauses; the extension also stops after repeated failures.
+- Lowering **Max speed** or narrowing the stroke limits while it's moving takes effect within a second or two. Unticking **Enabled** stops it.
 - Keep your connection key private.
 - Only train on legal content of consenting adults.
 
@@ -641,6 +643,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 
 **Test connection fails**
 - Re-check the connection key (no spaces).
+- With **Buffered streaming** selected, Test connection uses API v3 and needs the **API v3 Application ID**; "No API v3 Application ID set" means that field is empty.
 - Make sure the Handy is on and online, and the firmware is up to date.
 - Browser extensions that block requests (ad/privacy blockers) can interfere. Try allowing `handyfeeling.com`.
 
@@ -732,7 +735,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 | `duet` | `turns` (default) or `together` | With `with`: alternate between the two, or move as one |
 | `stop` | — | Stop. Cancels what earlier tags in the reply started; a tag placed after it in the text still plays when you reach it. `act="stop"` or `act="none"` is treated the same way. |
 
-Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`
+Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`. Under Buffered streaming a pattern tag is played by the act engine instead (speed becomes intensity, the range becomes depth).
 
 ### Files
 
@@ -755,4 +758,4 @@ From the repository root (needs Node.js, Python 3 and ffmpeg):
 ```
 npm test
 ```
-This runs synthesizer checks, a simulated learning session, the extension against a simulated Handy (phrase joins, speed cap and rhythm at several network delays, stop behaviour, malformed tags, script sync), and a full trainer run against a mock vision model.
+This runs a markup check, synthesizer checks, a simulated learning session, the extension against a simulated Handy (phrase joins, speed cap and rhythm at several network delays, stop behaviour, malformed tags, every transport and feature), a real-browser smoke test of the panel (skipped if Playwright isn't installed), and a full trainer run against a mock vision model.

@@ -3,6 +3,7 @@
     background: var(--SmartThemeBlurTintColor, #222c); backdrop-filter: blur(8px);
     border: 1px solid var(--SmartThemeBorderColor, #555); border-radius: 12px;
     padding: 8px; font-size: 0.9em; box-shadow: 0 4px 16px #0006;
+    max-height: calc(100vh - 110px); overflow-y: auto;   /* short screens: scroll inside the panel, never off the top */
 }
 #handy_panel.running { border-color: #e0559a; }
 #handy_panel.collapsed .handy-body { display: none; }

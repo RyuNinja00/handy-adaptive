@@ -1,10 +1,12 @@
-# Handy Adaptive (SillyTavern extension) v0.7
+# Handy Adaptive (SillyTavern + Marinara Engine) v0.8
 
 The AI describes **what** is happening in the scene, the extension improvises **how** the device moves using motion learned from your hand-scripted videos, and your live feedback tunes it to your taste over time.
 
 📖 **New here? Follow the [complete step-by-step User Guide](docs/USER_GUIDE.md)**: installation, setup, training, daily use, troubleshooting and reference.
 
-## Install
+🍝 **Using [Marinara Engine](https://github.com/Pasta-Devs/Marinara-Engine)?** Import `dist/handy-adaptive-marinara.zip` as an External Extension. It's the same extension with a small compatibility layer. See **[docs/MARINARA.md](docs/MARINARA.md)**.
+
+## Install (SillyTavern)
 1. Copy the `handy-adaptive` folder into `SillyTavern/data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/`), or push it to a git repo and use **Extensions → Install extension**.
 2. Reload. Open **Extensions → Handy Adaptive**, paste your connection key, set your max speed and stroke limits, and click **Test connection**.
 3. Train a motion library from your videos. See **[TRAINING.md](TRAINING.md)**. Until you do, it uses rough starter profiles.
@@ -52,12 +54,15 @@ STOP · Faster · Slower · Longer · Shorter · Tip · Base · Wilder · Smooth
 | path | what |
 |---|---|
 | `manifest.json`, `index.js`, `synth.js`, `charstyle.js`, `style.css` | the SillyTavern extension (repo root, so **Extensions → Install extension** with this repo's URL works) |
+| `marinara/` | Marinara Engine support: `st-compat.js` (the slice of SillyTavern the extension uses, backed by Marinara), `compat.css`, a vendored jQuery |
+| `scripts/build-marinara.mjs` | builds `dist/handy-adaptive-marinara.zip` from the unmodified extension (`npm run build:marinara`) |
+| `docs/MARINARA.md` | Marinara install and usage guide |
 | `trainer/trainer.py` | video + funscript → `motion_library.json` (run with no options for guided mode) |
 | `Train.bat` / `train.command` | double-click to start the trainer in guided mode (Windows / macOS) |
 | `docs/USER_GUIDE.md` | complete step-by-step guide (start here) |
 | `TRAINING.md` | how the training and learning work |
-| `tests/` | markup check, synthesizer checks, learning simulation, the extension run against a simulated Handy (`tests/device.sim.mjs`), a real-browser smoke test of the panel (`tests/browser.smoke.cjs`; skipped without Playwright), trainer end-to-end test with a mock vision model (`npm test`; needs Node, Python 3, ffmpeg) |
-| `dist/` | packaged release zip |
+| `tests/` | markup check, synthesizer checks, learning simulation, the extension run against a simulated Handy (`tests/device.sim.mjs`), a real-browser smoke test of the panel (`tests/browser.smoke.cjs`; skipped without Playwright), trainer end-to-end test with a mock vision model, the Marinara build in a browser against Marinara's extension runtime (`tests/marinara_e2e.mjs`) (`npm test`; needs Node, Python 3, ffmpeg) |
+| `dist/` | packaged release zips: SillyTavern (`handy-adaptive-v*.zip`) and Marinara (`handy-adaptive-marinara.zip`, `marinara/`) |
 | `tools/` | an earlier, separate trainer prototype; its library format is **not** compatible with this extension (kept for reference) |
 
 Your training videos, labels, cache, generated library and exported taste profile are git-ignored so they never get committed.

@@ -2,7 +2,7 @@
 // simulated Handy, and clicks through the panel. Skips itself when Playwright or a local jQuery is missing.
 const fs = require('fs'), path = require('path'), http = require('http');
 let chromium; try { ({ chromium } = require('playwright')); } catch { console.log('skip browser smoke test: playwright not installed'); process.exit(0); }
-const JQ = ['/usr/share/javascript/jquery/jquery.min.js', path.join(__dirname, 'vendor', 'jquery.min.js')].find((f) => fs.existsSync(f));
+const JQ = ['/usr/share/javascript/jquery/jquery.min.js', path.join(__dirname, 'vendor', 'jquery.min.js'), path.join(__dirname, '..', 'marinara', 'vendor', 'jquery-3.6.1.min.js')].find((f) => fs.existsSync(f));
 if (!JQ) { console.log('skip browser smoke test: no local jQuery'); process.exit(0); }
 const ROOT = path.join(__dirname, '..');
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/ext/style.css">

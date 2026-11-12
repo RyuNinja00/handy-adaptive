@@ -17,3 +17,5 @@ handy-profile.json
 __pycache__/
 node_modules/
 .DS_Store
+tests/marinara_panel.png
+tests/marinara_settings.png

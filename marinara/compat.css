@@ -1,0 +1,95 @@
+/* Handy Adaptive in Marinara Engine: the SillyTavern classes and theme variables
+   the extension's markup expects, mapped to Marinara's theme (light/dark/custom).
+   Loaded after style.css. Everything is scoped to the extension's own elements. */
+#handy_panel, #handy_calib, #handy-st-settings {
+    --SmartThemeBlurTintColor: var(--card, #141414e6);
+    --SmartThemeBorderColor: var(--border, #ec4b9733);
+    --SmartThemeBodyColor: var(--foreground, #d4d4d4);
+    --black30a: color-mix(in srgb, var(--foreground, #fff) 7%, transparent);
+    color: var(--foreground, #d4d4d4);
+    font-family: inherit; font-size: 13px; line-height: 1.35;
+}
+#handy_panel { z-index: 2147483000; border-radius: var(--radius, 12px); }
+#handy_panel.running { border-color: var(--primary, #ec4b97); }
+#handy_calib { z-index: 2147483002; }
+
+/* SillyTavern controls */
+:is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; user-select: none;
+    padding: 5px 9px; min-width: 24px; border-radius: 6px; border: 1px solid var(--border, #ec4b9733);
+    background: color-mix(in srgb, var(--foreground, #fff) 6%, transparent);
+}
+:is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button:hover { border-color: var(--primary, #ec4b97); }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button.disabled { opacity: .45; pointer-events: none; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .redWarningBG { border-color: var(--destructive, #ff6b9d); color: var(--destructive, #ff6b9d); }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .text_pole {
+    box-sizing: border-box; width: 100%; padding: 5px 7px; margin: 2px 0; border-radius: 6px; font: inherit;
+    color: var(--foreground, #d4d4d4); background: color-mix(in srgb, var(--background, #000) 60%, transparent);
+    border: 1px solid var(--border, #ec4b9733);
+}
+:is(#handy_panel, #handy_calib, #handy-st-settings) .flex-container { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .checkbox_label { display: flex; align-items: center; gap: 6px; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) small { opacity: .8; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) code { font-size: .9em; }
+
+/* the settings window (SillyTavern shows these settings in its Extensions drawer) */
+#handy-st-settings {
+    position: fixed; z-index: 2147483001; right: 16px; top: 16px; bottom: 16px;
+    width: min(440px, calc(100vw - 32px)); overflow: auto; box-sizing: border-box; padding: 0 12px 12px;
+    background: var(--card, #141414f2); border: 1px solid var(--border, #ec4b9733); border-radius: var(--radius, 12px);
+    backdrop-filter: blur(12px); box-shadow: 0 8px 32px #0008;
+}
+#handy-st-settings[hidden] { display: none !important; }
+.handy-st-head {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0 8px; margin-bottom: 6px; background: inherit; border-bottom: 1px solid var(--border, #ec4b9733);
+}
+.handy-st-close { cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.handy-st-close:hover { background: color-mix(in srgb, var(--foreground, #fff) 10%, transparent); }
+.handy-st-compat { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.handy-st-small { font-size: .85em; opacity: .85; }
+#handy-st-settings .inline-drawer-header { display: none; }
+#handy-st-settings .inline-drawer-content { display: block !important; }
+#handy-st-settings label { display: block; margin: 5px 0; }
+#handy-st-settings hr { border: 0; border-top: 1px solid var(--border, #ec4b9733); margin: 10px 0; }
+/* SillyTavern-only options: no extension-started replies and no connection profiles in Marinara */
+#handy-st-settings label:has(#handy_auto),
+#handy-st-settings label:has(#handy_style_profile),
+#handy-st-settings label:has(#handy_style_profile) + small,
+#handy_char_reread { display: none !important; }
+
+/* icon font stand-ins (Marinara has no Font Awesome) */
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-solid { font-style: normal; display: inline-block; min-width: 1.15em; text-align: center; cursor: pointer; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-solid::before { font-family: inherit; }
+.fa-angles-up::before { content: "⏫"; }
+.fa-angles-down::before { content: "⏬"; }
+.fa-arrow-up::before { content: "⬆"; }
+.fa-arrow-down::before { content: "⬇"; }
+.fa-arrows-up-down::before { content: "↕"; }
+.fa-compress::before { content: "↔"; }
+.fa-wave-square::before { content: "〰"; }
+.fa-minus::before { content: "➖"; }
+.fa-heart::before { content: "❤"; }
+.fa-thumbs-down::before { content: "👎"; }
+.fa-fire::before { content: "🔥"; }
+.fa-bolt::before { content: "⚡"; }
+.fa-champagne-glasses::before { content: "🥂"; }
+.fa-hand::before { content: "✋"; }
+.fa-play::before { content: "▶"; }
+.fa-star::before { content: "⭐"; }
+.fa-ruler-vertical::before { content: "📏"; }
+.fa-chevron-down::before { content: "▾"; }
+.fa-circle-chevron-down::before { content: "▾"; }
+.fa-gear::before { content: "⚙"; }
+#handy_settings_btn, #handy_collapse { padding: 0 4px; opacity: .85; }
+#handy_settings_btn:hover, #handy_collapse:hover { opacity: 1; }
+
+/* toasts */
+#handy-toasts { position: fixed; left: 16px; bottom: 16px; z-index: 2147483003; display: flex; flex-direction: column; gap: 6px; max-width: min(380px, calc(100vw - 32px)); }
+.handy-toast {
+    padding: 8px 12px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 14px #0006;
+    background: var(--card, #141414f0); color: var(--foreground, #ddd); border-left: 4px solid var(--primary, #ec4b97);
+}
+.handy-toast.error { border-left-color: #e53935; }
+.handy-toast.warning { border-left-color: #fb8c00; }
+.handy-toast.success { border-left-color: #43a047; }

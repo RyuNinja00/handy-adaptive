@@ -2,6 +2,8 @@
 
 This guide takes you from nothing to an AI that has learned how different acts move and how you like them. Follow the parts in order the first time. Later you can jump to whatever you need.
 
+> **Using Marinara Engine instead of SillyTavern?** Follow **[the Marinara guide](MARINARA.md)** in place of Parts 3–6. Every other part, including training and calibration, is the same.
+
 **Contents**
 
 - [Part 1 — What you need](#part-1--what-you-need)
@@ -74,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.7.5.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.8.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or

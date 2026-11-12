@@ -20,7 +20,8 @@
     background: color-mix(in srgb, var(--foreground, #fff) 6%, transparent);
 }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button:hover { border-color: var(--primary, #ec4b97); }
-:is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button.disabled { opacity: .45; pointer-events: none; }
+/* dimmed but still clickable: the extension answers a press while moving with "wait until the sleeve stops" */
+:is(#handy_panel, #handy_calib, #handy-st-settings) .menu_button.disabled { opacity: .45; cursor: not-allowed; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .redWarningBG { border-color: var(--destructive, #ff6b9d); color: var(--destructive, #ff6b9d); }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .text_pole {
     box-sizing: border-box; width: 100%; padding: 5px 7px; margin: 2px 0; border-radius: 6px; font: inherit;
@@ -61,26 +62,26 @@
 /* icon font stand-ins (Marinara has no Font Awesome) */
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-solid { font-style: normal; display: inline-block; min-width: 1.15em; text-align: center; cursor: pointer; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-solid::before { font-family: inherit; }
-.fa-angles-up::before { content: "⏫"; }
-.fa-angles-down::before { content: "⏬"; }
-.fa-arrow-up::before { content: "⬆"; }
-.fa-arrow-down::before { content: "⬇"; }
-.fa-arrows-up-down::before { content: "↕"; }
-.fa-compress::before { content: "↔"; }
-.fa-wave-square::before { content: "〰"; }
-.fa-minus::before { content: "➖"; }
-.fa-heart::before { content: "❤"; }
-.fa-thumbs-down::before { content: "👎"; }
-.fa-fire::before { content: "🔥"; }
-.fa-bolt::before { content: "⚡"; }
-.fa-champagne-glasses::before { content: "🥂"; }
-.fa-hand::before { content: "✋"; }
-.fa-play::before { content: "▶"; }
-.fa-star::before { content: "⭐"; }
-.fa-ruler-vertical::before { content: "📏"; }
-.fa-chevron-down::before { content: "▾"; }
-.fa-circle-chevron-down::before { content: "▾"; }
-.fa-gear::before { content: "⚙"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-angles-up::before { content: "⏫"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-angles-down::before { content: "⏬"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-arrow-up::before { content: "⬆"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-arrow-down::before { content: "⬇"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-arrows-up-down::before { content: "↕"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-compress::before { content: "↔"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-wave-square::before { content: "〰"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-minus::before { content: "➖"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-heart::before { content: "❤"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-thumbs-down::before { content: "👎"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-fire::before { content: "🔥"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-bolt::before { content: "⚡"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-champagne-glasses::before { content: "🥂"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-hand::before { content: "✋"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-play::before { content: "▶"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-star::before { content: "⭐"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-ruler-vertical::before { content: "📏"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-chevron-down::before { content: "▾"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-circle-chevron-down::before { content: "▾"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-gear::before { content: "⚙"; }
 #handy_settings_btn, #handy_collapse { padding: 0 4px; opacity: .85; }
 #handy_settings_btn:hover, #handy_collapse:hover { opacity: 1; }
 

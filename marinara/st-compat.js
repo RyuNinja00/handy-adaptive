@@ -290,12 +290,23 @@ jQuery(() => setTimeout(() => {
     refreshCompatStatus();
 }, 0));
 
+// Esc. index.js listens on `document`, but Marinara's context menus and overlays catch keys on `window` in
+// the capture phase and stop them. So Esc is caught first here: it stops the device even while a Marinara
+// menu is open, and Marinara still gets the key afterwards. (index.js handles the calibration arrows the
+// same way itself.)
+const onKeyCapture = (e) => {
+    const h = window.handyAdaptive, s = extensionSettings[MODULE];
+    if (h && e.key === 'Escape' && s.escStops !== false && h.active?.()) h.stop('Esc');
+};
+window.addEventListener('keydown', onKeyCapture, true);
+
 syncPrompt();
 ensureHideRegex();
 marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
 
 marinara.onCleanup(async () => {
     if (window.fetch === hookedFetch) window.fetch = nativeFetch;
+    window.removeEventListener('keydown', onKeyCapture, true);
     try { await window.handyAdaptive?.stop?.('extension disabled'); } catch { /* best effort */ }
     clearTimeout(saveTimer); await persist();
     try {   // leave the AI instructions empty so the model stops writing tags

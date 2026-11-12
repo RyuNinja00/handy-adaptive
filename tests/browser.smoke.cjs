@@ -47,6 +47,11 @@ server.listen(0, async () => {
     check('"Finish me" starts a climax push', await p.evaluate(() => handyAdaptive.climax.active));
     await p.click('#handy_stop'); await p.waitForTimeout(300);
     check('STOP stops', !(await p.evaluate(() => handyAdaptive.actEngine.running)));
+    await p.selectOption('#handy_act', 'cowgirl'); await p.click('[data-fb="love"]'); await p.waitForTimeout(100);
+    check('an act picked in the menu survives a panel refresh until ▶', await p.$eval('#handy_act', (e) => e.value) === 'cowgirl');
+    await p.click('#handy_play'); await p.waitForTimeout(400);
+    check('▶ plays the picked act', await p.evaluate(() => handyAdaptive.actEngine.intent.act) === 'cowgirl');
+    await p.click('#handy_stop'); await p.waitForTimeout(300);
     await p.selectOption('#handy_setup', 'Lying down'); await p.waitForTimeout(300); s = await st();
     check('the panel Setup menu switches the calibration', s.calibration.base === 20 && s.setupName === 'Lying down');
     await p.$eval('#handy_collapse', (e) => e.click()); await p.waitForTimeout(100);   // an icon: no icon font on this test page

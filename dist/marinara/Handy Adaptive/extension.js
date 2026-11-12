@@ -1,4 +1,4 @@
-// Handy Adaptive v0.8.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.8.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -305,12 +305,23 @@ jQuery(() => setTimeout(() => {
     refreshCompatStatus();
 }, 0));
 
+// Esc. index.js listens on `document`, but Marinara's context menus and overlays catch keys on `window` in
+// the capture phase and stop them. So Esc is caught first here: it stops the device even while a Marinara
+// menu is open, and Marinara still gets the key afterwards. (index.js handles the calibration arrows the
+// same way itself.)
+const onKeyCapture = (e) => {
+    const h = window.handyAdaptive, s = extensionSettings[MODULE];
+    if (h && e.key === 'Escape' && s.escStops !== false && h.active?.()) h.stop('Esc');
+};
+window.addEventListener('keydown', onKeyCapture, true);
+
 syncPrompt();
 ensureHideRegex();
 marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
 
 marinara.onCleanup(async () => {
     if (window.fetch === hookedFetch) window.fetch = nativeFetch;
+    window.removeEventListener('keydown', onKeyCapture, true);
     try { await window.handyAdaptive?.stop?.('extension disabled'); } catch { /* best effort */ }
     clearTimeout(saveTimer); await persist();
     try {   // leave the AI instructions empty so the model stops writing tags
@@ -851,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.8.0; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.8.1; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -2657,13 +2668,16 @@ const ui = {
         $('#handy_calib_next').on('click', () => (calib.step === -1 ? calib.confirm() : calib.step === 0 ? calib.begin() : calib.step === 3 ? calib.finish() : calib.mark()));
         $('#handy_calib_btn').on('click', () => calib.start());
         $('#handy_calib_cancel').on('click', () => stopAll('calibration cancelled'));
-        document.addEventListener('keydown', (e) => {
+        // First in line (window, capture phase): while calibrating, ↑/↓ only move the sleeve. Otherwise the chat
+        // box would see them too (↑ in an empty message box edits your last message in SillyTavern and Marinara).
+        window.addEventListener('keydown', (e) => {
             if (!calib.active || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
-            e.preventDefault(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
-        });
+            e.preventDefault(); e.stopImmediatePropagation(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
+        }, true);
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
-        $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
+        $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
+        $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
         $('#handy_fav').on('click', saveFavorite);
         $('#handy_favs').on('change', function () { const f = S().profile.favorites[+this.value]; if (this.value !== '' && f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
@@ -2684,7 +2698,10 @@ const ui = {
         const s = S(), pr = s.profile, lib = LIB();
         $('#handy_panel').toggle(!!(s.enabled && s.showPanel)).toggleClass('running', anyRunning());
         const acts = Object.keys(lib.acts);
-        const cur = actEngine.intent.act || $('#handy_act').val();
+        // Keep an act you picked in the menu until you press ▶ (or a different act starts): a refresh in between
+        // (a button, an AI reply, a status update) must not switch the menu back to what played last.
+        if (ui.picked && ui.picked.was !== actEngine.intent.act) ui.picked = null;
+        const cur = ui.picked?.act || actEngine.intent.act || $('#handy_act').val();
         $('#handy_act').html(acts.map((a) => `<option ${a === cur ? 'selected' : ''}>${esc(a)}</option>`).join(''));
         if (actEngine.running) $('#handy_intensity').val(actEngine.intent.intensity);
         const akFav = chars.activeKey();

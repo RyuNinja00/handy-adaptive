@@ -27,6 +27,25 @@ const css = fs.readFileSync(path.join(pkg, 'extension.css'), 'utf8');
 const EXT = { id: 'ext1', name: 'Handy Adaptive', contentHash: 'sha256:test' };
 
 const state = { storage: {}, lorebooks: [], entries: [], regex: [], chats: {}, handy: [], generations: [], csrfFailures: 0, next: null, ids: 0 };
+// A Handy that moves: v2 HDSP sleeve position over real time (same model as tests/sim/bench.mjs)
+const dev = { mode: null, seg: null, rest: 0, cmds: [] };
+const devPos = (t = Date.now()) => { const g = dev.seg; if (!g) return dev.rest; if (t >= g.t1) return g.p1; return g.p0 + (g.p1 - g.p0) * ((t - g.t0) / (g.t1 - g.t0)); };
+const halt = () => { dev.rest = devPos(); dev.seg = null; };
+function handyCmd(p, body) {
+    if (p === '/connected') return { connected: true };
+    if (p === '/servertime') return { serverTime: Date.now() };
+    if (p === '/mode') { if (body?.mode !== dev.mode) halt(); dev.mode = body?.mode; return { result: 0 }; }
+    if (p === '/hamp/stop' || p === '/hssp/stop') { halt(); return { result: 0 }; }
+    if (p === '/hdsp/xpt') {
+        if (dev.mode !== 2) return { error: { message: 'device not in HDSP mode' } };
+        if (!Number.isFinite(body?.position) || !Number.isFinite(body?.duration)) return { error: { message: 'bad xpt payload' } };
+        const p0 = devPos(), t0 = Date.now(), dur = Math.max(body.duration, 1);
+        dev.seg = { p0, p1: body.position, t0, t1: t0 + dur };
+        dev.cmds.push({ t: t0, p0, p1: body.position, v: (Math.abs(body.position - p0) / dur) * 1000 });
+        return { result: 0 };
+    }
+    return { result: 0 };
+}
 const newId = (p) => `${p}${++state.ids}`;
 const chatsMeta = {
     chat1: { id: 'chat1', name: 'Vex', mode: 'roleplay', characterIds: '["c1"]', personaId: 'p1' },   // stored as text, like Marinara's DB
@@ -55,7 +74,9 @@ ${bundle}
 const page = `<!doctype html><html><head><meta charset="utf-8"><title>mock marinara</title>
 <link rel="stylesheet" href="/api/personal-extensions/ext1/page-style.css?hash=x">
 <style>:root{--background:#050312;--foreground:#d4d4d4;--card:#141414d9;--primary:#ec4b97;--border:#ec4b9733;--destructive:#ff6b9d;--radius:.75rem}body{background:var(--background);color:var(--foreground);height:100vh;margin:0;font-family:system-ui,sans-serif}</style>
-</head><body><div id="app">chat</div><script>
+</head><body><div id="app">chat<textarea id="composer"></textarea></div><script>
+window.__composerKeys = [];
+document.getElementById('composer').addEventListener('keydown', (e) => { if (e.key.startsWith('Arrow')) window.__composerKeys.push(e.key); });
 const cleanupFns = [], timeouts = new Set(), intervals = new Set();
 window.__originalFetch = window.fetch;
 window.confirm = () => true; window.prompt = () => 'x';
@@ -107,10 +128,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/personal-extensions/ext1/page-style.css') { res.writeHead(200, { 'Content-Type': 'text/css' }); return res.end(css); }
     if (p === '/api/personal-extensions/ext1/storage') { if (m === 'PATCH') Object.assign(state.storage, body); return json(200, { value: state.storage }); }
     if (p.startsWith('/handy/v2/')) {
-        state.handy.push({ method: m, path: p.slice('/handy/v2'.length), body, key: req.headers['x-connection-key'] });
-        if (p.endsWith('/connected')) return json(200, { connected: true });
-        if (p.endsWith('/servertime')) return json(200, { serverTime: Date.now() });
-        return json(200, { result: 0 });
+        const sub = p.slice('/handy/v2'.length);
+        state.handy.push({ method: m, path: sub, body, key: req.headers['x-connection-key'] });
+        await new Promise((r) => setTimeout(r, 15));   // a little network latency
+        const out = handyCmd(sub, body);
+        return json(out.error ? 400 : 200, out);
     }
     let mm;
     if ((mm = p.match(/^\/api\/chats\/([^/]+)$/)) && m === 'GET') return chatsMeta[mm[1]] ? json(200, chatsMeta[mm[1]]) : json(404, { error: 'Chat not found' });
@@ -257,6 +279,140 @@ try {
         await pg.keyboard.press('Escape');
         await waitFor(async () => !(await running()), 'stopped by Esc');
     });
+    await step('Esc stops the device even while a Marinara menu is swallowing keys', async () => {
+        await pg.evaluate(() => window.handyAdaptive.run({ act: 'handjob', intensity: 0.5 }));
+        await waitFor(running, 'start');
+        // Marinara's ContextMenu: window keydown, capture phase, stopPropagation on every key
+        await pg.evaluate(() => { window.__swallow = (e) => { e.stopPropagation(); e.preventDefault(); }; window.addEventListener('keydown', window.__swallow, true); });
+        await pg.keyboard.press('Escape');
+        await waitFor(async () => !(await running()), 'stopped by Esc despite the menu');
+        await pg.evaluate(() => window.removeEventListener('keydown', window.__swallow, true));
+        const toasts = await pg.$$eval('.handy-toast', (els) => els.filter((e) => /Esc/.test(e.textContent)).length);
+        assert.equal(toasts, 1, 'one stop, not two');
+    });
+
+    // ---- calibration, driven through the dialog exactly as a user would
+    const calib = () => pg.evaluate(() => { const c = window.handyAdaptive.calib; return { active: c.active, step: c.step, pos: c.pos, moving: !!c.moving }; });
+    const jogVisible = () => pg.isVisible('#handy_calib .handy-calib-jog');
+    const settle = async () => { await waitFor(async () => { const c = await calib(); return !c.moving && Math.abs(devPos() - c.pos) < 0.6; }, 'sleeve settled', 15000); await new Promise((r) => setTimeout(r, 150)); };
+    const clickJog = async (d) => { const before = devPos(); await pg.click(`#handy_calib [data-jog="${d}"]`); await settle(); return Math.round(devPos() - before); };
+    await step('calibration: the dialog opens from the panel and the arrows wait until the sleeve has arrived', async () => {
+        dev.cmds.length = 0;   // (the simulated sleeve stays wherever the last act left it, like a real one)
+        await pg.click('#handy_calib_btn');
+        await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
+        assert.equal((await calib()).step, 0);
+        await pg.click('#handy_calib_next');                      // Start
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(await jogVisible(), false, 'arrows hidden while travelling to the start position');
+        await waitFor(jogVisible, 'arrows appear after arrival', 8000);
+        await settle();
+        assert.equal((await calib()).step, 1);
+    });
+    await step('calibration: ▼ lowers and ▲ raises the real sleeve by exactly the amount shown', async () => {
+        const moves = [await clickJog(-2), await clickJog(-10), await clickJog(2), await clickJog(10)];
+        assert.deepEqual(moves, [-2, -10, 2, 10]);
+    });
+    await step('calibration: ↑/↓ keys work even with focus in Marinara\'s message box (and don\'t reach it)', async () => {
+        await pg.focus('#composer');
+        let before = devPos(); await pg.keyboard.press('ArrowDown'); await settle();
+        assert.equal(Math.round(devPos() - before), -2);
+        before = devPos(); await pg.keyboard.press('Shift+ArrowUp'); await settle();
+        assert.equal(Math.round(devPos() - before), 10);
+        assert.deepEqual(await pg.evaluate(() => window.__composerKeys), []);
+    });
+    await step('calibration: quick presses add up and a change of mind mid-move lands where asked', async () => {
+        const start = (await calib()).pos;
+        for (let i = 0; i < 3; i++) await pg.click('#handy_calib [data-jog="-10"]');
+        await pg.click('#handy_calib [data-jog="10"]');
+        await settle();
+        assert.equal((await calib()).pos, start - 20);
+        assert.equal(Math.round(devPos()), start - 20);
+    });
+    await step('calibration: pressing "This is my tip" while moving answers "wait" instead of marking', async () => {
+        await pg.click('#handy_calib [data-jog="10"]');
+        await pg.click('#handy_calib_next');
+        assert.equal((await calib()).step, 1, 'not marked mid-move');
+        await waitFor(async () => (await pg.$$eval('.handy-toast', (els) => els.some((e) => /Wait until the sleeve stops/.test(e.textContent)))), 'wait hint shown', 2000);
+        await settle();
+    });
+    let tipPos, basePos;
+    await step('calibration: tip, base (with Back), Test and Save all work, and the result is stored', async () => {
+        tipPos = (await calib()).pos;
+        await pg.click('#handy_calib_next');                      // This is my tip
+        await waitFor(async () => (await calib()).step === 2, 'step 2');
+        await settle();
+        await pg.click('#handy_calib_back');                      // Back to the tip…
+        await waitFor(async () => (await calib()).step === 1, 'back to step 1');
+        await settle();
+        assert.equal((await calib()).pos, tipPos);
+        await pg.click('#handy_calib_next');                      // …and on again
+        await waitFor(async () => (await calib()).step === 2, 'step 2 again');
+        await settle();
+        while ((await calib()).pos > tipPos - 40) await clickJog(-10);
+        basePos = (await calib()).pos;
+        await pg.click('#handy_calib_next');                      // This is my base
+        await waitFor(async () => (await calib()).step === 3, 'step 3');
+        const n = dev.cmds.length;
+        await pg.click('#handy_calib_test');                      // Test: sweeps between base and tip at 25 %/s
+        // (it starts at the base, where the sleeve already is, so three moves: tip, base, tip)
+        await waitFor(() => dev.cmds.length >= n + 3, 'test sweeps', 20000);
+        await settle();
+        const sweeps = dev.cmds.slice(n).map((c) => c.p1);
+        assert.deepEqual(sweeps, [tipPos, basePos, tipPos]);
+        assert.ok(sweeps.every((p) => p === tipPos || p === basePos), `test goes only between base and tip: ${sweeps}`);
+        await pg.click('#handy_calib_next');                      // Save
+        await waitFor(async () => !(await calib()).active, 'dialog closed');
+        await waitFor(() => state.storage.settings?.calibration?.tip === tipPos && state.storage.settings?.calibration?.base === basePos, 'calibration saved to Marinara storage');
+        assert.equal(await pg.isVisible('#handy_calib'), false);
+    });
+    await step('calibration: no calibration move was ever faster than 25 %/s', async () => {
+        const vmax = Math.max(...dev.cmds.filter((c) => Math.abs(c.p1 - c.p0) > 0.5).map((c) => c.v));
+        assert.ok(vmax <= 25 * 1.05, `fastest ${Math.round(vmax)} %/s`);
+    });
+    await step('after calibrating, motion stays between your base and tip', async () => {
+        dev.cmds.length = 0;
+        await pg.evaluate(() => window.handyAdaptive.run({ act: 'handjob', intensity: 0.8 }));
+        await new Promise((r) => setTimeout(r, 4000));
+        const ps = dev.cmds.map((c) => c.p1);
+        assert.ok(ps.length > 5, 'strokes sent');
+        assert.ok(Math.min(...ps) >= basePos - 0.5 && Math.max(...ps) <= tipPos + 0.5, `range ${Math.min(...ps)}-${Math.max(...ps)} vs ${basePos}-${tipPos}`);
+        await pg.click('#handy_stop');
+        await waitFor(async () => !(await running()), 'STOP');
+    });
+    await step('calibration: STOP / cancel ends it at once and freezes the sleeve', async () => {
+        await pg.click('#handy_calib_btn');
+        await pg.waitForSelector('#handy_calib', { state: 'visible' });
+        await pg.click('#handy_calib_next');
+        await new Promise((r) => setTimeout(r, 400));
+        await pg.click('#handy_calib_cancel');
+        await waitFor(async () => !(await calib()).active, 'cancelled');
+        const p = devPos(); await new Promise((r) => setTimeout(r, 600));
+        assert.ok(Math.abs(devPos() - p) < 0.5, 'sleeve stopped');
+    });
+    await step('every panel button works when clicked', async () => {
+        const kinds = { faster: 'faster', slower: 'slower', longer: 'longer', shorter: 'shorter', up: 'up', down: 'down', more: 'more', less: 'less', love: 'love', nope: 'nope', close: 'close', climax: 'finish-me', finish: 'finished' };
+        const log = () => pg.evaluate(() => window.handyAdaptive.profile().log.map((e) => e.kind));
+        const failed = [];
+        for (const [btn, kind] of Object.entries(kinds)) {
+            if (!(await running())) { await pg.evaluate(() => window.handyAdaptive.run({ act: 'handjob', intensity: 0.5 })); await waitFor(running, 'running'); }
+            const n = (await log()).length;
+            await pg.click(`#handy_panel [data-fb="${btn}"]`);
+            await new Promise((r) => setTimeout(r, 250));
+            const after = await log();
+            if (!(after.length > n && after.slice(n).includes(kind))) failed.push(btn);
+        }
+        assert.deepEqual(failed, [], 'buttons with no effect');
+        await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+        await pg.selectOption('#handy_act', 'cowgirl');
+        await pg.click('#handy_panel [data-fb="love"]');          // a panel refresh between picking and ▶ must keep the pick
+        await pg.click('#handy_play'); await waitFor(running, '▶ plays');
+        assert.equal(await act(), 'cowgirl');
+        await pg.click('#handy_fav');
+        await waitFor(async () => (await pg.evaluate(() => window.handyAdaptive.profile().favorites.length)) > 0, '⭐ saves');
+        await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+        await pg.click('#handy_collapse'); assert.equal(await pg.isVisible('#handy_stop'), false);
+        await pg.click('#handy_collapse'); assert.ok(await pg.isVisible('#handy_stop'));
+    });
     await step('settings open in a window; Test connection works; ST-only options are hidden', async () => {
         await pg.click('#handy_settings_btn');
         assert.ok(await pg.isVisible('#handy-st-settings #handy_key'));
@@ -265,6 +421,10 @@ try {
         await pg.click('#handy_test');
         await waitFor(async () => /connected/.test(await pg.textContent('#handy_status')), 'connected');
         assert.match(await pg.textContent('#handy-st-ai'), /active/);
+        await pg.click('#handy_cal_start');                       // Calibrate from the settings window: the dialog opens on top
+        await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
+        await pg.click('#handy_calib_cancel');                    // (a real click: fails if anything covers it)
+        await waitFor(async () => !(await pg.isVisible('#handy_calib')), 'calibration closed');
         await pg.screenshot({ path: path.join(root, 'tests', 'marinara_settings.png') });
     });
     await step('turning AI instructions off empties the lorebook entry', async () => {

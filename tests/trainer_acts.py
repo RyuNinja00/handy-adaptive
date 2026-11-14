@@ -106,6 +106,7 @@ try:
         "",                       # done adding
         "n",                      # go through flagged acts now?
         "3",                      # very detailed (3 s)
+        "n",                      # open the review page? (not here)
         "y",                      # build now
     ]) + "\n"
     r = subprocess.run([sys.executable, T], input=answers, capture_output=True, text=True, env=ENV, timeout=300)
@@ -157,7 +158,7 @@ try:
     tr_flags = list(tr.act_health(CACHE, tr.load_acts(CACHE)[0]))
     check("slow_lick" in tr_flags, f"flagged acts: {tr_flags}")
     detail = ["Slow, broad licks along the shaft and head, no mouth around it." if n == "slow_lick" else "" for n in tr_flags]
-    r = subprocess.run([sys.executable, T], input="\n".join(["", "", "n", "y", *detail, "1", "n"]) + "\n",
+    r = subprocess.run([sys.executable, T], input="\n".join(["", "", "n", "y", *detail, "1", "n", "n"]) + "\n",
                        capture_output=True, text=True, env=ENV, timeout=300)
     acts = json.load(open(os.path.join(CACHE, "acts.json")))["acts"]
     check(acts["slow_lick"]["description"].startswith("Slow, broad licks"), "your added detail is saved")

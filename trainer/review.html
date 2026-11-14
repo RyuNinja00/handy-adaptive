@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label review</title>
+<style>
+  :root {
+    --bg: #0f1014; --panel: #17181e; --panel2: #1e2028; --line: #2c2f3a; --text: #e6e6ea; --muted: #9a9cab;
+    --accent: #e0559a; --ok: #4caf7a; --warn: #e2a33b; --bad: #e05555; --gold: #e8c547;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f4f6; --panel: #ffffff; --panel2: #f0f0f4; --line: #dcdce3; --text: #1d1e24; --muted: #5f6170; color-scheme: light; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; }
+  select, input, button, textarea { font: inherit; color: inherit; }
+  select, input[type=text], textarea { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+  button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .grow { flex: 1; }
+  #status { color: var(--muted); font-size: 13px; }
+  #status.dirty { color: var(--warn); }
+  #status.ok { color: var(--ok); }
+  main { display: grid; grid-template-columns: minmax(360px, 1.15fr) minmax(380px, 1fr); gap: 14px; padding: 14px 16px; align-items: start; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  #viewer { position: sticky; top: 64px; }
+  #stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
+  #stage video, #stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #stage .msg { position: absolute; inset: auto 0 0 0; padding: 8px 10px; font-size: 13px; background: #000a; color: #ddd; }
+  #nomedia { color: #bbb; padding: 20px; text-align: center; }
+  #timeline { width: 100%; height: 120px; display: block; margin-top: 8px; border-radius: 6px; background: var(--panel2); cursor: crosshair; }
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  #clock { font-variant-numeric: tabular-nums; min-width: 110px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--c); }
+  #actinfo { margin-top: 10px; font-size: 13px; }
+  #actinfo b { color: var(--accent); }
+  #actinfo textarea { width: 100%; min-height: 54px; margin-top: 4px; }
+  .rowsbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .rowsbar label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  #rows { display: flex; flex-direction: column; gap: 6px; }
+  .row { border: 1px solid var(--line); border-left: 5px solid var(--c, var(--line)); border-radius: 8px; padding: 7px 8px; background: var(--panel); display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; }
+  .row.idle { opacity: .55; }
+  .row.current { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row .time { font-variant-numeric: tabular-nums; cursor: pointer; color: var(--muted); white-space: nowrap; }
+  .row .time:hover { color: var(--text); text-decoration: underline; }
+  .row select { max-width: 100%; }
+  .row .check { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .row .check.on { color: var(--ok); }
+  .row .meta { grid-column: 1 / -1; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .row .notes { grid-column: 1 / -1; width: 100%; font-size: 12px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; border: 1px solid currentColor; }
+  .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.love { color: var(--accent); } .badge.gold { color: var(--gold); } .badge.grey { color: var(--muted); }
+  .row .tools { display: flex; gap: 4px; }
+  .row .tools button { padding: 2px 7px; font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; max-width: 520px; width: calc(100vw - 32px); }
+  dialog::backdrop { background: #0008; }
+  dialog input, dialog textarea { width: 100%; margin: 4px 0 10px; }
+  dialog textarea { min-height: 90px; }
+  .empty { color: var(--muted); padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Label review</h1>
+  <select id="videos" title="Video"></select>
+  <span class="grow"></span>
+  <span id="status"></span>
+  <button id="checkall" title="Mark every row as checked (use after watching the whole video)">✓ Check all</button>
+  <button id="save" class="primary" disabled>Save</button>
+</header>
+<main id="main">
+  <section id="viewer" class="card">
+    <div id="stage"><div id="nomedia">Loading…</div></div>
+    <canvas id="timeline" title="Click to jump. Top: what the stroker does (up = tip). Bands: acts. Marks: phrases you rated in the extension."></canvas>
+    <div class="controls">
+      <button id="back" title="Back 2 s (←, Shift: 10 s)">⏪</button>
+      <button id="play" title="Play / pause (Space)">▶</button>
+      <button id="fwd" title="Forward 2 s (→, Shift: 10 s)">⏩</button>
+      <span id="clock">0:00.0</span>
+      <button id="split" title="Split the row at this moment (S)">✂ Split here</button>
+      <button id="prev" title="Previous row (K)">↑ Row</button>
+      <button id="next" title="Next row (J)">↓ Row</button>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div id="actinfo"></div>
+    <p class="hint"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> 2 s (<kbd>Shift</kbd> 10 s) · <kbd>J</kbd>/<kbd>K</kbd> next/previous row · <kbd>S</kbd> split here · <kbd>Ctrl</kbd>+<kbd>S</kbd> save</p>
+  </section>
+  <section class="card">
+    <div class="rowsbar">
+      <label><input type="checkbox" id="attnfirst"> Needs a look first</label>
+      <label><input type="checkbox" id="hideidle" checked> Hide still parts</label>
+      <span class="grow"></span>
+      <span class="hint" id="counts"></span>
+    </div>
+    <div id="rows"></div>
+    <p class="hint" style="margin-top:10px">✓ marks a row as checked: only checked rows are saved as your labels (editing a row checks it). Unchecked rows keep the vision model's label. Saving applies your labels to your training straight away, even if the video has been deleted.</p>
+  </section>
+</main>
+<dialog id="newact">
+  <form method="dialog">
+    <h3 style="margin-top:0">New act</h3>
+    <label>Name<input id="na_name" placeholder="e.g. gag_hold, head_licking" autocomplete="off"></label>
+    <label>Description <span class="hint">(what you see, and how it differs from similar acts)</span>
+      <textarea id="na_desc" placeholder="Holds it all the way down at the base for a few seconds, may pull off coughing. Not regular deepthroat strokes."></textarea></label>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button value="cancel">Cancel</button><button id="na_ok" class="primary" value="ok">Add act</button>
+    </div>
+  </form>
+</dialog>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const fmt = (t) => { t = Math.max(0, t); const m = Math.floor(t / 60), s = t - m * 60; return `${m}:${s.toFixed(1).padStart(4, '0')}`; };
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const hue = (name) => { let h = 0; for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const actColor = (name) => name === 'idle' ? '#555a' : name === 'other' || name === 'unknown' ? '#888' : `hsl(${hue(name)} 65% 55%)`;
+
+let list = [], data = null, rows = [], dirty = false, media = null, mode = 'video', frameT = 0, frameTimer = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+function setStatus(text, cls = '') { const s = $('#status'); s.textContent = text; s.className = cls; }
+function markDirty() { dirty = true; $('#save').disabled = false; setStatus('Unsaved changes', 'dirty'); }
+
+async function loadList(selectId) {
+  list = await api('/api/videos');
+  const sel = $('#videos');
+  if (!list.length) { $('#main').innerHTML = '<div class="empty card">No trained videos yet. Run the trainer first.</div>'; return; }
+  sel.innerHTML = list.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}${v.reviewed ? ' ✓' : ''}${!v.video ? ' (video deleted)' : ''}${v.unsure ? ` · ${v.unsure} unsure` : ''}${!v.complete ? ' · unfinished' : ''}</option>`).join('');
+  sel.value = selectId && list.some((v) => v.id === selectId) ? selectId : list[0].id;
+  await loadVideo(sel.value);
+}
+
+async function loadVideo(id) {
+  data = await api('/api/video/' + encodeURIComponent(id));
+  rows = data.segments.map((s) => ({ ...s, checked: s.source === 'manual' }));
+  dirty = false; $('#save').disabled = true;
+  setStatus(data.reviewed ? `Last saved ${data.reviewed}` : 'Not reviewed yet');
+  setupMedia(); renderLegend(); renderRows(); drawTimeline();
+}
+
+// ---- video, or still frames when the browser can't play it, or nothing when it's been deleted
+function setupMedia() {
+  const stage = $('#stage'); stage.innerHTML = ''; clearInterval(frameTimer); media = null; frameT = 0;
+  if (!data.video) {
+    mode = 'none';
+    stage.innerHTML = '<div id="nomedia">This video has been deleted from the training folder.<br>You can still correct its labels using the notes and the stroke timeline.</div>';
+    return;
+  }
+  mode = 'video';
+  const v = document.createElement('video');
+  v.src = '/media/' + encodeURIComponent(data.id); v.preload = 'metadata'; v.controls = false; v.playsInline = true;
+  v.addEventListener('timeupdate', onTime); v.addEventListener('seeked', onTime);
+  v.addEventListener('play', () => { $('#play').textContent = '⏸'; tick(); });
+  v.addEventListener('pause', () => { $('#play').textContent = '▶'; });
+  v.addEventListener('error', () => useFrames('This video format can\'t play in the browser, so still frames are shown instead.'));
+  v.addEventListener('loadedmetadata', () => { if (!v.videoWidth && !v.duration) useFrames('Showing still frames.'); });
+  stage.append(v); media = v;
+}
+function useFrames(msg) {
+  mode = 'frames';
+  const stage = $('#stage'); stage.innerHTML = '';
+  const img = document.createElement('img'); img.alt = 'frame'; stage.append(img);
+  const m = document.createElement('div'); m.className = 'msg'; m.textContent = msg; stage.append(m);
+  media = null; showFrame(frameT);
+}
+let frameReq = 0;
+function showFrame(t) {
+  const img = $('#stage img'); if (!img) return;
+  const my = ++frameReq;
+  setTimeout(() => { if (my === frameReq) img.src = `/api/frame/${encodeURIComponent(data.id)}?t=${t.toFixed(2)}`; }, 120);
+}
+const now = () => (mode === 'video' && media ? media.currentTime : frameT);
+function seek(t) {
+  const end = rows.length ? rows[rows.length - 1].end : 0;
+  t = Math.max(0, Math.min(t, end || t));
+  if (mode === 'video' && media) media.currentTime = t; else { frameT = t; if (mode === 'frames') showFrame(t); onTime(); }
+}
+function togglePlay() {
+  if (mode === 'video' && media) { media.paused ? media.play().catch(() => useFrames('Showing still frames.')) : media.pause(); return; }
+  if (mode === 'frames') {
+    if (frameTimer) { clearInterval(frameTimer); frameTimer = null; $('#play').textContent = '▶'; }
+    else { frameTimer = setInterval(() => seek(frameT + 1), 1000); $('#play').textContent = '⏸'; }
+  }
+}
+function tick() { if (mode === 'video' && media && !media.paused) { drawTimeline(); requestAnimationFrame(tick); } }
+let lastCur = -1;
+function onTime() {
+  const t = now(); $('#clock').textContent = fmt(t);
+  const i = rows.findIndex((r) => t >= r.start && t < r.end);
+  if (i !== lastCur) { lastCur = i; document.querySelectorAll('.row').forEach((el) => el.classList.toggle('current', +el.dataset.i === i)); showActInfo(rows[i]?.act); }
+  drawTimeline();
+}
+
+// ---- timeline: stroke position, act bands, your taste marks, playhead
+function drawTimeline() {
+  const c = $('#timeline'), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  if (!data || !rows.length) return;
+  const t0 = rows[0].start, t1 = rows[rows.length - 1].end, X = (t) => ((t - t0) / Math.max(0.1, t1 - t0)) * w;
+  const bandY = h - 22, plotH = bandY - 14;
+  for (const r of rows) { g.fillStyle = actColor(r.act); g.globalAlpha = r.checked ? 0.95 : 0.55; g.fillRect(X(r.start), bandY, Math.max(1, X(r.end) - X(r.start) - 1), 16); }
+  g.globalAlpha = 1;
+  for (const m of data.taste) {
+    g.fillStyle = m.kind === 'love' ? '#e0559a' : m.kind === 'finish' ? '#e8c547' : '#8888';
+    g.fillRect(X(m.start), 2, Math.max(2, X(m.end) - X(m.start)), 6);
+  }
+  g.strokeStyle = getComputedStyle(document.body).color; g.globalAlpha = 0.75; g.lineWidth = 1; g.beginPath();
+  data.strokes.forEach(([ms, p], i) => { const x = X(ms / 1000), y = 12 + (1 - p / 100) * plotH; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke(); g.globalAlpha = 1;
+  const px = X(now()); g.fillStyle = '#e0559a'; g.fillRect(px - 1, 0, 2, h);
+}
+$('#timeline').addEventListener('click', (e) => {
+  if (!rows.length) return;
+  const r = e.currentTarget.getBoundingClientRect(), t0 = rows[0].start, t1 = rows[rows.length - 1].end;
+  seek(t0 + ((e.clientX - r.left) / r.width) * (t1 - t0));
+});
+window.addEventListener('resize', drawTimeline);
+
+function renderLegend() {
+  const used = [...new Set(rows.map((r) => r.act))];
+  $('#legend').innerHTML = used.map((a) => `<span style="--c:${actColor(a)}">${esc(a)}</span>`).join('')
+    + (data.taste.length ? '<span style="--c:#e0559a">❤ you liked</span><span style="--c:#e8c547">★ you finished to</span><span style="--c:#8888">👎 you rejected</span>' : '');
+}
+
+// ---- rows
+function tasteIn(r) {
+  const k = new Set(data.taste.filter((m) => m.start < r.end && m.end > r.start).map((m) => m.kind));
+  return (k.has('finish') ? '<span class="badge gold">★ finished to</span>' : '') + (k.has('love') ? '<span class="badge love">❤ liked</span>' : '') + (k.has('nope') ? '<span class="badge grey">👎 rejected</span>' : '');
+}
+function actOptions(sel) {
+  return data.acts.map((a) => `<option value="${esc(a.name)}" title="${esc(a.description)}" ${a.name === sel ? 'selected' : ''}>${esc(a.name)}${a.builtin ? '' : ' ★'}</option>`).join('')
+    + (data.acts.some((a) => a.name === sel) || sel === 'unknown' ? '' : `<option selected>${esc(sel)}</option>`)
+    + (sel === 'unknown' ? '<option value="unknown" selected>unknown</option>' : '')
+    + '<option value="__new">＋ New act…</option>';
+}
+function renderRows() {
+  const box = $('#rows'), hideIdle = $('#hideidle').checked, attnFirst = $('#attnfirst').checked;
+  let order = rows.map((r, i) => i).filter((i) => !(hideIdle && rows[i].act === 'idle'));
+  if (attnFirst) order.sort((a, b) => (rows[b].attention.length - rows[a].attention.length) || a - b);
+  box.innerHTML = order.map((i) => {
+    const r = rows[i], idle = r.act === 'idle';
+    const conf = r.source === 'manual' ? '<span class="badge grey">your label</span>' : r.source === 'vlm' ? `<span class="badge ${r.confidence < 0.6 ? 'warn' : 'grey'}">model ${Math.round(r.confidence * 100)}%</span>` : '';
+    return `<div class="row ${idle ? 'idle' : ''}" data-i="${i}" style="--c:${actColor(r.act)}">
+      <span class="time" data-seek="${i}" title="Jump here">${fmt(r.start)}–${fmt(r.end)}</span>
+      ${idle ? '<span class="hint">still / no strokes</span>' : `<select data-act="${i}" title="Act">${actOptions(r.act)}</select>`}
+      ${idle ? '<span></span>' : `<span class="tools"><label class="check ${r.checked ? 'on' : ''}" title="Checked: saved as your label"><input type="checkbox" data-check="${i}" ${r.checked ? 'checked' : ''} hidden>✓ ${r.checked ? 'checked' : 'check'}</label>
+        <button data-merge="${i}" title="Merge with the next row" ${i + 1 < rows.length && rows[i + 1].act !== 'idle' ? '' : 'disabled'}>⤓ merge</button></span>`}
+      <div class="meta">${conf}${r.attention.map((a) => `<span class="badge ${/unusual|not labelled/.test(a) ? 'bad' : 'warn'}">${esc(a)}</span>`).join('')}${tasteIn(r)}<span>${esc(r.motion)}</span></div>
+      ${idle ? '' : `<input type="text" class="notes" data-notes="${i}" value="${esc(r.notes)}" placeholder="Notes: what's happening (helps the AI)">`}
+    </div>`;
+  }).join('') || '<div class="empty">Nothing to show.</div>';
+  const n = rows.filter((r) => r.act !== 'idle'), checked = n.filter((r) => r.checked).length, attn = n.filter((r) => r.attention.length).length;
+  $('#counts').textContent = `${checked} of ${n.length} checked · ${attn} need a look`;
+  lastCur = -1; onTime();
+}
+$('#rows').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-seek]'); if (t) { seek(rows[+t.dataset.seek].start + 0.01); return; }
+  const m = e.target.closest('[data-merge]'); if (m) { merge(+m.dataset.merge); return; }
+  const c = e.target.closest('.check'); if (c) { e.preventDefault(); const i = +c.querySelector('input').dataset.check; rows[i].checked = !rows[i].checked; markDirty(); renderRows(); }
+});
+$('#rows').addEventListener('change', async (e) => {
+  const a = e.target.closest('[data-act]');
+  if (a) {
+    const i = +a.dataset.act;
+    if (a.value === '__new') { const name = await newAct(); if (!name) { a.value = rows[i].act; return; } rows[i].act = name; }
+    else rows[i].act = a.value;
+    rows[i].checked = true; rows[i].attention = rows[i].attention.filter((x) => !/unsure|not labelled/.test(x));
+    markDirty(); renderRows(); renderLegend(); drawTimeline(); showActInfo(rows[i].act);
+    document.activeElement?.blur();   // a later key press mustn't re-pick an act in that menu
+  }
+});
+$('#rows').addEventListener('input', (e) => { const n = e.target.closest('[data-notes]'); if (n) { const r = rows[+n.dataset.notes]; r.notes = n.value; r.checked = true; markDirty(); } });
+
+function split() {
+  const t = now(), i = rows.findIndex((r) => t > r.start + 0.3 && t < r.end - 0.3);
+  if (i < 0 || rows[i].act === 'idle') { setStatus('Move to the middle of a row to split it', 'dirty'); return; }
+  const r = rows[i], a = { ...r, end: +t.toFixed(2), checked: true }, b = { ...r, start: +t.toFixed(2), checked: true, attention: [] };
+  rows.splice(i, 1, a, b); markDirty(); renderRows(); drawTimeline();
+}
+function merge(i) {
+  const a = rows[i], b = rows[i + 1]; if (!b || b.act === 'idle') return;
+  rows.splice(i, 2, { ...a, end: b.end, checked: true, notes: [a.notes, b.notes].filter(Boolean).join(' / '), attention: [] });
+  markDirty(); renderRows(); drawTimeline();
+}
+function step(dir) {
+  const t = now(), vis = rows.map((r, i) => i).filter((i) => rows[i].act !== 'idle');
+  const cur = rows.findIndex((r) => t >= r.start && t < r.end);
+  const target = dir > 0 ? vis.find((i) => i > cur) : [...vis].reverse().find((i) => i < cur);
+  if (target !== undefined) seek(rows[target].start + 0.01);
+}
+
+// ---- acts: descriptions, new acts
+function showActInfo(name) {
+  const a = data?.acts.find((x) => x.name === name), box = $('#actinfo');
+  if (!a) { box.innerHTML = ''; return; }
+  box.innerHTML = `<b>${esc(a.name)}</b>${a.builtin ? '' : ' (yours)'}: <span id="ai_desc">${esc(a.description) || '<i>no description yet</i>'}</span> <button id="ai_edit" style="font-size:12px;padding:1px 7px">Edit</button>`;
+  $('#ai_edit').onclick = () => {
+    box.innerHTML = `<b>${esc(a.name)}</b>: <textarea id="ai_text">${esc(a.description)}</textarea><button id="ai_save">Save description</button>`;
+    $('#ai_save').onclick = async () => {
+      const desc = $('#ai_text').value.trim();
+      await api('/api/acts', { name: a.name, description: desc }); a.description = desc; showActInfo(a.name); setStatus('Description saved', 'ok');
+      document.querySelectorAll(`option[value="${CSS.escape(a.name)}"]`).forEach((o) => { o.title = desc; });
+    };
+  };
+}
+function newAct() {
+  return new Promise((resolve) => {
+    const d = $('#newact'); $('#na_name').value = ''; $('#na_desc').value = '';
+    d.onclose = async () => {
+      if (d.returnValue !== 'ok' || !$('#na_name').value.trim()) return resolve(null);
+      try {
+        const r = await api('/api/acts', { name: $('#na_name').value, description: $('#na_desc').value.trim() });
+        if (!data.acts.some((a) => a.name === r.name)) data.acts.splice(data.acts.length - 1, 0, { name: r.name, description: $('#na_desc').value.trim(), builtin: false });
+        resolve(r.name);
+      } catch (e) { setStatus(e.message, 'dirty'); resolve(null); }
+    };
+    d.showModal(); $('#na_name').focus();
+  });
+}
+
+// ---- save
+async function save() {
+  if (!dirty) return;
+  $('#save').disabled = true; setStatus('Saving…');
+  try {
+    const keep = rows.filter((r) => r.checked && r.act !== 'idle').map(({ start, end, act, notes }) => ({ start, end, act, notes }));
+    const r = await api('/api/labels/' + encodeURIComponent(data.id), { rows: keep });
+    const t = now(); data = r.video; rows = data.segments.map((s) => ({ ...s, checked: s.source === 'manual' }));
+    dirty = false; renderLegend(); renderRows(); drawTimeline(); seek(t);
+    setStatus(`Saved ${keep.length} label${keep.length === 1 ? '' : 's'} · applied to your training`, 'ok');
+    const sel = $('#videos'), opt = sel.querySelector(`option[value="${CSS.escape(data.id)}"]`);
+    if (opt && !opt.textContent.includes(' ✓')) opt.textContent = opt.textContent.replace(/^([^·(]*?)(\s*(\(|·|$))/, '$1 ✓$2');
+  } catch (e) { $('#save').disabled = false; setStatus('Not saved: ' + e.message, 'dirty'); }
+}
+$('#save').onclick = save;
+$('#checkall').onclick = () => { rows.forEach((r) => { if (r.act !== 'idle') r.checked = true; }); markDirty(); renderRows(); drawTimeline(); };
+$('#videos').addEventListener('change', async (e) => {
+  if (dirty && !confirm('You have unsaved changes. Switch video anyway?')) { e.target.value = data.id; return; }
+  await loadVideo(e.target.value);
+});
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+$('#play').onclick = togglePlay; $('#back').onclick = () => seek(now() - 2); $('#fwd').onclick = () => seek(now() + 2);
+$('#split').onclick = split; $('#prev').onclick = () => step(-1); $('#next').onclick = () => step(1);
+$('#attnfirst').onchange = renderRows; $('#hideidle').onchange = renderRows;
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+  // shortcuts pause only while typing (text boxes, menus, dialogs), not after clicking a checkbox or button
+  if (e.target.closest('input[type=text], textarea, select, dialog') || document.querySelector('dialog[open]')) return;
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(now() - (e.shiftKey ? 10 : 2)); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); seek(now() + (e.shiftKey ? 10 : 2)); }
+  else if (e.key.toLowerCase() === 'j') step(1);
+  else if (e.key.toLowerCase() === 'k') step(-1);
+  else if (e.key.toLowerCase() === 's') split();
+});
+loadList(new URLSearchParams(location.search).get('v')).catch((e) => { $('#main').innerHTML = `<div class="empty card">Couldn't load: ${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

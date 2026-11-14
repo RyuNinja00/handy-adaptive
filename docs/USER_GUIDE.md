@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.8.3.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.8.4.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -318,7 +318,8 @@ If your server needs a key, add `--api-key YOURKEY`.
    - **Acts that need a better description:** on later runs it lists acts with few examples, scattered examples, or ones the vision model keeps getting wrong, and asks you for more detail. Press Enter to skip any of them.
    - **Detail:** **Normal** (10-second slices), **Detailed** (5 s) or **Very detailed** (3 s). Finer slices catch short moments, like a few seconds of gagging at the base, but take longer. It remembers your choice.
    - It then analyzes everything. This takes a while. **Press S at any time to stop** (see [Stopping and carrying on](#stopping-and-carrying-on)).
-   - **Build now?** The first time, answer **n**, check the labels (Part 10), then run it again and answer **y**.
+   - **Review page?** Answer **y** to check and correct the labels in your browser (Part 10). Press Enter in the trainer window when you're done.
+   - **Build now?** After reviewing, answer **y**.
 5. When it finishes, it shows where `motion_library.json` was saved. Import that file (Part 11).
 
 ### Your own acts
@@ -394,6 +395,25 @@ Built-in act list: `blowjob, deepthroat, handjob, titjob, footjob, cowgirl, reve
 
 This step matters most for quality. Even good models make mistakes.
 
+### The review page (recommended)
+
+After analyzing, guided mode asks **"Open the review page now?"**. You can also open it any time with `python trainer.py review` (in the `trainer` folder). It opens in your browser, runs only on your computer, and shows one video at a time:
+
+- **The video plays next to its labels.** Click a row's time to jump straight to that moment. Under the video, a timeline shows what the stroker does (the line; up = tip) and the act bands. Click anywhere on it to jump.
+- **Fix an act** with the row's menu. Choose **＋ New act…** to add your own act with a description. Under the video you can read, and **Edit**, the description of the act at the current moment.
+- **Split** a row at the current moment (✂ or **S**), for example to mark a 3-second gag inside a longer blowjob. **⤓ merge** joins a row with the next one. Labels cut exactly where you split, whatever detail setting the video was analyzed with.
+- **Notes** under each row are passed on to the AI. A line like *"teasing licks at the tip, then sudden deep strokes"* helps.
+- **What to check first:** tick **Needs a look first**. Rows are flagged **model unsure**, **unusual for <act>** (the motion doesn't look like your other examples of that act), or **new act: few examples**.
+- **Your taste is shown on the video.** If you've saved an exported `handy-profile.json` in the `handy-adaptive` folder, the parts whose phrases you ❤'d, finished to (★) or 👎'd in the extension are marked on the timeline and the rows.
+- **✓ checked.** Only checked rows are saved as your labels, and editing a row checks it. Rows you haven't looked at keep the model's label. If you watched the whole video, **✓ Check all** confirms everything.
+- **Save** (or Ctrl+S). Your labels are applied to your training **immediately**, with no need to re-run anything, and kept in `handy_cache`.
+
+Keys: **Space** play/pause · **←/→** 2 s (Shift: 10 s) · **J/K** next/previous row · **S** split · **Ctrl+S** save.
+
+**Videos you've deleted** still appear. You can't watch them, but you can still correct their labels from the notes and the stroke timeline. **Formats the browser can't play** (some AVI or WMV files) show still frames that follow the timeline instead.
+
+### Or: edit the spreadsheet
+
 1. Open `handy_cache/<video>.review.csv` in Excel, Google Sheets, LibreOffice or any text editor. Columns:
 
    | column | meaning |
@@ -410,10 +430,9 @@ This step matters most for quality. Even good models make mistakes.
    - **Want a new act?** Just type a new name, such as `edging`, `sloppy_bj` or `gag_hold`. Any name you use is added to your act list and becomes an act the AI can use; the next guided run asks you to describe it ([Your own acts](#your-own-acts)). Use lowercase with underscores.
    - **Boundary off?** Edit `start` / `end`. Times can be `m:ss`, `m:ss.ss` or plain seconds.
    - **Junk segment** (cutaway, talking, out-of-sync script)? Set `act` to `other` and it will be left out.
-   - **Improve the notes.** They're shown to the AI as the description of the act. A line like *"teasing licks at the tip with long pauses, then sudden deep strokes"* helps a lot.
-   - You can add rows and delete rows. Only `start`, `end`, `act` are required. `notes` and `position` are optional.
-3. Save the file **next to the video** as `<video name>.labels.csv`, e.g. `training/scene01.labels.csv`. Keep it in CSV format.
-4. Run the analysis again (guided mode, or the same command as before). It now says `using your labels from ...`, applies them, and reuses the cached model notes. Your labels always override the model's.
+   - You can add rows and delete rows. Only `start`, `end`, `act` are required.
+3. Save it as `<video name>.labels.csv`, either next to the video or in `handy_cache`.
+4. Run the analysis again. It says `using your labels from ...` and applies them. Your labels always override the model's.
 
 ### Labelling entirely by hand (no vision model)
 

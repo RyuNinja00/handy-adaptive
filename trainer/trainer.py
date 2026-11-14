@@ -106,7 +106,7 @@ def slice_points(ext, start_ms, end_ms):
 
 
 # ----------------------------------------------------------------- features
-def features(ext, start_ms, end_ms):
+def features(ext, start_ms, end_ms, min_moves=2):
     """Describe how the device moves over a span of turning points."""
     total = max(1.0, (end_ms - start_ms) / 1000.0)
     moves, ups, downs, pause_ms = [], [], [], 0.0
@@ -123,7 +123,7 @@ def features(ext, start_ms, end_ms):
             continue
         moves.append((dt, abs(dp), (p0 + p1) / 2, max(p0, p1), min(p0, p1)))
         (ups if dp > 0 else downs).append(dt)
-    if len(moves) < 2:
+    if len(moves) < min_moves:
         return None
     durs = [m[0] for m in moves]
     amps = [m[1] for m in moves]
@@ -180,7 +180,8 @@ def window_features(ext, s_ms, e_ms):
     pos = [pos_at(ext, t) for t in range(int(s_ms), int(e_ms) + 1, 100)]
     if max(pos) - min(pos) < 8:
         return hold_features((e_ms - s_ms) / 1000.0, min(pos), max(pos))
-    return None
+    # a slice with a single movement (e.g. the end of a hold, then the pull back up) is still motion
+    return features(before + slice_points(ext, s_ms, e_ms) + after, s_ms, e_ms, min_moves=1)
 
 
 def describe(f):
@@ -743,6 +744,65 @@ def find_cache(args, stem, fp):
     return (plain if not os.path.exists(plain) else os.path.join(args.cache, f"{stem}~{fp[:6]}.analysis.json")), bool(names)
 
 
+def newest(paths):
+    found = [p for p in paths if p and os.path.exists(p)]
+    return max(found, key=os.path.getmtime) if found else None
+
+
+def stored_ext(a):
+    """A saved analysis's script turning points (enough to re-slice it without the video or the script)."""
+    pts, last = [], None
+    for w in a.get("windows", []):
+        for t, p in w.get("strokes", []):
+            if last is None or t > last:
+                pts.append((t, p)); last = t
+    return pts
+
+
+def relabel(a, rows):
+    """Apply your labels to a saved analysis directly: no video, script or vision model needed.
+    Slices are re-cut at your label edges; the model's earlier answers are kept for the notes."""
+    ext = stored_ext(a)
+    if len(ext) < 2:
+        return a
+    old = a.get("windows", [])
+
+    def old_at(s, e):
+        best, ov = None, 0.0
+        for w in old:
+            o = min(e, w["end"]) - max(s, w["start"])
+            if o > ov:
+                best, ov = w, o
+        return best
+
+    out = []
+    for s, e in slice_bounds(ext[0][0] / 1000.0, ext[-1][0] / 1000.0, a.get("window", 10.0), rows):
+        span = slice_points(ext, s * 1000, e * 1000)
+        feat = window_features(ext, s * 1000, e * 1000)
+        w = {"start": round(s, 2), "end": round(e, 2), "features": feat,
+             "strokes": [[int(t), round(p, 1)] for t, p in span]}
+        if feat is None:
+            out.append({**w, "act": "idle", "confidence": 1.0, "notes": "", "source": "auto"}); continue
+        ow = old_at(s, e) or {}
+        row = best_row(rows, s, e)
+        if row or ow.get("vlm"):
+            out.append(label_window(w, ow.get("vlm"), row))
+        else:
+            out.append({**w, "act": ow.get("act", "unknown"), "confidence": ow.get("confidence", 0.0),
+                        "notes": ow.get("notes", ""), "source": ow.get("source", "none"), "vlm": None})
+    a["windows"] = out
+    a["reviewed"] = time.strftime("%Y-%m-%d %H:%M")
+    return a
+
+
+def write_labels_csv(path, rows):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        wr = csv.writer(f)
+        wr.writerow(["start", "end", "act", "notes"])
+        for r in rows:
+            wr.writerow([fmt_time(r["start"]), fmt_time(r["end"]), r["act"], r.get("notes", "")])
+
+
 def write_json(path, data, **kw):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -775,8 +835,9 @@ def analyze(args, video, script):
         for w in old.get("windows", []):
             if w.get("vlm"):
                 cached[round(w["start"], 2)] = w["vlm"]
-    labels_path = args.labels_csv or os.path.splitext(video)[0] + ".labels.csv"
-    manual = load_labels_csv(labels_path, labels) if os.path.exists(labels_path) else None
+    labels_path = args.labels_csv or newest([os.path.splitext(video)[0] + ".labels.csv",
+                                             os.path.join(args.cache, os.path.basename(cache_path)[: -len(".analysis.json")] + ".labels.csv")])
+    manual = load_labels_csv(labels_path, labels) if labels_path and os.path.exists(labels_path) else None
     if manual:
         print(f"  using your labels from {labels_path}")
         new = add_acts(args.cache, [r["act"] for r in manual], os.path.basename(labels_path))
@@ -834,15 +895,47 @@ def write_review(args, source_id, windows):
     return review
 
 
+def slice_bounds(first, last, window, rows=None):
+    """Where the slices go: every `window` seconds, plus at every edge of your own labels, so a label you
+    set (even a 2-second one) always applies exactly, whatever the detail setting."""
+    grid, t = [], first
+    while t < last - 1e-6:
+        grid.append(round(t, 2)); t += window
+    label_edges = {round(x, 2) for r in rows or [] for x in (r["start"], r["end"]) if first < x < last}
+    edges = sorted(set(grid) | label_edges | {round(last, 2)})
+    out = [edges[0]]
+    for x in edges[1:]:
+        if x - out[-1] < 0.6:                       # a sliver: keep whichever edge is one of your labels
+            if x in label_edges and out[-1] not in label_edges and len(out) > 1:
+                out[-1] = x
+            elif x == edges[-1] and len(out) > 1:
+                out[-1] = x
+            continue
+        out.append(x)
+    return list(zip(out, out[1:]))
+
+
+def label_window(w, vlm, row):
+    """Give a slice its act: your label first, then the vision model's."""
+    w["vlm"] = vlm
+    if row:
+        w.update(act=row["act"], confidence=1.0, source="manual",
+                 notes=row.get("notes") or (vlm or {}).get("notes", ""),
+                 position=row.get("position") or (vlm or {}).get("position", ""))
+    elif vlm:
+        w.update(act=vlm["act"], confidence=vlm["confidence"], source="vlm",
+                 notes=vlm["notes"], position=vlm.get("position", ""))
+    else:
+        w.update(act="unknown", confidence=0.0, notes="", source="none")
+    return w
+
+
 def analyze_windows(args, video, ext, cached, manual, labels, windows, save):
     """Slice by slice, saving after every one that asked the vision model (that's the slow part)."""
     first, last = ext[0][0] / 1000.0, ext[-1][0] / 1000.0
-    t = first
-    while t < last:
+    for s, e in slice_bounds(first, last, args.window, manual):
         if STOP.check():
             raise StopRequested()
-        s, e = t, min(t + args.window, last)
-        t += args.window
         span = slice_points(ext, s * 1000, e * 1000)
         feat = window_features(ext, s * 1000, e * 1000)
         w = {"start": round(s, 2), "end": round(e, 2), "features": feat,
@@ -857,18 +950,7 @@ def analyze_windows(args, video, ext, cached, manual, labels, windows, save):
         need_vlm = args.vlm_url and not vlm and (not manual or args.vlm_notes)
         if need_vlm:
             vlm = query_window(args, video, s, e, feat, labels)
-        w["vlm"] = vlm
-        row = best_row(manual, s, e) if manual else None
-        if row:
-            w.update(act=row["act"], confidence=1.0, source="manual",
-                     notes=row["notes"] or (vlm or {}).get("notes", ""),
-                     position=row["position"] or (vlm or {}).get("position", ""))
-        elif vlm:
-            w.update(act=vlm["act"], confidence=vlm["confidence"], source="vlm",
-                     notes=vlm["notes"], position=vlm.get("position", ""))
-        else:
-            w.update(act="unknown", confidence=0.0, notes="", source="none")
-        windows.append(w)
+        windows.append(label_window(w, vlm, best_row(manual, s, e) if manual else None))
 
         if need_vlm:
             save()
@@ -1036,16 +1118,23 @@ def build(args):
             for p in w.get("strokes", []):
                 if last is None or p[0] > last:
                     all_pts.append(p); last = p[0]
-        for seg in merge_windows(a["windows"], ignore):
-            if seg["confidence"] < args.min_confidence or not seg["features"] or seg["features"]["seconds"] < 2:
+        # leave out only the slices the model was unsure about (not your labels), then join the rest:
+        # one unsure slice must not throw away the whole stretch around it
+        sure = [w if w.get("source") == "manual" or w.get("confidence", 0) >= args.min_confidence else {**w, "act": "unknown"}
+                for w in a["windows"]]
+        for seg in merge_windows(sure, ignore):
+            secs = seg["end"] - seg["start"]
+            if secs < 2:
                 continue
-            if seg["features"].get("hold") or seg["features"]["seconds"] < 6:
+            if not seg["features"] or seg["features"].get("hold") or secs < 6:
                 # a short moment (a gag at the base, a lick): include the moves into and out of it
                 s0, e0 = seg["start"] * 1000 - 1500, seg["end"] * 1000 + 1500
                 padded = [p for p in all_pts if s0 <= p[0] <= e0]
                 f = features([tuple(p) for p in padded], padded[0][0], padded[-1][0]) if len(padded) >= 3 else None
                 if f:
-                    seg = {**seg, "strokes": padded, "features": {**f, "seconds": seg["features"]["seconds"]}}
+                    seg = {**seg, "strokes": padded, "features": {**f, "seconds": round(secs, 2)}}
+            if not seg["features"]:
+                continue
             per_act.setdefault(seg["act"], []).append((src, seg))
 
     previous = {}
@@ -1062,14 +1151,29 @@ def build(args):
     if ratings or finishers:
         print(f"Using your taste profile: {len(ratings)} rated phrases, {len(finishers)} you finished to")
 
+    # where in each video you liked / rejected phrases: those stretches count more / less in each act's feel
+    rated = {}
+    for mid in set(ratings) | set(finishers):
+        src, _, at = mid.rpartition("@")
+        if at.isdigit():
+            r = ratings.get(mid, 0)
+            rated.setdefault(src, []).append((int(at) / 1000.0, 1.0 if finishers.get(mid) or r > 0.2 else -0.5 if r < -0.3 else 0.0))
+
+    def taste_weight(src, seg):
+        w = 1.0 + sum(v for t, v in rated.get(src, []) if seg["start"] - 1 <= t < seg["end"])
+        return max(0.25, min(4.0, w))
+
     lib = {"version": 1, "created": time.strftime("%Y-%m-%d %H:%M"), "sources": len(files), "acts": {}}
+    leaned = 0
     for act, segs in sorted(per_act.items()):
         fs = [s["features"] for _, s in segs]
-        wts = [f["seconds"] for f in fs]
+        tw = [taste_weight(src, s) for src, s in segs]
+        leaned += any(abs(x - 1) > 1e-9 for x in tw)
+        wts = [f["seconds"] * x for f, x in zip(fs, tw)]
         entry = {k: wstat([f[k] for f in fs], wts) for k in ("rate", "amp", "center", "top", "bottom", "velocity")}
         for k in ("irregularity", "asym", "pause_frac", "amp_std"):
             entry[k] = wstat([f[k] for f in fs], wts)["mean"]
-        entry["seconds"] = round(sum(wts), 1)
+        entry["seconds"] = round(sum(f["seconds"] for f in fs), 1)
         entry["segments"] = len(segs)
         entry["videos"] = len({src for src, _ in segs})
         entry["positions"] = sorted({s.get("position", "") for _, s in segs if s.get("position")})[:6]
@@ -1107,6 +1211,8 @@ def build(args):
         st_ = stats[act]
         kept = f"{st_['liked']} liked, {st_['previous']} earlier"
         print(f"{act:<18}{e['seconds']:>6.0f}s{e['videos']:>6}{len(e['motifs']):>8}  {kept:<22}{e['motion']}")
+    if leaned:
+        print(f"\n{leaned} act(s) lean toward the parts you liked (and away from the parts you rejected).")
     left_out = sum(s_["rejected"] for s_ in stats.values())
     if left_out:
         print(f"\n{left_out} phrase(s) you rejected with 👎 were left out.")
@@ -1114,6 +1220,301 @@ def build(args):
     if thin:
         print(f"\nTip: {', '.join(thin)} have under 2 minutes of examples; add more for better variety.")
 
+
+
+# ----------------------------------------------------------------- review page
+def analysis_files(cache):
+    return {os.path.basename(p)[: -len(".analysis.json")]: p
+            for p in sorted(glob.glob(os.path.join(glob.escape(cache), "*.analysis.json")))}
+
+
+def find_video(a, training_dir):
+    for p in (a.get("video"), os.path.join(training_dir, os.path.basename(a.get("video", "")))):
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def act_norms(cache):
+    """Typical speed and depth of each act across all your training (to spot unusual examples)."""
+    norms = {}
+    for act, p in act_profile(cache).items():
+        rates = [f["rate"] for f, _ in p["feats"] if not f.get("hold")]
+        cents = [f["center"] for f, _ in p["feats"]]
+        if len(rates) >= 5:
+            norms[act] = (st.mean(rates), max(0.25, st.pstdev(rates)), st.mean(cents), max(8.0, st.pstdev(cents)), len(p["segments"]))
+        else:
+            norms[act] = (None, None, None, None, len(p["segments"]))
+    return norms
+
+
+def attention(seg, norms, acts):
+    """Why a stretch is worth a look: the model was unsure, the motion is unusual for that act, or the act is new."""
+    why, f, act = [], seg.get("features") or {}, seg["act"]
+    if act in ("idle",):
+        return why
+    if seg.get("source") == "vlm" and seg.get("confidence", 1) < 0.6:
+        why.append("model unsure")
+    if seg.get("source") in (None, "none") or act == "unknown":
+        why.append("not labelled")
+    n = norms.get(act)
+    if n and n[0] is not None and f and not f.get("hold"):
+        if abs(f["rate"] - n[0]) / n[1] > 2 or abs(f["center"] - n[2]) / n[3] > 2:
+            why.append(f"unusual for {act}")
+    if act in acts and not acts[act]["builtin"] and (n is None or n[4] < 3):
+        why.append("new act: few examples")
+    return why
+
+
+def taste_marks(source_id, root):
+    """Parts of this video whose phrases you rated in the extension (from an exported handy-profile.json)."""
+    prof = newest([os.path.join(root, "handy-profile.json"), os.path.join(root, "training", "handy-profile.json")])
+    ratings, finishers = load_taste(prof)
+    if not ratings and not finishers:
+        return []
+    lengths = {}
+    try:
+        with open(os.path.join(root, "motion_library.json"), encoding="utf-8") as f:
+            for e in json.load(f).get("acts", {}).values():
+                for m in e.get("motifs", []):
+                    lengths[m["id"]] = sum(d for d, _ in m["strokes"])
+    except (OSError, ValueError):
+        pass
+    marks = []
+    for mid in set(ratings) | set(finishers):
+        src, _, at = mid.rpartition("@")
+        if src != source_id or not at.isdigit():
+            continue
+        start = int(at) / 1000.0
+        end = start + lengths.get(mid, 5000) / 1000.0
+        if finishers.get(mid):
+            kind = "finish"
+        elif ratings.get(mid, 0) > 0.2:
+            kind = "love"
+        elif ratings.get(mid, 0) < -0.3:
+            kind = "nope"
+        else:
+            continue
+        marks.append({"start": round(start, 2), "end": round(end, 2), "kind": kind, "score": round(ratings.get(mid, 0), 2)})
+    return sorted(marks, key=lambda m: m["start"])
+
+
+def review_segments(windows, longest=30.0):
+    """Rows for the review page: like merge_windows, but a row also breaks where the label's source or the
+    model's certainty changes, and no row is longer than `longest` seconds, so nothing gets buried."""
+    groups = []
+    for w in windows:
+        key = (w["act"], w.get("source"), w.get("source") == "vlm" and w.get("confidence", 1) < 0.6)
+        g = groups[-1] if groups else None
+        if g and g[0] == key and abs(g[1][-1]["end"] - w["start"]) < 0.05 and w["end"] - g[1][0]["start"] <= longest:
+            g[1].append(w)
+        else:
+            groups.append((key, [w]))
+    return [merge_windows(ws, ignore=set())[0] for _, ws in groups]
+
+
+def review_data(cache, training_dir, root, sid):
+    path = analysis_files(cache).get(sid)
+    with open(path, encoding="utf-8") as f:
+        a = json.load(f)
+    acts, _ = load_acts(cache)
+    norms = act_norms(cache)
+    segs = []
+    for g in review_segments(a["windows"]):
+        segs.append({"start": g["start"], "end": g["end"], "act": g["act"], "confidence": round(g.get("confidence", 0), 2),
+                     "source": g.get("source"), "notes": g.get("notes", ""), "position": g.get("position", ""),
+                     "motion": describe(g.get("features")), "attention": attention(g, norms, acts)})
+    video = find_video(a, training_dir)
+    return {"id": sid, "name": os.path.basename(a.get("video", sid)), "video": bool(video),
+            "playable_guess": bool(video) and video.lower().endswith((".mp4", ".m4v", ".webm", ".mov", ".mkv")),
+            "window": a.get("window", 10.0), "complete": a.get("complete", True), "reviewed": a.get("reviewed"),
+            "segments": segs, "strokes": stored_ext(a),
+            "acts": [{"name": n, "description": x["description"], "builtin": x["builtin"]} for n, x in acts.items()],
+            "taste": taste_marks(sid, root)}
+
+
+def review_list(cache, training_dir):
+    out = []
+    for sid, path in analysis_files(cache).items():
+        try:
+            with open(path, encoding="utf-8") as f:
+                a = json.load(f)
+        except (OSError, ValueError):
+            continue
+        segs = review_segments(a["windows"])
+        out.append({"id": sid, "name": os.path.basename(a.get("video", sid)), "video": bool(find_video(a, training_dir)),
+                    "reviewed": a.get("reviewed"), "complete": a.get("complete", True),
+                    "minutes": round((a["windows"][-1]["end"] - a["windows"][0]["start"]) / 60, 1) if a["windows"] else 0,
+                    "unsure": sum(1 for g in segs if g.get("source") == "vlm" and g.get("confidence", 1) < 0.6)})
+    # videos still in the training folder and not reviewed come first
+    return sorted(out, key=lambda v: (not v["video"], bool(v["reviewed"]), v["name"].lower()))
+
+
+def save_review(cache, sid, rows):
+    """Save labels from the review page: kept in the training folder, applied to the analysis at once."""
+    path = analysis_files(cache)[sid]
+    clean = []
+    for r in rows:
+        act = act_name(r.get("act"))
+        if not act or act == "idle":
+            continue
+        start, end = float(r["start"]), float(r["end"])
+        if end - start >= 0.3:
+            clean.append({"start": round(start, 2), "end": round(end, 2), "act": act, "notes": str(r.get("notes", ""))[:600], "position": ""})
+    new = add_acts(cache, [r["act"] for r in clean], "review page")
+    write_labels_csv(os.path.join(cache, sid + ".labels.csv"), clean)
+    with open(path, encoding="utf-8") as f:
+        a = json.load(f)
+    write_json(path, relabel(a, clean), indent=1)
+    write_review(argparse.Namespace(cache=cache), sid, a["windows"])
+    return new
+
+
+class ReviewServer:
+    """A small local web server for the review page (only reachable from this computer)."""
+
+    def __init__(self, cache, training_dir, root=ROOT, port=0):
+        import http.server
+        import socketserver
+        self.cache, self.training_dir, self.root = cache, training_dir, root
+        srv = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def send(self, code, body, ctype="application/json", extra=None):
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def do_GET(self):
+                from urllib.parse import urlparse, parse_qs, unquote
+                u = urlparse(self.path)
+                parts = [unquote(p) for p in u.path.strip("/").split("/")]
+                try:
+                    if u.path in ("/", "/index.html"):
+                        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "review.html"), "rb") as f:
+                            return self.send(200, f.read(), "text/html; charset=utf-8")
+                    if parts[:2] == ["api", "videos"]:
+                        return self.send(200, review_list(srv.cache, srv.training_dir))
+                    if parts[:2] == ["api", "video"] and len(parts) == 3:
+                        return self.send(200, review_data(srv.cache, srv.training_dir, srv.root, parts[2]))
+                    if parts[:2] == ["api", "frame"] and len(parts) == 3:
+                        a = json.load(open(analysis_files(srv.cache)[parts[2]], encoding="utf-8"))
+                        v = find_video(a, srv.training_dir)
+                        img = grab_frame(v, float(parse_qs(u.query).get("t", ["0"])[0]), 640) if v else None
+                        return self.send(200, img, "image/jpeg") if img else self.send(404, {"error": "no frame"})
+                    if parts[0] == "media" and len(parts) == 2:
+                        a = json.load(open(analysis_files(srv.cache)[parts[1]], encoding="utf-8"))
+                        return self.media(find_video(a, srv.training_dir))
+                except (KeyError, OSError, ValueError) as e:
+                    return self.send(404, {"error": str(e)})
+                self.send(404, {"error": "not found"})
+
+            def media(self, path):
+                if not path:
+                    return self.send(404, {"error": "video not available"})
+                import mimetypes
+                size = os.path.getsize(path)
+                ctype = mimetypes.guess_type(path)[0] or "video/mp4"
+                rng = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
+                start, end = 0, size - 1
+                if rng:
+                    if rng.group(1):
+                        start = int(rng.group(1))
+                        end = int(rng.group(2)) if rng.group(2) else size - 1
+                    else:
+                        start = max(0, size - int(rng.group(2) or 0))
+                end = min(end, size - 1, start + 8 * 1024 * 1024 - 1)       # serve in 8 MB pieces
+                self.send_response(206 if rng else 200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(end - start + 1))
+                if rng:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(start)
+                        left = end - start + 1
+                        while left > 0:
+                            chunk = f.read(min(65536, left))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            left -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def do_POST(self):
+                from urllib.parse import unquote
+                parts = [unquote(p) for p in self.path.strip("/").split("/")]
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+                    if parts[:2] == ["api", "labels"] and len(parts) == 3:
+                        new = save_review(srv.cache, parts[2], body.get("rows", []))
+                        return self.send(200, {"ok": True, "new_acts": new, "video": review_data(srv.cache, srv.training_dir, srv.root, parts[2])})
+                    if parts[:2] == ["api", "acts"]:
+                        name = act_name(body.get("name"))
+                        if not name or name in IGNORE_DEFAULT:
+                            return self.send(400, {"error": "Pick another name."})
+                        acts, _ = load_acts(srv.cache)
+                        acts.setdefault(name, {"description": "", "builtin": False, "added": time.strftime("%Y-%m-%d"), "from": "review page"})
+                        if body.get("description") is not None:
+                            acts[name]["description"] = str(body["description"])[:1000]
+                        acts["other"] = acts.pop("other")
+                        save_acts(srv.cache, acts)
+                        return self.send(200, {"ok": True, "name": name})
+                except (KeyError, OSError, ValueError) as e:
+                    return self.send(400, {"error": str(e)})
+                self.send(404, {"error": "not found"})
+
+        class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        self.httpd = Server(("127.0.0.1", port), H)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def open_review(cache, training_dir, wait_for_enter=True):
+    import webbrowser
+    with ReviewServer(cache, training_dir) as rs:
+        print(f"\n  Review page: {rs.url}")
+        try:
+            webbrowser.open(rs.url)
+        except Exception:  # noqa: BLE001
+            pass
+        print("  (If it didn't open, copy that address into your browser.)")
+        print("  Click a row to jump to that moment, fix the act, and press Save. Saved corrections apply at once.")
+        if wait_for_enter:
+            ask("  Press Enter here when you're done reviewing", "")
+        else:
+            print("  Press Ctrl+C here to close it.")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
 
 
 # ----------------------------------------------------------------- guided mode
@@ -1339,14 +1740,15 @@ def wizard():
         print("<video>.labels.csv first (see docs/USER_GUIDE.md, Part 10).")
         return
     print("\n" + "-" * 64)
-    print("  Now CHECK the labels before building:")
-    print(f"  1. Open the .review.csv files in {cache}")
-    print("  2. Fix any wrong 'act' values (use 'other' to leave a part out)")
-    print(f"  3. Save each as <video name>.labels.csv inside {folder}")
-    print("  4. Run this again: it will use your corrections.")
+    print("  Next: check the labels. The review page plays each video next to its labels: click a row")
+    print("  to jump there, fix the act, Save. Rows marked 'model unsure' or 'unusual' are worth a look.")
     print("-" * 64)
-    if not ask("\nBuild the motion library now anyway? (y/n)", "n").lower().startswith("y"):
-        print("\nOK. Run this again after checking the labels.")
+    reviewed = False
+    if ask_yes("\n  Open the review page now?", "y"):
+        open_review(cache, folder)
+        reviewed = True
+    if not ask_yes("\nBuild the motion library now?", "y" if reviewed else "n"):
+        print("\nOK. Run this again when you're ready (or: python trainer.py review).")
         return
 
     # 4. build
@@ -1364,6 +1766,8 @@ def wizard():
                              summary_url="", summary_model="", model=model, api_key="", timeout=300))
     print(f"\nDone! Import this file in SillyTavern (Extensions > Handy Adaptive >")
     print(f"Import motion_library.json):\n  {out}")
+    print("\nOnce it feels right, you can delete the videos and scripts from the training folder: your training")
+    print(f"and labels are kept in {cache}. (Labels can still be corrected later with: python trainer.py review)")
 
 
 # ----------------------------------------------------------------- cli
@@ -1412,6 +1816,10 @@ def main():
     a.add_argument("--cache", default=DEFAULT_CACHE, help=f"where training is saved (default: {DEFAULT_CACHE})")
     vlm_opts(a)
 
+    r = sub.add_parser("review", help="open the label review page in your browser")
+    r.add_argument("--cache", default=DEFAULT_CACHE)
+    r.add_argument("--training", default=os.path.join(ROOT, "training"), help="folder with your videos")
+
     b = sub.add_parser("build", help="merge analyses into motion_library.json")
     b.add_argument("analyses", nargs="*", default=[DEFAULT_CACHE], help="analysis folders/files (default: all saved training)")
     b.add_argument("--out", default=DEFAULT_OUT)
@@ -1425,6 +1833,9 @@ def main():
     vlm_opts(b)
 
     args = ap.parse_args()
+    if args.cmd == "review":
+        open_review(args.cache, args.training, wait_for_enter=False)
+        return
     if args.cmd == "analyze":
         if args.vlm_url:
             print(f"Checking the model server at {args.vlm_url} (model: {args.model})...")

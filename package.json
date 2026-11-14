@@ -1,11 +1,11 @@
 {
   "name": "handy-adaptive",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "description": "SillyTavern / Marinara Engine extension: AI-driven, learning motion control for The Handy",
   "type": "module",
   "scripts": {
-    "test": "node tests/markup.test.mjs && node tests/synth.test.mjs && node tests/learning.sim.mjs && node tests/device.sim.mjs && node tests/browser.smoke.cjs && bash tests/trainer_e2e.sh && python3 tests/trainer_incremental.py && node scripts/build-marinara.mjs && node tests/marinara_e2e.mjs",
+    "test": "node tests/markup.test.mjs && node tests/synth.test.mjs && node tests/learning.sim.mjs && node tests/device.sim.mjs && node tests/browser.smoke.cjs && bash tests/trainer_e2e.sh && python3 tests/trainer_incremental.py && python3 tests/trainer_acts.py && node scripts/build-marinara.mjs && node tests/marinara_e2e.mjs",
     "build:marinara": "node scripts/build-marinara.mjs"
   }
 }

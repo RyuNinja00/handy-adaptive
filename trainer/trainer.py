@@ -31,6 +31,7 @@ import shutil
 import statistics as st
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -40,11 +41,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CACHE = os.path.join(ROOT, "handy_cache")
 DEFAULT_OUT = os.path.join(ROOT, "motion_library.json")
 
-DEFAULT_LABELS = [
-    "blowjob", "deepthroat", "handjob", "titjob", "footjob",
-    "cowgirl", "reverse_cowgirl", "missionary", "doggy", "standing",
-    "teasing", "other",
-]
+# Built-in acts with starter descriptions. The vision model is given each act's description, so it judges
+# by meaning, not just the name. Your own acts and edits are saved in <training folder>/acts.json.
+BUILTIN_ACTS = {
+    "blowjob": "Oral sex: mouth around the shaft, head moving up and down it.",
+    "deepthroat": "Oral sex taking the whole length: lips reach the base.",
+    "handjob": "Stroking the shaft with one or both hands.",
+    "titjob": "The shaft between the breasts, stroked by moving them or the body.",
+    "footjob": "Stroking with the feet.",
+    "cowgirl": "Intercourse with the partner on top, facing him, moving her hips.",
+    "reverse_cowgirl": "Intercourse with the partner on top, facing away from him.",
+    "missionary": "Intercourse facing each other, him on top or between her legs.",
+    "doggy": "Intercourse from behind.",
+    "standing": "Intercourse while standing.",
+    "teasing": "Light touching, kissing or licking without steady stroking; lots of pauses.",
+    "other": "Nothing in the list fits, or nothing sexual is happening.",
+}
+DEFAULT_LABELS = list(BUILTIN_ACTS)
 IGNORE_DEFAULT = {"other", "none", "idle", "unknown", ""}
 VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".wmv")
 
@@ -97,6 +110,7 @@ def features(ext, start_ms, end_ms):
     """Describe how the device moves over a span of turning points."""
     total = max(1.0, (end_ms - start_ms) / 1000.0)
     moves, ups, downs, pause_ms = [], [], [], 0.0
+    hold_ms, hold_pos = 0.0, 0.0
     for (t0, p0), (t1, p1) in zip(ext, ext[1:]):
         dt, dp = t1 - t0, p1 - p0
         if dt <= 0:
@@ -104,6 +118,8 @@ def features(ext, start_ms, end_ms):
         if abs(dp) < 5:
             if dt > 250:
                 pause_ms += dt
+                if dt > hold_ms:
+                    hold_ms, hold_pos = dt, (p0 + p1) / 2
             continue
         moves.append((dt, abs(dp), (p0 + p1) / 2, max(p0, p1), min(p0, p1)))
         (ups if dp > 0 else downs).append(dt)
@@ -129,14 +145,51 @@ def features(ext, start_ms, end_ms):
         "asym": round((st.mean(ups) / st.mean(downs)) if ups and downs else 1.0, 3),  # up-stroke time / down-stroke time
         "velocity": round(st.mean(a / (d / 1000.0) for d, a, *_ in moves), 1),  # %/s
         "pause_frac": round(min(1.0, pause_ms / 1000.0 / total), 3),
+        "hold_s": round(hold_ms / 1000.0, 2),            # the longest hold (a gag at the base, a pause at the tip)
+        "hold_pos": round(hold_pos, 1),
         "trend": round((r2 - r1) / max(0.1, (r1 + r2) / 2), 3) if half else 0.0,
     }
+
+
+def pos_at(ext, t):
+    if t <= ext[0][0]:
+        return ext[0][1]
+    for (t0, p0), (t1, p1) in zip(ext, ext[1:]):
+        if t0 <= t <= t1:
+            return p0 if t1 == t0 else p0 + (p1 - p0) * (t - t0) / (t1 - t0)
+    return ext[-1][1]
+
+
+def hold_features(seconds, lo, hi):
+    c = (lo + hi) / 2
+    return {"hold": True, "seconds": round(seconds, 2), "rate": 0.0, "amp": 0.0, "amp_std": 0.0, "center": round(c, 2),
+            "top": round(hi, 2), "bottom": round(lo, 2), "irregularity": 0.0, "asym": 1.0, "velocity": 0.0,
+            "pause_frac": 1.0, "trend": 0.0}
+
+
+def window_features(ext, s_ms, e_ms):
+    """Motion in one analysis slice. Strokes that cross the slice's edges count too (so short slices work),
+    and a brief hold (e.g. still at the base for a few seconds) is described as a hold instead of 'idle'."""
+    before = [p for p in ext if p[0] < s_ms][-1:]
+    after = [p for p in ext if p[0] > e_ms][:1]
+    f = features(before + slice_points(ext, s_ms, e_ms) + after, s_ms, e_ms)
+    if f:
+        return f
+    if not before or not after or after[0][0] - before[0][0] > 12000:   # long stillness: nothing happening
+        return None
+    pos = [pos_at(ext, t) for t in range(int(s_ms), int(e_ms) + 1, 100)]
+    if max(pos) - min(pos) < 8:
+        return hold_features((e_ms - s_ms) / 1000.0, min(pos), max(pos))
+    return None
 
 
 def describe(f):
     """Plain-language description of a feature dict (for prompts and humans)."""
     if not f:
         return "almost no movement"
+    if f.get("hold"):
+        zone = "at the base" if f["center"] < 35 else "near the tip" if f["center"] > 65 else "in the middle"
+        return f"holds still {zone} (position {f['center']:.0f}) for {f['seconds']:.1f} s, no strokes"
     speed = ("very slow" if f["rate"] < 0.7 else "slow" if f["rate"] < 1.3 else
              "moderate" if f["rate"] < 2.2 else "fast" if f["rate"] < 3.2 else "very fast")
     length = ("tiny" if f["amp"] < 20 else "short" if f["amp"] < 40 else
@@ -149,7 +202,10 @@ def describe(f):
         bits.append("slow on the way up, quick on the way down")
     elif f["asym"] < 0.77:
         bits.append("quick on the way up, slow on the way down")
-    if f["pause_frac"] > 0.15:
+    if f.get("hold_s", 0) >= 1.0:
+        hz = "at the base" if f["hold_pos"] < 35 else "near the tip" if f["hold_pos"] > 65 else "in the middle"
+        bits.append(f"holds still {hz} for {f['hold_s']:.1f} s")
+    elif f["pause_frac"] > 0.15:
         bits.append("frequent pauses/holds")
     if f["amp_std"] > 15:
         bits.append("stroke length changes a lot")
@@ -160,27 +216,267 @@ def describe(f):
     return "; ".join(bits)
 
 
+# ----------------------------------------------------------------- your acts
+def act_name(s):
+    """'Gag hold' / 'gag-hold' -> 'gag_hold'."""
+    return re.sub(r"[^a-z0-9_]+", "", re.sub(r"[\s\-]+", "_", str(s or "").strip().lower())).strip("_")
+
+
+def acts_path(cache):
+    return os.path.join(cache, "acts.json")
+
+
+def load_acts(cache):
+    """Your act list: the built-in acts plus any you added, each with a description. Saved in acts.json."""
+    data = {}
+    try:
+        with open(acts_path(cache), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        pass
+    saved = data.get("acts", {}) if isinstance(data, dict) else {}
+    acts = {}
+    for name, desc in BUILTIN_ACTS.items():
+        a = saved.get(name) or {}
+        acts[name] = {"description": a.get("description", desc), "builtin": True}
+    for name, a in saved.items():
+        n = act_name(name)
+        if n and n not in acts and isinstance(a, dict):
+            acts[n] = {"description": str(a.get("description", "")), "builtin": False, "added": a.get("added", "")}
+    acts["other"] = acts.pop("other")          # keep "other" last
+    return acts, (data.get("settings", {}) if isinstance(data, dict) else {})
+
+
+def save_acts(cache, acts, settings=None):
+    os.makedirs(cache, exist_ok=True)
+    old_settings = load_acts(cache)[1]
+    out = {"version": 1, "settings": {**old_settings, **(settings or {})},
+           "acts": {n: {k: v for k, v in a.items() if k != "builtin"} for n, a in acts.items()}}
+    tmp = acts_path(cache) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=1)
+    os.replace(tmp, acts_path(cache))
+
+
+def add_acts(cache, names, source):
+    """Add new act names (from --labels or your label files) to the saved list. Returns the ones that were new."""
+    acts, _ = load_acts(cache)
+    new = []
+    for n in names:
+        n = act_name(n)
+        if n and n not in acts and n not in IGNORE_DEFAULT:
+            acts[n] = {"description": "", "builtin": False, "added": time.strftime("%Y-%m-%d"), "from": source}
+            new.append(n)
+    if new:
+        acts["other"] = acts.pop("other")
+        save_acts(cache, acts)
+    return new
+
+
+def saved_analyses(cache):
+    out = []
+    for path in sorted(glob.glob(os.path.join(glob.escape(cache), "*.analysis.json"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                out.append(json.load(f))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def act_profile(cache):
+    """What your training says about each act: how much there is, how it's spread, how your own labelled
+    examples move, and how often the vision model disagreed with your labels."""
+    prof = {}
+    for a in saved_analyses(cache):
+        src = a.get("source_id", "")
+        run = None
+        for w in a.get("windows", []):
+            act, f = w.get("act"), w.get("features")
+            if not act or act in IGNORE_DEFAULT or not f:
+                run = None
+                continue
+            p = prof.setdefault(act, {"seconds": 0.0, "videos": set(), "segments": [], "feats": [], "manual": [],
+                                      "manual_n": 0, "disagree": 0})
+            dur = w["end"] - w["start"]
+            p["seconds"] += dur
+            p["videos"].add(src)
+            if run and run[0] == act and abs(run[1] - w["start"]) < 0.05:
+                p["segments"][-1] += dur
+            else:
+                p["segments"].append(dur)
+            run = (act, w["end"])
+            p["feats"].append((f, dur))
+            if w.get("source") == "manual":
+                p["manual"].append((f, dur))
+                if w.get("vlm") and w["vlm"].get("act"):
+                    p["manual_n"] += 1
+                    p["disagree"] += w["vlm"]["act"] != act
+    return prof
+
+
+def mean_features(items):
+    tw = sum(d for _, d in items) or 1.0
+    keys = ("rate", "amp", "amp_std", "center", "top", "bottom", "irregularity", "asym", "velocity", "pause_frac")
+    m = {k: sum(f.get(k, 0) * d for f, d in items) / tw for k in keys}
+    m.update(trend=0, seconds=tw)
+    return m
+
+
+def learned_hints(cache):
+    """'how your labelled examples of each act move', for acts you have labelled at least twice."""
+    hints = {}
+    for act, p in act_profile(cache).items():
+        if len(p["manual"]) >= 2:
+            segs = sorted(p["segments"])
+            typical = segs[len(segs) // 2] if segs else 0
+            hints[act] = (f"{describe(mean_features(p['manual']))}"
+                          + (f"; usually lasts about {typical:.0f} s" if typical and typical < 30 else ""))
+    return hints
+
+
+def act_health(cache, acts):
+    """Acts that need more description: limited examples, scattered examples, or often mislabelled."""
+    flags = {}
+    prof = act_profile(cache)
+    for name, a in acts.items():
+        if name in IGNORE_DEFAULT:
+            continue
+        p = prof.get(name)
+        why = []
+        if not a["builtin"] and not a["description"].strip():
+            why.append("it has no description yet")
+        if p:
+            if p["seconds"] < 120 or len(p["videos"]) < 2:
+                why.append(f"limited examples ({p['seconds']:.0f} s from {len(p['videos'])} video(s))")
+            segs = sorted(p["segments"])
+            rates = [f["rate"] for f, _ in p["feats"]]
+            spread = (st.pstdev(rates) / max(0.05, st.mean(rates))) if len(rates) > 2 else 0
+            centers = [f["center"] for f, _ in p["feats"]]
+            if len(segs) >= 4 and segs[len(segs) // 2] < 6:
+                why.append(f"scattered into many short pieces ({len(segs)} pieces, mostly under 6 s)")
+            elif spread > 0.6 or (len(centers) > 2 and st.pstdev(centers) > 22):
+                why.append("its examples move very differently from each other")
+            if p["manual_n"] >= 3 and p["disagree"] / p["manual_n"] >= 0.3:
+                why.append(f"the vision model often labels it wrong ({p['disagree']} of {p['manual_n']} of your labels)")
+        elif not a["builtin"]:
+            why.append("no examples yet")
+        if why:
+            flags[name] = why
+    return flags
+
+
+# ----------------------------------------------------------------- stop & save
+class StopRequested(Exception):
+    pass
+
+
+class StopKey:
+    """Press S (or Esc) while the trainer analyses to stop at once; progress is saved."""
+
+    def __init__(self):
+        self.requested, self._tty, self._win = False, None, None
+
+    def __enter__(self):
+        self.requested = False
+        try:
+            if sys.stdin and sys.stdin.isatty():
+                if os.name == "nt":
+                    import msvcrt
+                    self._win = msvcrt
+                else:
+                    import termios
+                    import tty
+                    fd = sys.stdin.fileno()
+                    self._tty = (fd, termios.tcgetattr(fd))
+                    tty.setcbreak(fd)
+        except Exception:  # noqa: BLE001 - no keyboard: Ctrl+C still works
+            self._tty = self._win = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._tty:
+            import termios
+            termios.tcsetattr(self._tty[0], termios.TCSADRAIN, self._tty[1])
+            self._tty = None
+        self._win = None
+
+    def check(self):
+        try:
+            if self._win:
+                while self._win.kbhit():
+                    if self._win.getwch().lower() in ("s", "\x1b"):
+                        self.requested = True
+            elif self._tty:
+                import select
+                while select.select([self._tty[0]], [], [], 0)[0]:
+                    if os.read(self._tty[0], 1).decode("utf-8", "ignore").lower() in ("s", "\x1b"):
+                        self.requested = True
+        except Exception:  # noqa: BLE001
+            pass
+        return self.requested
+
+
+STOP = StopKey()
+
+
+def stoppable(fn, *a, **k):
+    """Run a slow call (a vision-model request) so that pressing S stops at once instead of waiting for it."""
+    out = {}
+
+    def target():
+        try:
+            out["v"] = fn(*a, **k)
+        except BaseException as e:  # noqa: BLE001
+            out["e"] = e
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    while th.is_alive():
+        th.join(0.15)
+        if STOP.check():
+            raise StopRequested()
+    if "e" in out:
+        raise out["e"]
+    return out.get("v")
+
+
 # ----------------------------------------------------------------- video + VLM
 def grab_frame(video, t_sec, width):
-    cmd = ["ffmpeg", "-loglevel", "error", "-ss", f"{t_sec:.2f}", "-i", video,
+    # -nostdin + no stdin: ffmpeg must not read the keyboard, or it swallows the S (stop) key and resets the terminal
+    cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", f"{t_sec:.2f}", "-i", video,
            "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5",
            "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
         return r.stdout if r.returncode == 0 and r.stdout else None
     except (OSError, subprocess.TimeoutExpired):
         return None
 
 
+def act_menu(acts, hints):
+    """The act list as the vision model sees it: each label with its meaning, plus how the user's own
+    labelled examples of it move on the toy."""
+    lines = []
+    for name, a in acts.items():
+        line = f"- {name}: {a['description'].strip() or name.replace('_', ' ')}"
+        if hints.get(name):
+            line += f" (in the user's own labelled examples the toy moves: {hints[name]})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def vlm_query(args, frames, start, end, feat, labels):
+    acts = getattr(args, "acts", None) or {n: {"description": BUILTIN_ACTS.get(n, "")} for n in labels}
     prompt = (
         f"These {len(frames)} frames are in time order from {start:.0f}s to {end:.0f}s of an adult video "
         f"between consenting adult performers. A hand-made script drives a male stroker toy in sync with it. "
         f"During this exact span the toy moves like this: {describe(feat)}.\n\n"
-        f"Allowed act labels: {', '.join(labels)}.\n"
+        "Act labels and what each one means (these are the user's own definitions: follow them):\n"
+        f"{act_menu(acts, getattr(args, 'hints', None) or {})}\n"
+        "When labels overlap, pick the most specific one whose meaning matches what you see. "
         "Look at how the performers' bodies move and relate it to that stroke pattern. "
         "Reply with ONLY a JSON object, no prose:\n"
-        '{"act": "<one allowed label>", "position": "<short body position>", '
+        '{"act": "<exactly one label from the list>", "position": "<short body position>", '
         '"who_moves": "<who is doing the moving>", '
         '"movement": "<1-2 sentences: how the bodies/head/hands/hips move>", '
         '"correspondence": "<1-2 sentences: how that motion maps onto the stroke pattern, e.g. what a deep stroke, '
@@ -391,7 +687,7 @@ def query_window(args, video, s, e, feat, labels):
         print(f"  {fmt_time(s)}-{fmt_time(e)}  asking VLM ({len(frames)} frame{'s' if len(frames) > 1 else ''})...",
               end="", flush=True)
         try:
-            vlm = vlm_query(args, frames, s, e, feat, labels)
+            vlm = stoppable(vlm_query, args, frames, s, e, feat, labels)
             print(f" {vlm['act']}")
             return vlm
         except VLMError as err:
@@ -447,12 +743,21 @@ def find_cache(args, stem, fp):
     return (plain if not os.path.exists(plain) else os.path.join(args.cache, f"{stem}~{fp[:6]}.analysis.json")), bool(names)
 
 
+def write_json(path, data, **kw):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, **kw)
+    os.replace(tmp, path)          # never leaves a half-written file, even if stopped mid-save
+
+
 def analyze(args, video, script):
-    labels = [norm_label(l, [l]) for l in (args.labels.split(",") if args.labels else DEFAULT_LABELS)]
-    if "other" not in labels:
-        labels.append("other")
-    stem = os.path.splitext(os.path.basename(video))[0]
     os.makedirs(args.cache, exist_ok=True)
+    if getattr(args, "labels", None):           # --labels: extra acts for this and later runs
+        add_acts(args.cache, args.labels.split(","), "command line")
+    args.acts, _ = load_acts(args.cache)
+    args.hints = learned_hints(args.cache)
+    labels = list(args.acts)
+    stem = os.path.splitext(os.path.basename(video))[0]
 
     pts = load_funscript(script)
     if len(pts) < 4:
@@ -463,27 +768,83 @@ def analyze(args, video, script):
     cache_path, name_clash = find_cache(args, stem, fp)
     if name_clash and not os.path.exists(cache_path):
         print(f"  note: a different video named '{stem}' was trained before; keeping both")
-    cached = {}
+    cached, old = {}, {}
     if os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
-            for w in json.load(f).get("windows", []):
-                if w.get("vlm"):
-                    cached[round(w["start"], 2)] = w["vlm"]
+            old = json.load(f)
+        for w in old.get("windows", []):
+            if w.get("vlm"):
+                cached[round(w["start"], 2)] = w["vlm"]
     labels_path = args.labels_csv or os.path.splitext(video)[0] + ".labels.csv"
     manual = load_labels_csv(labels_path, labels) if os.path.exists(labels_path) else None
     if manual:
         print(f"  using your labels from {labels_path}")
+        new = add_acts(args.cache, [r["act"] for r in manual], os.path.basename(labels_path))
+        if new:
+            print(f"  new act(s) from your labels: {', '.join(new)} (the trainer will ask you to describe them)")
+            args.acts, _ = load_acts(args.cache)
+            labels = list(args.acts)
     elif not args.vlm_url:
         print("  ! no --vlm-url and no labels csv; nothing to label with")
         return None
 
+    source_id = os.path.basename(cache_path)[: -len(".analysis.json")]
+    result = {"video": os.path.abspath(video), "script": os.path.abspath(script), "source_id": source_id,
+              "fingerprint": fp, "trained": time.strftime("%Y-%m-%d %H:%M"),
+              "window": args.window, "labels": labels, "complete": False, "windows": []}
+    windows = result["windows"]
+
+    def snapshot():
+        """What's done so far. Re-running an analysed video and stopping part-way keeps the rest of the
+        earlier run (its slices and vision-model answers) instead of throwing it away."""
+        end = windows[-1]["end"] if windows else -1
+        tail = [w for w in old.get("windows", []) if w["start"] >= end - 0.01]
+        return {**result, "windows": windows + tail, "complete": bool(tail) and old.get("complete", True)}
+
+    try:
+        analyze_windows(args, video, ext, cached, manual, labels, windows, lambda: write_json(cache_path, snapshot(), indent=1))
+    except (StopRequested, KeyboardInterrupt, SystemExit) as e:
+        snap = snapshot()
+        write_json(cache_path, snap, indent=1)
+        write_review(args, source_id, snap["windows"])
+        done = windows[-1]["end"] if windows else 0
+        print(f"\n  Stopped. Saved {fmt_time(done)} of {os.path.basename(video)} ({len(windows)} slices) to {cache_path}")
+        if isinstance(e, SystemExit):
+            raise
+        raise StopRequested() from None
+    result["complete"] = True
+    write_json(cache_path, result, indent=1)
+    review = write_review(args, source_id, windows)
+    counts = {}
+    for w in windows:
+        counts[w["act"]] = counts.get(w["act"], 0) + (w["end"] - w["start"])
+    print("  labelled time: " + ", ".join(f"{k} {v:.0f}s" for k, v in sorted(counts.items(), key=lambda x: -x[1])))
+    print(f"  review/correct: {review}  ->  save as {os.path.splitext(video)[0]}.labels.csv")
+    return cache_path
+
+
+def write_review(args, source_id, windows):
+    review = os.path.join(args.cache, source_id + ".review.csv")
+    with open(review, "w", newline="", encoding="utf-8") as f:
+        wr = csv.writer(f)
+        wr.writerow(["start", "end", "act", "confidence", "position", "notes", "motion"])
+        for w in merge_windows(windows, ignore=set()):
+            wr.writerow([fmt_time(w["start"]), fmt_time(w["end"]), w["act"], f"{w['confidence']:.2f}",
+                         w.get("position", ""), w.get("notes", ""), describe(w.get("features"))])
+    return review
+
+
+def analyze_windows(args, video, ext, cached, manual, labels, windows, save):
+    """Slice by slice, saving after every one that asked the vision model (that's the slow part)."""
     first, last = ext[0][0] / 1000.0, ext[-1][0] / 1000.0
-    windows, t = [], first
+    t = first
     while t < last:
+        if STOP.check():
+            raise StopRequested()
         s, e = t, min(t + args.window, last)
         t += args.window
         span = slice_points(ext, s * 1000, e * 1000)
-        feat = features(span, s * 1000, e * 1000)
+        feat = window_features(ext, s * 1000, e * 1000)
         w = {"start": round(s, 2), "end": round(e, 2), "features": feat,
              "strokes": [[int(a), round(p, 1)] for a, p in span]}
         if feat is None:
@@ -491,6 +852,8 @@ def analyze(args, video, script):
             windows.append(w)
             continue
         vlm = cached.get(round(s, 2))
+        if vlm and vlm.get("act") not in labels:
+            vlm = {**vlm, "act": norm_label(vlm.get("act"), labels)}
         need_vlm = args.vlm_url and not vlm and (not manual or args.vlm_notes)
         if need_vlm:
             vlm = query_window(args, video, s, e, feat, labels)
@@ -507,26 +870,8 @@ def analyze(args, video, script):
             w.update(act="unknown", confidence=0.0, notes="", source="none")
         windows.append(w)
 
-    source_id = os.path.basename(cache_path)[: -len(".analysis.json")]
-    result = {"video": os.path.abspath(video), "script": os.path.abspath(script), "source_id": source_id,
-              "fingerprint": fp, "trained": time.strftime("%Y-%m-%d %H:%M"),
-              "window": args.window, "labels": labels, "windows": windows}
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=1)
-
-    review = os.path.join(args.cache, source_id + ".review.csv")
-    with open(review, "w", newline="", encoding="utf-8") as f:
-        wr = csv.writer(f)
-        wr.writerow(["start", "end", "act", "confidence", "position", "notes", "motion"])
-        for w in merge_windows(windows, ignore=set()):
-            wr.writerow([fmt_time(w["start"]), fmt_time(w["end"]), w["act"], f"{w['confidence']:.2f}",
-                         w.get("position", ""), w.get("notes", ""), describe(w.get("features"))])
-    counts = {}
-    for w in windows:
-        counts[w["act"]] = counts.get(w["act"], 0) + (w["end"] - w["start"])
-    print("  labelled time: " + ", ".join(f"{k} {v:.0f}s" for k, v in sorted(counts.items(), key=lambda x: -x[1])))
-    print(f"  review/correct: {review}  ->  save as {os.path.splitext(video)[0]}.labels.csv")
-    return cache_path
+        if need_vlm:
+            save()
 
 
 def merge_windows(windows, ignore):
@@ -545,7 +890,10 @@ def merge_windows(windows, ignore):
         else:
             segs.append({**w, "strokes": list(w["strokes"]), "notes_all": [w["notes"]] if w.get("notes") else []})
     for s in segs:
-        s["features"] = features([tuple(p) for p in s["strokes"]], s["start"] * 1000, s["end"] * 1000)
+        f = features([tuple(p) for p in s["strokes"]], s["start"] * 1000, s["end"] * 1000)
+        if not f and s.get("features") and s["features"].get("hold"):      # a hold keeps its hold description
+            f = hold_features(s["end"] - s["start"], s["features"]["bottom"], s["features"]["top"])
+        s["features"] = f
         s["notes"] = " / ".join(s["notes_all"][:2])
     return segs
 
@@ -555,16 +903,19 @@ def cut_motifs(seg, src_id, rng):
     """Chop a segment into short stroke phrases (3-8 s) that start/end on turning points."""
     pts = [tuple(p) for p in seg["strokes"]]
     motifs, i = [], 0
-    while i < len(pts) - 3:
+    short = pts and pts[-1][0] - pts[0][0] < 8000          # a short moment: one phrase covering all of it
+    while i < len(pts) - (2 if short else 3):
         target = rng.uniform(3000, 8000)
         j = i + 1
         while j < len(pts) and pts[j][0] - pts[i][0] < target:
             j += 1
         if j >= len(pts):
-            break
+            if not (short and i == 0):
+                break
+            j = len(pts) - 1
         chunk = pts[i:j + 1]
         f = features(chunk, chunk[0][0], chunk[-1][0])
-        if f and len(chunk) >= 4:
+        if f and len(chunk) >= (3 if short else 4):
             motifs.append({
                 "id": f"{src_id}@{chunk[0][0]}",
                 "rate": f["rate"], "amp": f["amp"], "center": f["center"],
@@ -671,14 +1022,30 @@ def build(args):
         files += glob.glob(os.path.join(p, "*.analysis.json")) if os.path.isdir(p) else glob.glob(p)
     if not files:
         sys.exit("no *.analysis.json files given")
-    per_act = {}
+    acts_dir = next((p for p in args.analyses if os.path.isdir(p)), DEFAULT_CACHE)
+    acts = load_acts(acts_dir)[0]
+    per_act, unfinished = {}, 0
     for path in files:
         with open(path, encoding="utf-8") as f:
             a = json.load(f)
         src = a.get("source_id") or os.path.splitext(os.path.basename(a["video"]))[0]
+        if a.get("complete") is False:
+            unfinished += 1
+        all_pts, last = [], None                      # the whole script's turning points, for context
+        for w in a["windows"]:
+            for p in w.get("strokes", []):
+                if last is None or p[0] > last:
+                    all_pts.append(p); last = p[0]
         for seg in merge_windows(a["windows"], ignore):
-            if seg["confidence"] < args.min_confidence or not seg["features"] or seg["features"]["seconds"] < 4:
+            if seg["confidence"] < args.min_confidence or not seg["features"] or seg["features"]["seconds"] < 2:
                 continue
+            if seg["features"].get("hold") or seg["features"]["seconds"] < 6:
+                # a short moment (a gag at the base, a lick): include the moves into and out of it
+                s0, e0 = seg["start"] * 1000 - 1500, seg["end"] * 1000 + 1500
+                padded = [p for p in all_pts if s0 <= p[0] <= e0]
+                f = features([tuple(p) for p in padded], padded[0][0], padded[-1][0]) if len(padded) >= 3 else None
+                if f:
+                    seg = {**seg, "strokes": padded, "features": {**f, "seconds": seg["features"]["seconds"]}}
             per_act.setdefault(seg["act"], []).append((src, seg))
 
     previous = {}
@@ -712,7 +1079,11 @@ def build(args):
         entry["motion"] = describe(mean_feat)
         notes = [n for _, s in sorted(segs, key=lambda x: -x[1]["confidence"]) for n in s["notes_all"] if n]
         entry["notes"] = notes[:5]
-        entry["description"] = summarize_notes(args, act, notes, entry["motion"]) or (notes[0] if notes else "")
+        observed = summarize_notes(args, act, notes, entry["motion"]) or (notes[0] if notes else "")
+        definition = (acts.get(act) or {}).get("description", "").strip()
+        entry["definition"] = definition
+        # the chat AI reads this: your definition first, so it knows when to use the act
+        entry["description"] = (definition + (" Seen in training: " + observed if observed else "")).strip() if definition else observed
         # phrases: cut per segment, seeded so their IDs (and your ratings of them) never change
         pools = {}
         for src, s in segs:
@@ -729,7 +1100,8 @@ def build(args):
             pass
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(lib, f, separators=(",", ":"))
-    print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB) from {len(files)} trained video(s)\n")
+    print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB) from {len(files)} trained video(s)"
+          + (f", {unfinished} not finished yet (included as far as they got)" if unfinished else "") + "\n")
     print(f"{'act':<18}{'time':>7}{'vids':>6}{'phrases':>8}  {'kept':<22}motion")
     for act, e in lib["acts"].items():
         st_ = stats[act]
@@ -765,6 +1137,7 @@ def ask(prompt, default=""):
 
 
 def run_analyze(args, inputs):
+    """Analyse every video. Returns how many finished, or None if you stopped it (progress is saved)."""
     vids = []
     for p in inputs:
         if os.path.isdir(p):
@@ -772,15 +1145,96 @@ def run_analyze(args, inputs):
         else:
             vids.append(p)
     done = 0
-    for v in vids:
-        s = args.script if getattr(args, "script", None) and len(vids) == 1 else find_script(v)
-        if not s:
-            print(f"- {os.path.basename(v)}: no matching .funscript (needs the same name), skipping")
-            continue
-        print(f"- {os.path.basename(v)}  +  {os.path.basename(s)}")
-        if analyze(args, v, s):
-            done += 1
+    with STOP:
+        if STOP._tty or STOP._win:
+            print("  >> Press S at any time to stop. Everything so far is saved; run again to carry on. <<\n")
+        try:
+            for v in vids:
+                s = args.script if getattr(args, "script", None) and len(vids) == 1 else find_script(v)
+                if not s:
+                    print(f"- {os.path.basename(v)}: no matching .funscript (needs the same name), skipping")
+                    continue
+                print(f"- {os.path.basename(v)}  +  {os.path.basename(s)}")
+                if analyze(args, v, s):
+                    done += 1
+        except StopRequested:
+            print("  Training stopped and saved. Run the trainer again to continue where it stopped.")
+            return None
     return done
+
+
+def ask_yes(prompt, default="n"):
+    return ask(f"{prompt} (y/n)", default).lower().startswith("y")
+
+
+DETAIL = [(10.0, "Normal", "10-second slices: fastest; brief moments blend into what's around them"),
+          (5.0, "Detailed", "5-second slices: catches short moments like a gag at the base; about 2x longer"),
+          (3.0, "Very detailed", "3-second slices: the finest; about 3x longer")]
+
+
+def describe_prompt(name, current=""):
+    print(f"\n  Describe '{name}' so the vision model knows what does and doesn't count. Say what you see")
+    print("  (who does what, which body parts, at the tip or the base, pauses) and how it differs from")
+    print("  similar acts. Example: \"Holds it all the way down at the base for a few seconds, may pull off")
+    print("  coughing. Not regular deepthroat strokes.\"")
+    if current:
+        print(f"  Now: {current}")
+
+
+def acts_step(cache):
+    """Optional: add your own acts (with descriptions), answer questions about acts that need a better
+    description, and choose how fine the analysis is. Returns the slice length in seconds."""
+    print("\nStep 3/5  Acts and detail")
+    acts, settings = load_acts(cache)
+    mine = [n for n, a in acts.items() if not a["builtin"]]
+    print("  Acts the trainer labels: " + ", ".join(n for n in acts if n != "other"))
+    if mine:
+        print(f"  (yours: {', '.join(mine)})")
+    if ask_yes("  Add any acts of your own?", "n"):
+        print("  One at a time; press Enter on an empty name when you're done.")
+        while True:
+            name = act_name(ask("\n  New act name (e.g. gag_hold, head_licking)", ""))
+            if not name:
+                break
+            if name in acts:
+                print(f"  '{name}' is already in the list.")
+                continue
+            if name in IGNORE_DEFAULT:
+                print(f"  '{name}' is reserved, pick another name.")
+                continue
+            describe_prompt(name)
+            desc = ask("  Description", "")
+            acts[name] = {"description": desc, "builtin": False, "added": time.strftime("%Y-%m-%d"), "from": "you"}
+            acts["other"] = acts.pop("other")
+            save_acts(cache, acts)
+            print(f"  Added '{name}'." + ("" if desc else " (No description yet: you'll be asked again next time.)"))
+
+    flags = act_health(cache, acts)
+    if flags:
+        print("\n  Some acts would benefit from a better description:")
+        for n, why in flags.items():
+            print(f"    - {n}: {'; '.join(why)}")
+        if ask_yes("  Go through them now?", "y"):
+            for n, why in flags.items():
+                describe_prompt(n, acts[n]["description"])
+                print(f"  ({'; '.join(why)})")
+                extra = ask("  Add detail (Enter to keep as is)", "")
+                if extra:
+                    acts[n]["description"] = (acts[n]["description"].rstrip(". ") + ". " + extra).strip(". ") + "." \
+                        if acts[n]["description"].strip() else extra
+                    save_acts(cache, acts)
+                    print("  Saved.")
+        print(f"  (To rewrite a description completely, edit {acts_path(cache)})")
+
+    last = float(settings.get("window", 10.0))
+    print("\n  How fine should the analysis be?")
+    for i, (w, name, text) in enumerate(DETAIL, 1):
+        print(f"    {i}. {name}: {text}" + ("   <- last time" if w == last else ""))
+    default = str(next((i for i, (w, _, _) in enumerate(DETAIL, 1) if w == last), 1))
+    c = ask("  Choose", default)
+    window = DETAIL[int(c) - 1][0] if c.isdigit() and 1 <= int(c) <= len(DETAIL) else last
+    save_acts(cache, load_acts(cache)[0], {"window": window})
+    return window
 
 
 def wizard():
@@ -799,7 +1253,7 @@ def wizard():
 
     # 1. training folder
     default_dir = os.path.join(root, "training")
-    print("\nStep 1/4  Training folder")
+    print("\nStep 1/5  Training folder")
     print("  Put each video next to its .funscript with the SAME name, e.g.")
     print("  scene01.mp4 + scene01.funscript")
     while True:
@@ -821,9 +1275,10 @@ def wizard():
         print("  No usable pairs. Check the names match, then try again.")
 
     # 2. model server
-    print("\nStep 2/4  Vision model")
+    print("\nStep 2/5  Vision model")
     url, models = None, []
-    for name, u in SERVERS:
+    servers = ([("your server", os.environ["VLM_URL"])] if os.environ.get("VLM_URL") else []) + SERVERS
+    for name, u in servers:
         try:
             models = list_models(u)
             url = u
@@ -857,10 +1312,13 @@ def wizard():
                 model = models[int(c) - 1]
         print(f"  Using {model}")
 
-    # 3. analyze
+    # 3. acts and detail
     cache = os.path.join(root, "handy_cache")
+    window = acts_step(cache)
+
+    # 4. analyze
     args = argparse.Namespace(
-        script=None, labels_csv=None, labels=None, window=10.0, frames=4, width=640, vlm_notes=False,
+        script=None, labels_csv=None, labels=None, window=window, frames=4, width=640, vlm_notes=False,
         cache=cache, vlm_url=url or "", model=model, api_key="", timeout=300)
     if url:
         print("  Testing that the model accepts images...", end="", flush=True)
@@ -871,10 +1329,12 @@ def wizard():
             return
         print(" OK")
 
-    print("\nStep 3/4  Analyzing")
-    print("  This asks the model about every 10 s of video, so it can take a while.")
-    print("  You can stop with Ctrl+C and run this again later: finished parts are saved.\n")
-    if not run_analyze(args, [folder]):
+    print("\nStep 4/5  Analyzing")
+    print(f"  This asks the model about every {window:g} s of video, so it can take a while.")
+    result = run_analyze(args, [folder])
+    if result is None:
+        return
+    if not result:
         print("\nNothing was analyzed. If you skipped the vision model, every video needs a")
         print("<video>.labels.csv first (see docs/USER_GUIDE.md, Part 10).")
         return
@@ -890,7 +1350,7 @@ def wizard():
         return
 
     # 4. build
-    print("\nStep 4/4  Building")
+    print("\nStep 5/5  Building")
     trained = len(glob.glob(os.path.join(glob.escape(cache), "*.analysis.json")))
     print(f"  From everything trained so far: {trained} video(s) saved in {cache}")
     print("  (videos you've already deleted are included; keep this folder and back it up)")
@@ -979,8 +1439,14 @@ def main():
                     pass
                 sys.exit(1)
             print("  OK\n")
-        run_analyze(args, args.inputs)
+        if run_analyze(args, args.inputs) is None:
+            return
         print("\nNext: fix the review CSVs, then run:  python trainer.py build")
+        flags = act_health(args.cache, load_acts(args.cache)[0])
+        if flags:
+            print("\nActs that would benefit from a better description (run the trainer with no options to add one):")
+            for n, why in flags.items():
+                print(f"  - {n}: {'; '.join(why)}")
     else:
         build(args)
 

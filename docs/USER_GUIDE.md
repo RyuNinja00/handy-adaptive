@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.8.2.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.8.3.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -314,9 +314,35 @@ If your server needs a key, add `--api-key YOURKEY`.
 4. **Answer the questions.** Before analyzing, it sends one test image to check the model can read images, and explains any problem.
    - **Folder:** press Enter to use the `training` folder, or paste another path. It lists which videos have a matching script.
    - **Model:** it finds LM Studio or Ollama on its own and lists your models. Type the number of your **vision** model.
-   - It then analyzes everything. This takes a while. You can stop with Ctrl+C and run it again later, and finished parts are kept.
+   - **Your own acts (optional):** it shows the act list and asks whether you want to add any. If you do, type each name (for example `gag_hold` or `head_licking`) and a description. See [Your own acts](#your-own-acts) below.
+   - **Acts that need a better description:** on later runs it lists acts with few examples, scattered examples, or ones the vision model keeps getting wrong, and asks you for more detail. Press Enter to skip any of them.
+   - **Detail:** **Normal** (10-second slices), **Detailed** (5 s) or **Very detailed** (3 s). Finer slices catch short moments, like a few seconds of gagging at the base, but take longer. It remembers your choice.
+   - It then analyzes everything. This takes a while. **Press S at any time to stop** (see [Stopping and carrying on](#stopping-and-carrying-on)).
    - **Build now?** The first time, answer **n**, check the labels (Part 10), then run it again and answer **y**.
 5. When it finishes, it shows where `motion_library.json` was saved. Import that file (Part 11).
+
+### Your own acts
+
+The trainer comes with a list of common acts, each with a short description. You can add your own, such as `head_licking`, `tip_sucking` or `gag_hold`. Each one becomes its own act, with its own learned motion and your own taste ratings, and the AI can use it in a scene.
+
+**The description is what makes it work.** The vision model doesn't know what you mean by a name, so every question it's asked includes each act's description. Say what you'd see and how it differs from similar acts. For example: *"Holds it all the way down at the base for a few seconds, may pull off coughing. Not regular deepthroat strokes."* The description also goes into the motion library, so the chat AI knows when to use the act.
+
+It also learns from your corrections. Once you've labeled an act yourself a couple of times (Part 10), the vision model is also shown how your examples of it move on the stroker (for example *"holds still at the base for 3 s; usually lasts about 4 s"*). Its first guesses get closer to yours as you train more.
+
+Ways to add acts:
+- Guided mode asks (above).
+- Type a new name in a label file (Part 10). It's added to the list, and guided mode asks you to describe it next time.
+- On the command line, `--labels "head_licking,gag_hold"` adds them.
+
+Your list and descriptions are saved in `handy_cache/acts.json`. To rewrite a description completely, edit that file in any text editor. You can also change the built-in descriptions there.
+
+For short acts, choose **Detailed** or **Very detailed**. With 10-second slices, a 3-second moment is blended into what's around it, and a 3-second label you type in a label file is ignored.
+
+### Stopping and carrying on
+
+**Press S** (or Esc) in the trainer's window at any time. It stops right away, even in the middle of a question to the vision model. Everything done so far is saved after every slice. Run the trainer again and it carries on from where it stopped, without asking the model anything twice. Ctrl+C does the same, though on Windows the window may then ask "Terminate batch job?". Either answer is fine.
+
+If you stop part-way through re-analyzing a video you'd already finished, for example after correcting its labels, the rest of the earlier analysis is kept. A build always uses everything saved so far, including videos that are only partly done; the build summary says how many those are.
 
 ### Manual way: command line
 
@@ -350,10 +376,10 @@ What happens in each 10-second window:
 |---|---|---|
 | `--model NAME` | `gemma4` | Vision model name as your server lists it |
 | `--vlm-url URL` | Ollama | Model server address. `--vlm-url ""` disables the model (manual labels only) |
-| `--window SEC` | 10 | Length of each analysis window. Smaller = finer boundaries, more model calls |
+| `--window SEC` | 10 | Length of each analysis slice. Smaller = shorter moments caught, more model calls |
 | `--frames N` | 4 | Frames per window. More = often more accurate, slower |
 | `--width PX` | 640 | Frame width sent to the model |
-| `--labels "a,b,c"` | built-in list | Your own act vocabulary for the model to choose from |
+| `--labels "a,b,c"` | — | Add your own acts to the list (kept for later runs; describe them in guided mode or `handy_cache/acts.json`) |
 | `--script FILE` | same name | Use a specific script (single video only) |
 | `--labels-csv FILE` | `<video>.labels.csv` | Use a labels file from somewhere else |
 | `--vlm-notes` | off | Still ask the model for notes even when you've provided labels |
@@ -381,7 +407,7 @@ This step matters most for quality. Even good models make mistakes.
 
 2. Go through each row:
    - **Wrong act?** Change `act`.
-   - **Want a new act?** Just type a new name, such as `edging`, `sloppy_bj` or `slow_grind`. Any name you use becomes an act the AI can use. Use lowercase with underscores.
+   - **Want a new act?** Just type a new name, such as `edging`, `sloppy_bj` or `gag_hold`. Any name you use is added to your act list and becomes an act the AI can use; the next guided run asks you to describe it ([Your own acts](#your-own-acts)). Use lowercase with underscores.
    - **Boundary off?** Edit `start` / `end`. Times can be `m:ss`, `m:ss.ss` or plain seconds.
    - **Junk segment** (cutaway, talking, out-of-sync script)? Set `act` to `other` and it will be left out.
    - **Improve the notes.** They're shown to the AI as the description of the act. A line like *"teasing licks at the tip with long pauses, then sudden deep strokes"* helps a lot.

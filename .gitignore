@@ -19,3 +19,4 @@ node_modules/
 .DS_Store
 tests/marinara_panel.png
 tests/marinara_settings.png
+motion_library.json.previous

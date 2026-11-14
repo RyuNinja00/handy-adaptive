@@ -21,6 +21,7 @@ import argparse
 import base64
 import csv
 import glob
+import hashlib
 import json
 import math
 import os
@@ -33,6 +34,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# One place for your training, whichever way you run the trainer (guided mode or commands, from any folder)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CACHE = os.path.join(ROOT, "handy_cache")
+DEFAULT_OUT = os.path.join(ROOT, "motion_library.json")
 
 DEFAULT_LABELS = [
     "blowjob", "deepthroat", "handjob", "titjob", "footjob",
@@ -408,25 +414,61 @@ def query_window(args, video, s, e, feat, labels):
     return None
 
 
+def fingerprint(ext):
+    """Identity of a training video: its script's motion, not its file name."""
+    return hashlib.sha1(json.dumps([[int(a), round(p, 1)] for a, p in ext]).encode()).hexdigest()[:12]
+
+
+def stored_fingerprint(a):
+    """Fingerprint of a saved analysis (older files didn't store one: rebuild it from their strokes)."""
+    if a.get("fingerprint"):
+        return a["fingerprint"]
+    pts, last = [], None
+    for w in a.get("windows", []):
+        for t, p in w.get("strokes", []):
+            if last is None or t > last:
+                pts.append((t, p)); last = t
+    return fingerprint(pts)
+
+
+def find_cache(args, stem, fp):
+    """The saved analysis for this exact video, or a free file name for a new one. A different video that
+    happens to have the same file name as an earlier one gets its own file, so nothing is overwritten."""
+    names = sorted(glob.glob(os.path.join(glob.escape(args.cache), glob.escape(stem) + ".analysis.json"))
+                   + glob.glob(os.path.join(glob.escape(args.cache), glob.escape(stem) + "~*.analysis.json")))
+    for path in names:
+        try:
+            with open(path, encoding="utf-8") as f:
+                if stored_fingerprint(json.load(f)) == fp:
+                    return path, False
+        except (OSError, ValueError):
+            continue
+    plain = os.path.join(args.cache, stem + ".analysis.json")
+    return (plain if not os.path.exists(plain) else os.path.join(args.cache, f"{stem}~{fp[:6]}.analysis.json")), bool(names)
+
+
 def analyze(args, video, script):
     labels = [norm_label(l, [l]) for l in (args.labels.split(",") if args.labels else DEFAULT_LABELS)]
     if "other" not in labels:
         labels.append("other")
     stem = os.path.splitext(os.path.basename(video))[0]
     os.makedirs(args.cache, exist_ok=True)
-    cache_path = os.path.join(args.cache, stem + ".analysis.json")
-    cached = {}
-    if os.path.exists(cache_path):
-        with open(cache_path, encoding="utf-8") as f:
-            for w in json.load(f).get("windows", []):
-                if w.get("vlm"):
-                    cached[round(w["start"], 2)] = w["vlm"]
 
     pts = load_funscript(script)
     if len(pts) < 4:
         print(f"  ! {script} has too few actions, skipping")
         return None
     ext = extrema(pts)
+    fp = fingerprint(ext)
+    cache_path, name_clash = find_cache(args, stem, fp)
+    if name_clash and not os.path.exists(cache_path):
+        print(f"  note: a different video named '{stem}' was trained before; keeping both")
+    cached = {}
+    if os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            for w in json.load(f).get("windows", []):
+                if w.get("vlm"):
+                    cached[round(w["start"], 2)] = w["vlm"]
     labels_path = args.labels_csv or os.path.splitext(video)[0] + ".labels.csv"
     manual = load_labels_csv(labels_path, labels) if os.path.exists(labels_path) else None
     if manual:
@@ -465,12 +507,14 @@ def analyze(args, video, script):
             w.update(act="unknown", confidence=0.0, notes="", source="none")
         windows.append(w)
 
-    result = {"video": os.path.abspath(video), "script": os.path.abspath(script),
+    source_id = os.path.basename(cache_path)[: -len(".analysis.json")]
+    result = {"video": os.path.abspath(video), "script": os.path.abspath(script), "source_id": source_id,
+              "fingerprint": fp, "trained": time.strftime("%Y-%m-%d %H:%M"),
               "window": args.window, "labels": labels, "windows": windows}
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=1)
 
-    review = os.path.join(args.cache, stem + ".review.csv")
+    review = os.path.join(args.cache, source_id + ".review.csv")
     with open(review, "w", newline="", encoding="utf-8") as f:
         wr = csv.writer(f)
         wr.writerow(["start", "end", "act", "confidence", "position", "notes", "motion"])
@@ -559,8 +603,68 @@ def summarize_notes(args, act, notes, motion):
         return None
 
 
+def load_taste(path):
+    """Phrase ratings from a taste profile exported by the extension (handy-profile.json)."""
+    if not path or not os.path.exists(path):
+        return {}, {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            pr = json.load(f)
+        pr = pr.get("profile", pr) if isinstance(pr, dict) else {}
+        num = lambda d: {k: float(v) for k, v in (d or {}).items() if isinstance(v, (int, float))}
+        ratings = num(pr.get("motifs"))
+        # each character's style keeps its own phrase ratings: a phrase you liked with any character counts as liked
+        chars = pr.get("characters") or {}
+        for r in (chars.values() if isinstance(chars, dict) else chars if isinstance(chars, list) else []):
+            for k, v in num(r.get("motifs") if isinstance(r, dict) else None).items():
+                if v > ratings.get(k, float("-inf")) and v > 0.2:
+                    ratings[k] = v
+        return ratings, num(pr.get("finishers"))
+    except (OSError, ValueError, AttributeError) as e:
+        print(f"  ! couldn't read taste profile {path}: {e}")
+        return {}, {}
+
+
+def choose_motifs(act, pools, cap, previous, ratings, finishers):
+    """Pick an act's phrases so earlier training isn't lost as videos are added:
+    1. phrases you liked (or finished to) always stay; phrases you rejected are left out;
+    2. phrases from the previous library stay, up to a fair share per video;
+    3. the rest is filled evenly across videos, new ones included."""
+    by_id = {m["id"]: m for p in pools.values() for m in p}
+    src_of = {m["id"]: s for s, p in pools.items() for m in p}
+    liked = lambda i: ratings.get(i, 0) > 0.2 or finishers.get(i, 0) > 0
+    disliked = lambda i: ratings.get(i, 0) < -0.3 and not finishers.get(i)
+    chosen, seen = [], set()
+
+    def take(i):
+        if i in by_id and i not in seen:
+            chosen.append(by_id[i]); seen.add(i)
+
+    keep = sorted((i for i in by_id if liked(i)), key=lambda i: -(ratings.get(i, 0) + finishers.get(i, 0)))
+    for i in keep:
+        take(i)
+    room = max(0, cap - len(chosen))
+    share = -(-cap // max(1, len(pools)))          # ceil(cap / videos)
+    per_src = {}
+    for i in seen:
+        per_src[src_of[i]] = per_src.get(src_of[i], 0) + 1
+    for i in previous:
+        if room <= 0:
+            break
+        if i in by_id and i not in seen and not disliked(i) and per_src.get(src_of[i], 0) < share:
+            take(i); per_src[src_of[i]] = per_src.get(src_of[i], 0) + 1; room -= 1
+    # fill round-robin; each video's phrases in a fixed order (stable across rebuilds)
+    queues = {s: [m["id"] for m in sorted(p, key=lambda m: hashlib.sha1(f"{act}/{m['id']}".encode()).hexdigest())
+                  if m["id"] not in seen and not disliked(m["id"])] for s, p in pools.items()}
+    while room > 0 and any(queues.values()):
+        s = min((s for s in queues if queues[s]), key=lambda s: (per_src.get(s, 0), s))   # the video with fewest so far
+        take(queues[s].pop(0)); per_src[s] = per_src.get(s, 0) + 1; room -= 1
+    stats = {"liked": len(keep), "previous": sum(1 for i in previous if i in seen), "total": len(chosen),
+             "rejected": sum(1 for i in by_id if disliked(i))}
+    return chosen, stats
+
+
 def build(args):
-    rng = random.Random(42)
     ignore = IGNORE_DEFAULT | set(x.strip().lower() for x in (args.ignore or "").split(",") if x.strip())
     files = []
     for p in args.analyses:
@@ -571,11 +675,25 @@ def build(args):
     for path in files:
         with open(path, encoding="utf-8") as f:
             a = json.load(f)
-        src = os.path.splitext(os.path.basename(a["video"]))[0]
+        src = a.get("source_id") or os.path.splitext(os.path.basename(a["video"]))[0]
         for seg in merge_windows(a["windows"], ignore):
             if seg["confidence"] < args.min_confidence or not seg["features"] or seg["features"]["seconds"] < 4:
                 continue
             per_act.setdefault(seg["act"], []).append((src, seg))
+
+    previous = {}
+    if os.path.exists(args.out):    # the last library: its phrases are kept where they still fit
+        try:
+            with open(args.out, encoding="utf-8") as f:
+                previous = {a: [m["id"] for m in e.get("motifs", [])] for a, e in json.load(f).get("acts", {}).items()}
+        except (OSError, ValueError, AttributeError):
+            previous = {}
+    taste = getattr(args, "taste", None)
+    if taste is None and os.path.exists(os.path.join(ROOT, "handy-profile.json")):
+        taste = os.path.join(ROOT, "handy-profile.json")
+    ratings, finishers = load_taste(taste)
+    if ratings or finishers:
+        print(f"Using your taste profile: {len(ratings)} rated phrases, {len(finishers)} you finished to")
 
     lib = {"version": 1, "created": time.strftime("%Y-%m-%d %H:%M"), "sources": len(files), "acts": {}}
     for act, segs in sorted(per_act.items()):
@@ -595,29 +713,31 @@ def build(args):
         notes = [n for _, s in sorted(segs, key=lambda x: -x[1]["confidence"]) for n in s["notes_all"] if n]
         entry["notes"] = notes[:5]
         entry["description"] = summarize_notes(args, act, notes, entry["motion"]) or (notes[0] if notes else "")
-        # motifs, round-robin across sources for diversity
+        # phrases: cut per segment, seeded so their IDs (and your ratings of them) never change
         pools = {}
         for src, s in segs:
-            # seeded per source segment so phrase IDs (and your ratings of them)
-            # stay stable when other videos are added to the library later
             seg_rng = random.Random(f"{src}@{s['start']}")
             pools.setdefault(src, []).extend(cut_motifs(s, src, seg_rng))
-        for p in pools.values():
-            rng.shuffle(p)
-        motifs, keys = [], list(pools)
-        while len(motifs) < args.max_motifs and any(pools.values()):
-            for k in keys:
-                if pools[k] and len(motifs) < args.max_motifs:
-                    motifs.append(pools[k].pop())
-        entry["motifs"] = motifs
+        entry["motifs"], entry["_stats"] = choose_motifs(act, pools, args.max_motifs, previous.get(act, []), ratings, finishers)
         lib["acts"][act] = entry
 
+    stats = {a: e.pop("_stats") for a, e in lib["acts"].items()}
+    if os.path.exists(args.out):       # one step of undo
+        try:
+            os.replace(args.out, args.out + ".previous")
+        except OSError:
+            pass
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(lib, f, separators=(",", ":"))
-    print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB) from {len(files)} video(s)\n")
-    print(f"{'act':<18}{'time':>7}{'vids':>6}{'motifs':>8}  motion")
+    print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB) from {len(files)} trained video(s)\n")
+    print(f"{'act':<18}{'time':>7}{'vids':>6}{'phrases':>8}  {'kept':<22}motion")
     for act, e in lib["acts"].items():
-        print(f"{act:<18}{e['seconds']:>6.0f}s{e['videos']:>6}{len(e['motifs']):>8}  {e['motion']}")
+        st_ = stats[act]
+        kept = f"{st_['liked']} liked, {st_['previous']} earlier"
+        print(f"{act:<18}{e['seconds']:>6.0f}s{e['videos']:>6}{len(e['motifs']):>8}  {kept:<22}{e['motion']}")
+    left_out = sum(s_["rejected"] for s_ in stats.values())
+    if left_out:
+        print(f"\n{left_out} phrase(s) you rejected with 👎 were left out.")
     thin = [a for a, e in lib["acts"].items() if e["seconds"] < 120]
     if thin:
         print(f"\nTip: {', '.join(thin)} have under 2 minutes of examples; add more for better variety.")
@@ -771,15 +891,39 @@ def wizard():
 
     # 4. build
     print("\nStep 4/4  Building")
+    trained = len(glob.glob(os.path.join(glob.escape(cache), "*.analysis.json")))
+    print(f"  From everything trained so far: {trained} video(s) saved in {cache}")
+    print("  (videos you've already deleted are included; keep this folder and back it up)")
+    taste = next((p for p in (os.path.join(root, "handy-profile.json"), os.path.join(folder, "handy-profile.json"))
+                  if os.path.exists(p)), None)
+    if not taste:
+        print("  Tip: export your taste in the extension (Learned taste > Export) and save handy-profile.json in")
+        print(f"  {root} so phrases you liked are always kept.")
     out = os.path.join(root, "motion_library.json")
-    build(argparse.Namespace(analyses=[cache], out=out, min_confidence=0.5, max_motifs=40, ignore=None,
+    build(argparse.Namespace(analyses=[cache], out=out, min_confidence=0.5, max_motifs=60, ignore=None, taste=taste,
                              summary_url="", summary_model="", model=model, api_key="", timeout=300))
     print(f"\nDone! Import this file in SillyTavern (Extensions > Handy Adaptive >")
     print(f"Import motion_library.json):\n  {out}")
 
 
 # ----------------------------------------------------------------- cli
+def adopt_old_cache():
+    """Earlier versions saved command-line training in trainer/handy_cache: bring it into the shared folder."""
+    old = os.path.join(ROOT, "trainer", "handy_cache")
+    if not os.path.isdir(old):
+        return
+    moved = 0
+    for f in os.listdir(old):
+        if f.endswith((".analysis.json", ".review.csv")) and not os.path.exists(os.path.join(DEFAULT_CACHE, f)):
+            os.makedirs(DEFAULT_CACHE, exist_ok=True)
+            shutil.copy2(os.path.join(old, f), os.path.join(DEFAULT_CACHE, f))
+            moved += f.endswith(".analysis.json")
+    if moved:
+        print(f"Copied {moved} earlier trained video(s) from {old} into {DEFAULT_CACHE} (the old folder is left as it was).")
+
+
 def main():
+    adopt_old_cache()
     if len(sys.argv) == 1:
         try:
             wizard()
@@ -805,14 +949,16 @@ def main():
     a.add_argument("--frames", type=int, default=4, help="frames sent to the VLM per window")
     a.add_argument("--width", type=int, default=640, help="frame width sent to the VLM")
     a.add_argument("--vlm-notes", action="store_true", help="still query the VLM for notes when labels csv exists")
-    a.add_argument("--cache", default="handy_cache")
+    a.add_argument("--cache", default=DEFAULT_CACHE, help=f"where training is saved (default: {DEFAULT_CACHE})")
     vlm_opts(a)
 
     b = sub.add_parser("build", help="merge analyses into motion_library.json")
-    b.add_argument("analyses", nargs="*", default=["handy_cache"])
-    b.add_argument("--out", default="motion_library.json")
+    b.add_argument("analyses", nargs="*", default=[DEFAULT_CACHE], help="analysis folders/files (default: all saved training)")
+    b.add_argument("--out", default=DEFAULT_OUT)
     b.add_argument("--min-confidence", type=float, default=0.5)
-    b.add_argument("--max-motifs", type=int, default=40, help="per act")
+    b.add_argument("--max-motifs", type=int, default=60, help="phrases kept per act")
+    b.add_argument("--taste", default=None, help="taste profile exported from the extension (handy-profile.json): "
+                                                 "phrases you liked are always kept, rejected ones left out")
     b.add_argument("--ignore", help="extra acts to leave out")
     b.add_argument("--summary-url", default="", help="OpenAI-compatible URL for condensing notes (optional)")
     b.add_argument("--summary-model", default="")

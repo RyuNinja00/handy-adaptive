@@ -1,4 +1,4 @@
-// Handy Adaptive v0.8.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.8.2 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.8.1; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.8.2; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion

@@ -127,7 +127,9 @@ In a simulated test with a user who mostly said nothing and only occasionally ra
 
 The extension also learns from 🔥 I'm close and 🥂 Finished, keeps a separate style and history for each character, and remembers which phrases were playing when you finished. See Part 13 of the [User Guide](docs/USER_GUIDE.md#part-13--teaching-it-your-taste).
 
-Add more videos any time: put them in `training/`, run `analyze` and then `build`, and re-import. Your taste profile is stored separately and survives library updates, though ratings only apply to phrases that are still in the library. Export it from the settings to back it up.
+Training adds up: every analyzed video is saved in `handy_cache`, and each build combines everything there, including videos you've deleted since. To add more, put new pairs in `training/`, run the trainer, build and re-import. Once the library is imported you can delete the videos and scripts. Keep `handy_cache`, though: it's now the only copy of that training.
+
+Videos are recognized by their script, not their file name: a renamed video isn't analyzed twice, and a new video that reuses an old name is kept separately. When rebuilding, each act keeps phrases from the previous library (a fair share per video, up to `--max-motifs`, default 60) and adds the new videos' phrases. Save your exported taste profile as `handy-profile.json` in the `handy-adaptive` folder (or pass `--taste`): phrases you ❤'d or finished to are always kept, and phrases you 👎'd are left out. See [User Guide Part 14](docs/USER_GUIDE.md#part-14--adding-more-training-later).
 
 ## Troubleshooting
 

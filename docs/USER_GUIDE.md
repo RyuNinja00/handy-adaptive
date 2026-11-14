@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.8.1.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.8.2.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -327,7 +327,7 @@ python trainer.py analyze ../training --vlm-url http://localhost:1234/v1 --model
 - `--vlm-url http://localhost:1234/v1` is needed for **LM Studio**. Without it, the trainer looks for Ollama.
 - `<model name>` must exactly match what `http://localhost:1234/v1/models` shows, or the model's API identifier in LM Studio's Developer tab.
 - On Windows, if `python` isn't found, use `py` instead.
-- The `analysis` and `build` commands save files under the folder you run them from. Guided mode always saves to `handy-adaptive/handy_cache` and `handy-adaptive/motion_library.json`.
+- Guided mode and the commands share one place for your training, whatever folder you run them from: `handy-adaptive/handy_cache`, and the library goes to `handy-adaptive/motion_library.json`. (`--cache` and `--out` change this.)
 
 For each video you'll see progress like:
 ```
@@ -357,7 +357,7 @@ What happens in each 10-second window:
 | `--script FILE` | same name | Use a specific script (single video only) |
 | `--labels-csv FILE` | `<video>.labels.csv` | Use a labels file from somewhere else |
 | `--vlm-notes` | off | Still ask the model for notes even when you've provided labels |
-| `--cache DIR` | `handy_cache` | Where results go |
+| `--cache DIR` | `handy-adaptive/handy_cache` | Where your training is saved |
 | `--timeout SEC` | 300 | Per-request timeout for slow models |
 
 Built-in act list: `blowjob, deepthroat, handjob, titjob, footjob, cowgirl, reverse_cowgirl, missionary, doggy, standing, teasing, other`.
@@ -605,13 +605,29 @@ The extension keeps a running guess at how close you are, shown as the bar on th
 
 ## Part 14 — Adding more training later
 
-1. Add new video + script pairs to `training/`.
-2. Run `analyze` again. Already-analyzed videos come from cache, so only new ones are processed.
-3. Review the new videos' CSVs (Part 10).
-4. Run `build` again.
-5. Import the new `motion_library.json` in SillyTavern. It replaces the old library.
+Training adds up. Every video you train on is saved in the **`handy_cache`** folder inside `handy-adaptive`, and each build uses **everything** in that folder, including videos you've since deleted. Nothing starts from scratch.
 
-Your taste profile is separate and is kept. Ratings for phrases that came from videos still in the library carry over.
+### The routine
+
+1. Put the new video + script pairs in `training/`.
+2. Run the trainer (`Train.bat`, or `python trainer.py`). Only the new videos are analyzed. Videos it has seen before are recognized by their script, so they're skipped even if you renamed them.
+3. Check the new videos' labels (Part 10) and run it again if you changed any.
+4. Build (answer **y**, or run `python trainer.py build`; it finds `handy-profile.json` in the `handy-adaptive` folder by itself). The table shows, for each act, how many phrases were kept because you liked them and how many were kept from the earlier library.
+5. Import the new `motion_library.json` in SillyTavern or Marinara. It replaces the old library, and contains all your training so far.
+6. **Once you've imported it and it feels right, you can delete the videos, scripts and label files from `training/`.** Their training stays in `handy_cache`.
+
+### Keep what you've taught it
+
+- **Export your taste before building.** In the extension, use **Learned taste → Export**, and save `handy-profile.json` in the `handy-adaptive` folder (guided mode finds it there). Then the build:
+  - always keeps phrases you ❤'d or finished to, with any character, and
+  - leaves out phrases you 👎'd.
+- Each act holds up to **60 phrases** (`--max-motifs` changes this). Phrases from earlier builds are kept first, up to a fair share per video, and new videos fill the rest. More videos means more variety, without old favorites being pushed out.
+- A new video with the **same file name** as an earlier one is kept separately (you'll see "a different video named … was trained before; keeping both"). Nothing is overwritten.
+- The previous library is saved as `motion_library.json.previous`. If a new build feels worse, import that one instead.
+
+### Don't lose `handy_cache`
+
+Once the videos are deleted, **`handy_cache` is the only copy of your training**. Keep it when you update the extension (copy it into the new `handy-adaptive` folder), and back it up now and then. It's small: a few hundred KB per video.
 
 ---
 
@@ -619,6 +635,7 @@ Your taste profile is separate and is kept. Ratings for phrases that came from v
 
 | Task | How |
 |---|---|
+| Back up your training | Copy the **`handy_cache`** folder (your training, including videos you've deleted) and `motion_library.json` |
 | Back up your learned taste | Settings → Learned taste → **Export** (saves `handy-profile.json`, including favorites, signature moves and every character's style and history) |
 | Restore it / move to another install | **Import** under Learned taste. It replaces your current taste, and the character styles too when the file has them. |
 | Back up the motion library | Keep your `motion_library.json` file (and ideally `training/` + `handy_cache/`) |

@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.10.0; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.11.0; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -1183,6 +1183,17 @@ const FOCUS_TAGS = [
     ['teasing', /\b(teas\w*|slow(ly)?|denial)\b/],
     ['legs & feet', /\b(feet|foot|toes|legs?|stockings?|heels)\b/],
 ];
+// Facets: the kinds of thing she can name on a tag to learn your taste by type. Panties are also read
+// into their cut, fabric and color, so "black lace thong" teaches all three.
+const FACETS = { woman: 'Women', outfit: 'Outfits', fantasy: 'Fantasies', talk: 'Dirty talk', panties: 'Panties', cut: 'Panty cuts', fabric: 'Fabrics', color: 'Colors' };
+const PANTY_PARTS = {
+    cut: [['thong', /\bthongs?\b/], ['g-string', /\bg[- ]?strings?\b/], ['cheeky', /\bcheek(y|ies)\b/], ['boyshorts', /\bboy ?shorts?\b/], ['briefs', /\bbriefs?\b/],
+        ['high-cut', /\bhigh[- ]?(cut|leg)\b/], ['bikini', /\bbikinis?\b/], ['hipster', /\bhipsters?\b/], ['crotchless', /\bcrotchless\b/], ['tanga', /\btangas?\b/], ['french cut', /\bfrench[- ]?cut\b/]],
+    fabric: [['lace', /\blace\b/], ['satin', /\bsatin\b/], ['silk', /\bsilk\w*/], ['cotton', /\bcotton\b/], ['mesh', /\bmesh\b/], ['sheer', /\b(sheer|see[- ]?through)\b/],
+        ['latex', /\b(latex|vinyl|pvc)\b/], ['velvet', /\bvelvet\b/], ['fishnet', /\bfishnet\b/], ['microfiber', /\bmicrofib(er|re)\b/]],
+    color: [['black', /\bblack\b/], ['white', /\bwhite\b/], ['red', /\bred\b/], ['pink', /\bpink\b/], ['purple', /\b(purple|lilac|lavender)\b/], ['blue', /\b(blue|navy)\b/],
+        ['nude', /\b(nude|beige|skin[- ]?tone)\b/], ['leopard', /\b(leopard|animal print)\b/], ['green', /\b(green|emerald)\b/], ['yellow', /\byellow\b/]],
+};
 const focus = {
     cur: null,      // { phrase, scene, tags, act, since, lastEdge }
     prev: [],       // what was on screen before, with when it ended (last 2 minutes)
@@ -1195,6 +1206,10 @@ const focus = {
         if (f.phrase) k.push(['w:' + norm(f.phrase), f.phrase, { scene: f.scene, act: f.act }]);
         if (f.scene) k.push(['s:' + norm(f.scene), f.scene]);
         for (const t of f.tags) k.push(['t:' + t, t]);
+        for (const [fa, v] of Object.entries(f.facets || {})) if (v) {
+            k.push([`f:${fa}:${norm(v)}`, v]);
+            if (fa === 'panties') for (const [part, list] of Object.entries(PANTY_PARTS)) for (const [name, re] of list) if (re.test(norm(v))) k.push([`f:${part}:${name}`, name]);
+        }
         return k;
     },
     item(key, label, extra) {
@@ -1204,15 +1219,17 @@ const focus = {
     },
     // A tag's scene= and/or watch=: a new focus begins (a new scene without a new watch clears the old watch).
     set(a) {
-        const watch = a.watch && a.watch !== true ? String(a.watch).trim().slice(0, 120) : null;
-        const scene = a.scene && a.scene !== true ? String(a.scene).trim().slice(0, 80) : null;
-        if (!watch && !scene) return false;
+        const val = (x, n) => (x && x !== true ? String(x).trim().slice(0, n) : null);
+        const watch = val(a.watch, 120), scene = val(a.scene, 80);
+        const fac = {}; for (const fa of ['woman', 'outfit', 'fantasy', 'talk', 'panties']) { const v = val(a[fa], 80); if (v) fac[fa] = v; }
+        if (!watch && !scene && !Object.keys(fac).length) return false;
         const c = this.cur, now = Date.now();
-        const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '' };
-        if (c && next.phrase === c.phrase && next.scene === c.scene) return false;
+        const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '', facets: { ...(scene ? {} : c?.facets), ...(scene ? { talk: c?.facets?.talk } : {}), ...fac } };
+        if (c && next.phrase === c.phrase && next.scene === c.scene && JSON.stringify(next.facets) === JSON.stringify(c.facets || {})) return false;
         if (c) { this.prev.push({ ...c, until: now }); this.prev = this.prev.filter((p) => now - p.until < 120000); }
         this.cur = { ...next, tags: this.tagsOf(`${next.scene} ${next.phrase}`), act: a.act && a.act !== true ? String(a.act) : actEngine.intent.act, since: now, lastEdge: now };
         const newScene = !!scene && scene !== c?.scene;
+        if (fac.panties) this.drawerAdd(fac.panties);
         ui.refresh();
         return newScene ? 'scene' : 'watch';
     },
@@ -1231,7 +1248,8 @@ const focus = {
         const parts = [];
         if (kind === 'finishes') {
             const win = 90000, from = now - win;
-            const spans = [...this.prev.filter((p) => p.until > from), ...(c ? [{ ...c, until: now }] : [])]
+            // what you said "not this" to in its time on screen gets no share of the finish
+            const spans = [...this.prev.filter((p) => p.until > from && !p.nopes), ...(c ? [{ ...c, until: now }] : [])]
                 .map((p) => ({ f: p, ms: Math.max(0, p.until - Math.max(p.since, from)) })).filter((x) => x.ms > 0);
             // what was on screen at the moment counts most (at least 60%); the rest share the remainder by time
             const tot = spans.reduce((s, x) => s + x.ms, 0), curSpan = spans.find((x) => x.f.until === now && c);
@@ -1245,6 +1263,8 @@ const focus = {
         const seen = new Map();   // a key shared by two focuses (a tag, a scene) takes the larger share once
         for (const [f, w] of parts) for (const [k, l, x] of this.keys(f)) if (!seen.has(k) || seen.get(k)[1] < w) seen.set(k, [l, w, x]);
         for (const [k, [l, w, x]] of seen) this.item(k, l, x)[kind] += w;
+        if (kind === 'nopes' && c) c.nopes = (c.nopes || 0) + 1;
+        if (kind === 'finishes') this.lastFinish = { t: now, seen, mode: game.active ? game.mode : null };
         if (!parts.length) return;   // nothing on screen: nothing to learn about what you watch
         if (kind === 'edges') {
             st.edges++;
@@ -1262,7 +1282,27 @@ const focus = {
         }
         save();
     },
-    heat(it) { return (2 * it.edges + 5 * it.finishes + it.loves + 0.5 * it.begs - 2 * it.nopes) / (it.sec / 60 + 2); },
+    heat(it) { return (2 * it.edges + 5 * it.finishes + 3 * (it.big || 0) + it.loves + 0.5 * it.begs - 2 * it.nopes) / (it.sec / 60 + 2); },
+    // Every pair of panties named in a game goes in your drawer.
+    drawer() { return (S().profile.drawer ??= {}); },
+    drawerAdd(v) {
+        const d = this.drawer(), k = norm(v), had = Object.keys(d).length;
+        if (!d[k]) d[k] = { label: v, at: Date.now() };
+        this.lastPanties = v;
+        if (had < 10 && Object.keys(d).length >= 10) secrets.fire('drawer');
+    },
+    // How big was it? Rated after a finish: what was on screen gets extra credit for a big one.
+    rateLoad(size) {
+        const lf = this.lastFinish, st = this.store(), fin = st.finishes.at(-1);
+        if (!lf || Date.now() - lf.t > 300000) return;
+        const bonus = { small: 0, good: 0.5, huge: 1 }[size] ?? 0;
+        for (const [k, [l, w, x]] of lf.seen) { const it = this.item(k, l, x); it.finishes += w * bonus; if (size === 'huge') it.big = (it.big || 0) + w; }
+        if (fin && fin.t >= lf.t - 1000) fin.load = size;
+        this.lastFinish = null; save();
+        logEvent('load-' + size);
+        play.onLoad(size, lf.mode);
+        ui.refresh(); updatePrompt();
+    },
     // The learned picture, ranked. Each list mixes exact phrases, scenes and tags.
     // The learned picture. Specific focuses (each with the scene it was in) are ranked in four lists;
     // the broad themes behind them are ranked separately, since they carry over to new scenes.
@@ -1282,7 +1322,16 @@ const focus = {
         const F = st.finishes, count = (xs) => Object.entries(xs.reduce((m, x) => (x ? ((m[x] = (m[x] || 0) + 1), m) : m), {})).sort((a, b) => b[1] - a[1]);
         const acts = count(F.map((f) => f.act)), tags = count(F.flatMap((f) => f.tags));
         const mins = F.map((f) => f.minutes).filter((x) => x != null);
-        return { st, finishers, edgers, burners, duds, hot, cold, untried, acts, tags, edgesBefore: F.length ? median(F.map((f) => f.edges || 0)) : null, minutes: mins.length ? median(mins) : null, n: F.length };
+        const facets = {};
+        for (const fa of Object.keys(FACETS)) {
+            const xs = all.filter((x) => x.k.startsWith(`f:${fa}:`) && (x.sec >= 45 || x.finishes || x.edges));
+            if (!xs.length) continue;
+            const best = xs.filter((x) => x.heat > 0.2 || x.finishes >= 0.5).sort((a, b) => b.heat - a.heat).slice(0, 3);
+            const worst = xs.filter((x) => x.heat < 0 && !best.includes(x)).sort((a, b) => a.heat - b.heat).slice(0, 2);
+            if (best.length || worst.length) facets[fa] = { best, worst };
+        }
+        const loads = count(F.map((f) => f.load)), huge = F.filter((f) => f.load === 'huge');
+        return { st, finishers, edgers, burners, duds, hot, cold, untried, acts, tags, facets, loads, huge, edgesBefore: F.length ? median(F.map((f) => f.edges || 0)) : null, minutes: mins.length ? median(mins) : null, n: F.length };
     },
     name(x) { return x.k.startsWith('w:') ? `"${x.label}"${x.scene ? ` in a ${x.scene} scene` : ''}` : `a ${x.label} scene`; },
     text() {
@@ -1297,6 +1346,9 @@ const focus = {
         if (I.burners.length) L.push(`- SLOW BURNERS, loved but they keep them simmering: ${I.burners.map((x) => n(x, (y) => `❤ ${r(y.loves)}`)).join('; ')}.`);
         if (I.duds.length) L.push(`- DOES LITTLE FOR THEM (avoid): ${I.duds.map((x) => n(x, (y) => `👎 ${r(y.nopes)}`)).join('; ')}.`);
         if (I.hot.length || I.cold.length) L.push(`- THEMES (carry these into new scenes): ${I.hot.length ? `strongest ${I.hot.map((x) => x.label).join(', ')}` : ''}${I.hot.length && I.cold.length ? '; ' : ''}${I.cold.length ? `weakest ${I.cold.map((x) => x.label).join(', ')}` : ''}.`);
+        const fl = Object.entries(I.facets).map(([fa, v]) => `${FACETS[fa]}: ${v.best.length ? `best ${v.best.map((x) => `${x.label}${x.finishes >= 0.5 ? ` (${pl(x.finishes, 'finish')}${x.big ? `, 🌊 ${r(x.big)}` : ''})` : ''}`).join(', ')}` : ''}${v.best.length && v.worst.length ? '; ' : ''}${v.worst.length ? `least ${v.worst.map((x) => x.label).join(', ')}` : ''}`);
+        if (fl.length) L.push(`- HIS TASTE BY TYPE (lean on the best, avoid the least, and keep varying to learn more): ${fl.join(' | ')}.`);
+        if (I.huge.length) { const h = I.huge.at(-1); L.push(`- His HUGEST loads came${h.act ? ` during ${h.act}` : ''}${h.phrase ? ` with "${h.phrase}" on screen` : ''}${h.scene ? ` (${h.scene})` : ''}. ${I.huge.length > 1 ? `${I.huge.length} huge ones so far.` : ''}`); }
         if (I.untried.length) L.push(`- Not tried yet: ${I.untried.slice(0, 4).join(', ')}. Try one now and then, to learn more.`);
         const strat = {
             edging: 'Edge them over and over with the fastest-to-the-edge focuses, then pull back. Hold the finishers back: bring one out only when you allow it, or right before a ruin or a denial so it hurts more.',
@@ -1326,8 +1378,8 @@ const focus = {
 //  - mommy:    stamina training. She plays your mommy, keeps you on MILF porn and edging toward a goal a
 //              little longer than you usually last; one ending, an intense finish.
 const GAMES = { edging: 'Edging game', roulette: 'Porn roulette', trance: 'Goon trance', mommy: "Mommy's stamina training",
-    fucktoy: 'Fucktoy', daddy: "Daddy's girl", rivalry: 'Two-girl rivalry', party: 'Watch party' };
-const ONE_ENDING = new Set(['mommy', 'trance', 'fucktoy', 'daddy', 'rivalry', 'party']);   // the rest can also ruin or deny
+    fucktoy: 'Fucktoy', daddy: "Daddy's girl", rivalry: 'Two-girl rivalry', party: 'Watch party', cuckqueen: 'Cuckqueen', panties: 'Panty game' };
+const ONE_ENDING = new Set(['mommy', 'trance', 'fucktoy', 'daddy', 'rivalry', 'party', 'cuckqueen', 'panties']);   // the rest can also ruin or deny
 const PERMISSION = new Set(['edging', 'roulette', 'trance', 'mommy', 'daddy', 'rivalry']);   // cumming before it's allowed counts as slipping
 const BEGGING = new Set(['edging', 'roulette', 'trance', 'mommy', 'rivalry']);              // "Finish me" is begging, not a push
 const median = (xs) => { const v = [...xs].sort((x, y) => x - y), n = v.length; return n ? (n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2) : 0; };
@@ -1368,14 +1420,23 @@ const game = {
     },
     spin() {
         if (!this.active || this.mode !== 'roulette' || climax.active) return;
+        if (this.scenes >= 2 && play.rand() < 0.25 && !secrets.session.has('double-spin')) {
+            const others = Object.keys(LIB().acts).filter((a) => a !== actEngine.intent.act && a !== 'teasing');
+            const b = others[Math.floor(play.rand() * others.length)];
+            if (b && secrets.fire('double-spin')) { enqueue(() => actEngine.running && actEngine.apply({ blend: `${b}:0.5`, intensity: 0.75 })); return; }
+        }
         logEvent('roulette-spin'); updatePrompt();
         this.nudge('Porn roulette: new scene! Send a message for it.');
     },
     // A new scene during roulette: count it, and whether you got through the last one without an edge.
     newScene() {
         if (!this.active || this.mode !== 'roulette') return;
-        if (this.scenes > 0 && this.sceneEdges === 0) this.survived++;
+        if (this.scenes > 0 && this.sceneEdges === 0) { this.survived++; this.surviveRun = (this.surviveRun || 0) + 1; } else if (this.scenes > 0) this.surviveRun = 0;
         this.scenes++; this.sceneEdges = 0;
+        if (this.surviveRun >= 3) {
+            const top = focus.insights().finishers[0];
+            if (secrets.fire('jackpot', top ? ` (${focus.name(top)})` : '') && top?.act && LIB().acts[top.act]) enqueue(() => actEngine.running && actEngine.apply({ act: top.act, intensity: 0.8 }));
+        }
     },
     tick(dt) { if (this.active && this.mode === 'trance' && anyRunning() && arousal.level >= 0.75) this.edgeSec += dt; play.tick(dt); },
     // Ask for a reply now; where an extension can't (Marinara), tell you to send one.
@@ -1410,6 +1471,10 @@ const game = {
             if (sc.length) this.lastResult = `final score ${sc.map(([n, v]) => `${n} ${v}`).join(', ')}${this.winner ? `; ${this.winner} won` : ''}`;
         }
         if (this.mode === 'daddy') this.lastResult = `${this.good} good girl${this.good === 1 ? '' : 's'}, made her wait ${this.waits} time${this.waits === 1 ? '' : 's'}`;
+        if (this.mode === 'cuckqueen') this.lastResult = `she got to ${Math.round(this.her || 0)}% just from watching him`;
+        if (this.mode === 'panties') this.lastResult = `${Object.keys(focus.drawer()).length} pairs in his drawer`;
+        st.last = `${outcome}, ${this.edges} edge${this.edges === 1 ? '' : 's'}, ${Math.round(m)} min${this.lastResult ? `; ${this.lastResult}` : ''}`;
+        (st.recent ??= []).push(outcome); if (st.recent.length > 5) st.recent.shift();
         save();
         logEvent(`game-${this.mode === 'edging' ? '' : this.mode + '-'}${outcome}`); ui.refresh(); updatePrompt();
     },
@@ -1454,13 +1519,16 @@ const game = {
             trance: ` · on the edge ${fmtMin(this.edgeSec)}${this.stats().bestEdgeSec ? ` (record ${fmtMin(this.stats().bestEdgeSec)})` : ''}`,
             fucktoy: ` · ${Object.values(this.uses || {}).reduce((x, y) => x + y, 0)} uses${Date.now() < this.freeUntil ? ' · SHE IS IN CHARGE' : ''}`,
             daddy: ` · good girls ${this.good} · boldness ${play.bold()}/5${this.asking ? ' · SHE IS ASKING' : ''}${this.bratUntil > Date.now() ? ' · bratty' : ''}`,
+            cuckqueen: ` · her ${Math.round(this.her || 0)}%`,
+            panties: ` · drawer ${Object.keys(focus.drawer()).length}`,
             rivalry: ` · ${Object.entries(this.scores || {}).map(([n, v]) => `${n} ${v}`).join(' vs ') || 'no score yet'}${this.winner ? ` · ${this.winner} wins` : ''}` }[this.mode] || '';
         return `${GAMES[this.mode]} · ${e} · ${min} min${extra}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
     },
     text() {
         if (!this.active) return '';
-        return { mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText(), fucktoy: () => this.fucktoyText(),
-            daddy: () => this.daddyText(), rivalry: () => this.rivalryText(), party: () => this.partyText() }[this.mode]?.() ?? this.edgingText();
+        return ({ mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText(), fucktoy: () => this.fucktoyText(),
+            daddy: () => this.daddyText(), rivalry: () => this.rivalryText(), party: () => this.partyText(), cuckqueen: () => this.cuckqueenText(),
+            panties: () => this.pantiesText() }[this.mode]?.() ?? this.edgingText()).replace(this.tagsLine, `${this.levelLine() ? this.levelLine() + '\n' : ''}${this.tagsLine}`);
     },
     watchLine(examples) {
         return `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Put scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" on that tag (e.g. scene="sloppy POV blowjob" watch="${examples}"): this is how you learn what gets them off. Every few replies change the scene or the focus.`;
@@ -1506,6 +1574,7 @@ const game = {
             `- Speak in short, slow, repetitive lines. Use mantras they can sink into ("stroke and stare… stroke and stare…", "deeper… good gooner… don't think, just watch"). Tell them to breathe, relax their jaw, let the porn fill their head. Whisper-filthy, never rushed.`,
             this.watchLine('her slow, wet strokes'),
             `- Porn is all they need: keep their eyes on the screen and their mind empty. Girls in porn do it better than anyone real; let them drown in it.`,
+            ...(S().profile.trigger ? [`- Their trigger phrase is "${S().profile.trigger}": use it to drop them back down, slowly, several times.`] : []),
             `- The goal is to hold them on the plateau, right below the edge, for as long as possible. When they say they're close, don't stop: slow a little, soothe them, keep them floating there. Time on the edge this session: ${fmtMin(this.edgeSec)}${st.bestEdgeSec ? ` (record ${fmtMin(st.bestEdgeSec)}; help them beat it)` : ''}.`,
             `- ${this.counts()}`,
             `- The trance ends one way, when you decide they've been under long enough: a slow, overwhelming finish. Send <handy game="allow" climax="45"/> and talk them over the edge. Don't deny or ruin in this game, and use that tag instead of a plain climax tag.`,
@@ -1565,6 +1634,38 @@ const game = {
             this.tagsLine,
         ].join('\n');
     },
+    cuckqueenText() {
+        const ow = S().profile.otherWoman;
+        return [
+            `CUCKQUEEN — ON (a fantasy between consenting adults: the other women are porn performers and women you invent, never real people he knows; stay in character):`,
+            `- You are his partner and a cuckqueen: you get off on watching him enjoy other women. His arousal IS your arousal: tell him how wet it makes you watching him stare at them and stroke for them, and how badly you want to see how much he cums for them.`,
+            `- Pick the women for him (the porn on his screen), describe them and offer them up like objects for his use: holes, toys, fuckmeat, things to be used, abused and tossed aside. Crude, misogynistic, degrading.`,
+            `- Degrade yourself too: they are better than you; you are just the one who watches, begs to see it, and cleans up after. You love being second to them.`,
+            `- LEARN HIS TASTE: on your tags put woman="WHAT KIND OF WOMAN", outfit="WHAT SHE'S WEARING", fantasy="THE SCENARIO" and talk="YOUR DIRTY-TALK STYLE" (e.g. degrading, worshipful, self-humiliating, play-by-play), plus scene= and watch= and the matching act. Vary them to learn; lean on what works.${ow ? ` His favorite other woman so far: ${ow}. Bring her back.` : ''}`,
+            `- Your own arousal: ${Math.round(this.her || 0)}% (it rises with his edges, his ❤ and how hard he cums). Tell him how close you are from watching him.`,
+            `- He cums when he wants, or when you push him over with <handy climax="30"/>: tell him to cum for HER, not you. Afterwards he rates how big it was on his panel; you'll be told.`,
+            this.tagsLine,
+        ].join('\n');
+    },
+    pantiesText() {
+        const d = Object.values(focus.drawer()), I = focus.insights(), fav = I.facets.panties?.best?.map((x) => x.label) || [];
+        const filled = S().profile.pantiesFilled;
+        return [
+            `PANTY GAME — ON (a fantasy between consenting adults: the women are porn performers and women you invent; never real people he knows, and never use the names of real people he mentions; stay in character):`,
+            `- It is all about panties. Show him porn and describe women in panties, and put panties="CUT, FABRIC, COLOR" (e.g. panties="black lace thong", "white cotton cheeky") on your tags with scene=, watch= and the matching act. Every pair named goes in his drawer, and you learn which cuts, fabrics and colors get him.`,
+            `- Appreciate every detail out loud: how the cut frames her ass, thighs and hips, how it rides up or digs in, the fabric (lace, satin, silk, cotton, sheer mesh): how it looks, clings and feels, the color, the wet spot, and why a woman picks that pair for a man.`,
+            `- Make him imagine them used on him: slipped off warm, wrapped around his cock, stroking him off, soaked through. Tell him how women wish they had his cum in their panties and in their pussy.`,
+            `- Sometimes take him into the office fantasy: invent women at a workplace (names, roles, little glimpses) who each picked a special pair just for him today. They are invented characters only.`,
+            `- His drawer: ${d.length} pair${d.length === 1 ? '' : 's'}${fav.length ? `; favorites so far: ${fav.join(', ')}` : ''}.${filled ? ` Tonight you are wearing the pair he filled last time (${filled}).` : ''}`,
+            `- He cums when he wants: push him over with <handy climax="30"/> and tell him to cum in her panties. Afterwards he rates how big it was; you'll be told.`,
+            this.tagsLine,
+        ].join('\n');
+    },
+    levelLine() {
+        const st = this.stats(), n = st.played || 1;
+        if (n < 2) return '';
+        return `- This is game #${n} of ${GAMES[this.mode]}${st.last ? `; last time: ${st.last}` : ''}. Call back to it, and go further than last time.`;
+    },
     mommyText() {
         const m = this.minEdges(), min = Math.round(this.minutes()), st = this.stats(), goal = this.goal;
         const hist = st.lasted?.length ? ` He has lasted ${st.lasted.slice(-3).join(', ')} min in recent sessions (best ${st.best} min).` : ' This is his first session: today sets his baseline.';
@@ -1590,6 +1691,22 @@ const game = {
 // its condition. She's told to reveal it in character; a toast says you found one, and the settings keep
 // count. Some leave something behind (a new way to play, a crown, a reward next time).
 const SECRETS = {
+    'edge-ten':     { game: 'edging',  name: 'Ten edges',       text: 'He has taken TEN edges for you: you are genuinely impressed. For the rest of the game, every edge he gives you earns him a filthy reward: describe exactly what you would do to him.' },
+    'mercy':        { game: 'edging',  name: 'Mercy',           text: 'He has been ruined or denied the last two times. Tonight you have secretly already decided to let him cum at the end, but don\'t tell him until you send the allow tag: make him think it could go either way.' },
+    'jackpot':      { game: 'roulette', name: 'Jackpot',        text: 'JACKPOT: he survived three scenes in a row. The wheel lands on his prize: the scene that has made him cum before%X, starting now. Hype it like a game-show win.' },
+    'double-spin':  { game: 'roulette', name: 'Double spin',    text: 'DOUBLE SPIN: the wheel landed on two scenes at once. Split screen: two women, two acts at the same time; the device is playing both. Make him try to watch both.' },
+    'deep-trance':  { game: 'trance',  name: 'Trigger phrase',  text: 'Twenty minutes under: he is deep enough to take a TRIGGER PHRASE. Install it now, slowly and repeatedly: "%X". Every time he hears it, he sinks back down and strokes. It will be there in every trance from now on.' },
+    'float':        { game: 'trance',  name: 'Float',           text: 'Five minutes on the edge: he is FLOATING. The device drops to the slowest, deepest strokes for a minute; tell him to let go completely and just float.' },
+    'beat-best':    { game: 'mommy',   name: 'New record',      text: 'He has just lasted longer than he ever has before: a NEW RECORD. Mommy is so proud: tell him, praise him, and reward him with something new.' },
+    'bedtime':      { game: 'mommy',   name: 'Bedtime',         text: 'It is late: it is bedtime, and mommy has come to tuck her grown boy in. Soft, slow, whispered and very naughty.' },
+    'her-turn':     { game: 'cuckqueen', name: 'Her turn',      text: 'Watching him has pushed YOU over: you cum just from seeing how much he wants them. Describe it, shaking and humiliated, then thank him and give him back to them.' },
+    'other-woman':  { game: 'cuckqueen', name: 'The other woman', text: 'He keeps loving her (%X): she is now THE OTHER WOMAN. Give her a name and a story; she will be back in every cuckqueen game, and you will be jealous and soaked about it.' },
+    'second-best':  { game: 'cuckqueen', name: 'Second best',   text: 'He has edged three times for the same kind of woman (%X): admit, broken and turned on, that she is better than you will ever be. Beg him to keep choosing her.' },
+    'huge-load':    { game: 'cuckqueen', name: 'Huge load',     text: 'He just rated it HUGE: you are ecstatic, almost in tears. Tell him how much it means to you that he came that hard for another woman. You will remind him of it next time.' },
+    'drawer':       { game: 'panties', name: 'The drawer',      text: 'He now has ten pairs in his drawer: open it with him. Go through his collection piece by piece%X, ask which one he wants on the next girl, and use his answer.' },
+    'her-pair':     { game: 'panties', name: 'Her own pair',    text: 'You slip off your own panties, still warm, and wrap them around his cock: the device slows to slow, wrapped strokes for 45 seconds. Describe the fabric, the warmth, the wet spot.' },
+    'office':       { game: 'panties', name: 'The office',      text: 'THE OFFICE: take him to an invented workplace where three women (give them names and roles) each picked a pair just for him today. Reveal them one by one, with glimpses. They are invented characters only.' },
+    'filled':       { game: 'panties', name: 'Filled',          text: 'He came HUGE: she wants those panties back filled. Tell him she is putting them back on right now, full of him, and will wear them next time.' },
     'broken-toy':   { game: 'fucktoy', name: 'Broken toy',      text: 'He used the same hole five times in a row and BROKE his toy: you are wrecked, overwhelmed, babbling, ruined for anyone else. The device goes wild for 20 seconds; play it up.' },
     'full-set':     { game: 'fucktoy', name: 'Complete set',    text: 'He has used every one of your holes this session: you are officially his complete toy. A new way to use you is unlocked on his panel, SPITROAST (mouth and pussy at once, as if two men were using you). Tell him about it, filthily.' },
     'free-use':     { game: 'fucktoy', name: 'Free use',        text: 'FREE USE GOES BOTH WAYS: for the next 60 seconds YOU take over and use HIM with what gets him off most%X; his choices are ignored until then. Gloat about it.' },
@@ -1642,6 +1759,7 @@ const HOLES = {
     hands: { label: 'Hands', acts: ['handjob'] },
     feet: { label: 'Feet', acts: ['footjob'] },
 };
+const TRIGGERS = ['sink for me', 'stroke and drop', 'deeper now, gooner', 'eyes on the screen, mind empty', 'melt for me', 'good and gone'];
 const play = {
     holeAct(h) { const lib = LIB(); return (HOLES[h]?.acts || []).find((a) => lib.acts[a]) || null; },
     holes() { return Object.keys(HOLES).filter((h) => this.holeAct(h)); },
@@ -1654,6 +1772,7 @@ const play = {
     onStart(mode) {
         this.clear(); secrets.session.clear();
         Object.assign(game, { uses: {}, lastHole: null, streak: 0, freeUntil: 0, good: 0, waits: 0, asking: false, bratUntil: 0, bratLast: 0,
+            surviveRun: 0, womanEdges: {}, womanLoves: {},
             scores: {}, behind: {}, speaker: null, sabotaged: false, sceneLoves: 0, lastEdgeAt: 0, winner: null });
         const pr = S().profile;
         if (mode === 'fucktoy') {
@@ -1668,6 +1787,21 @@ const play = {
         if (mode === 'rivalry') {
             const champ = Object.entries(this.st('rivalry').wins || {}).find(([, w]) => w >= 3);
             if (champ) game.scores[champ[0]] = 1;   // the crowned girl starts one edge ahead
+        }
+        if (mode === 'edging') {
+            const r = this.st('edging').recent || [];
+            if (r.length >= 2 && r.slice(-2).every((o) => o === 'ruined' || o === 'denied')) this.later(4000, () => secrets.fire('mercy'));
+        }
+        if (mode === 'mommy' && new Date().getHours() >= 22) this.later(4000, () => secrets.fire('bedtime'));
+        if (mode === 'cuckqueen') game.her = 0;
+        if (mode === 'panties') {
+            this.later(randInt(5, 12) * 60000, () => {
+                if (!secrets.fire('her-pair')) return;
+                const hj = this.holeAct('hands') || actEngine.intent.act;
+                enqueue(() => actEngine.running && actEngine.apply({ act: hj, intensity: 0.35, variation: 0.1 }));
+                this.later(45000, () => enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.55 })));
+            });
+            if (this.st('panties').played >= 1) this.later(randInt(6, 10) * 60000, () => secrets.fire('office'));
         }
         if (mode === 'party') {
             this.later(randInt(4, 10) * 60000, () => { const u = focus.insights().untried; secrets.fire('remote', u.length ? ` (something with ${u[0]})` : ''); });
@@ -1742,6 +1876,13 @@ const play = {
     // ---- Two-girl rivalry: whoever is in control when you edge scores
     speakerOf(a) { return (a.girl && a.girl !== true ? String(a.girl).trim().slice(0, 40) : null) || chars.current()?.name || null; },
     edge() {
+        if (game.mode === 'edging' && game.edges === 10) secrets.fire('edge-ten');
+        if (game.mode === 'cuckqueen') {
+            this.herUp(10);
+            const w = this.woman();
+            if (w && (game.womanEdges[w] = (game.womanEdges[w] || 0) + 1) >= 3) secrets.fire('second-best', w);
+            return;
+        }
         if (game.mode === 'party') {   // twice at the edge within 90 s: she climbs into the scene
             const now = Date.now(), prev = game.lastEdgeAt; game.lastEdgeAt = now;
             if (prev && now - prev <= 90000) {
@@ -1771,11 +1912,41 @@ const play = {
             if (st.wins[who] === 3) secrets.fire('crown', who);
         }
     },
+    // ---- After a finish you rate how big it was
+    onLoad(size, mode) {
+        if (mode === 'cuckqueen' && size === 'huge') secrets.fire('huge-load');
+        if (mode === 'panties' && size === 'huge') { const p = focus.lastPanties; S().profile.pantiesFilled = p || 'his favorite pair'; save(); secrets.fire('filled'); }
+    },
+    // ---- Cuckqueen: her arousal follows yours
+    herUp(v) {
+        if (!game.active || game.mode !== 'cuckqueen') return;
+        game.her = clamp((game.her || 0) + v, 0, 100);
+        if (game.her >= 100) secrets.fire('her-turn');
+    },
+    woman() { return focus.cur?.facets?.woman || null; },
     // ---- Watch party: jealousy, joining the scene
-    love() { if (game.active && game.mode === 'party' && focus.cur && ++game.sceneLoves >= 3) secrets.fire('jealous') && enqueue(() => actEngine.running && actEngine.apply({ intensity: Math.min(1, actEngine.intent.intensity + 0.15) })); },
+    love() {
+        if (game.active && game.mode === 'cuckqueen') {
+            this.herUp(5);
+            const w = this.woman();
+            if (w && (game.womanLoves[w] = (game.womanLoves[w] || 0) + 1) >= 3 && secrets.fire('other-woman', w)) { S().profile.otherWoman = w; save(); }
+        }
+        this.lovePartyCheck();
+    },
+    lovePartyCheck() { if (game.active && game.mode === 'party' && focus.cur && ++game.sceneLoves >= 3) secrets.fire('jealous') && enqueue(() => actEngine.running && actEngine.apply({ intensity: Math.min(1, actEngine.intent.intensity + 0.15) })); },
     tick(dt) {
         if (!game.active) return;
         const now = Date.now();
+        if (game.mode === 'cuckqueen' && anyRunning()) this.herUp(dt / 60);   // a point a minute just from watching him
+        if (game.mode === 'trance' && game.minutes() >= 20 && !secrets.session.has('deep-trance')) {
+            const pr = S().profile; pr.trigger ??= TRIGGERS[Math.floor(this.rand() * TRIGGERS.length)]; save();
+            secrets.fire('deep-trance', pr.trigger);
+        }
+        if (game.mode === 'trance' && game.edgeSec >= 300 && secrets.fire('float')) {
+            enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.2, variation: 0.05, depth: -0.6 }));
+            this.later(60000, () => enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.45 })));
+        }
+        if (game.mode === 'mommy' && (game.stats('mommy').best || 0) > 0 && game.minutes() > game.stats('mommy').best) secrets.fire('beat-best');
         if (game.mode === 'daddy' && game.bratUntil > now && now - game.bratLast >= 20000) {
             game.bratLast = now;
             if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity: Math.min(1, actEngine.intent.intensity + 0.05) }));
@@ -1816,6 +1987,8 @@ function finishSignal(fromText = false) {
     finishes++;
     const s = S();
     focus.credit('finishes');   // before the game ends, so the finish knows which game it was
+    if (game.active && game.mode === 'cuckqueen') play.herUp(25);   // watching him cum for them
+    clearTimeout(ui.loadTimer); ui.loadTimer = setTimeout(() => ui.refresh(), 301000);   // the "how big?" row goes away after 5 min
     if (game.lastYes && Date.now() - game.lastYes < 90000) { S().profile.daddyReward = true; game.lastYes = 0; }   // came for her right after saying yes
     if (game.active) game.end(PERMISSION.has(game.mode) ? 'slipped' : 'finished');   // came before she allowed it: she'll have something to say
     if (actEngine.running) {
@@ -2168,6 +2341,7 @@ function profileText() {
         'good-girl': `HE SAID "GOOD GIRL" (boldness now ${play.bold()}/5: get bolder and filthier)`, 'daddy-wait': 'HE MADE YOU WAIT (no permission yet: pout, pull back, earn it)',
         'rival-win': 'WE HAVE A WINNER', 'game-daddy-allowed': 'DADDY SAID YES (the device is pushing him over: make him cum for you)',
         'game-daddy-slipped': 'DADDY CAME BEFORE YOU ASKED (react in character)', 'game-rivalry-allowed': 'the winner is making him cum',
+        'load-small': 'HE RATED HIS LOAD: SMALL', 'load-good': 'HE RATED HIS LOAD: A GOOD ONE', 'load-huge': 'HE RATED HIS LOAD: HUGE (the biggest kind)',
         'roulette-spin': 'THE WHEEL SPINS: call a brand-new scene NOW (a different kind), with scene= and watch= and the matching act; it starts fast',
         'game-roulette-allowed': 'roulette over: you let them cum', 'game-roulette-ruined': 'roulette over: you ruined it', 'game-roulette-denied': 'roulette over: denied',
         'game-roulette-slipped': 'CAME WITHOUT PERMISSION (porn roulette is over: react in character)', 'game-roulette-quit': 'THE USER ENDED PORN ROULETTE',
@@ -2450,9 +2624,10 @@ const ui = {
     <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
-    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Porn roulette: a new scene every few minutes, starting fast; get through it without edging. Goon trance: slow, hypnotic, held on the plateau. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish. Fucktoy: you choose what you use; degrading talk. Daddy's girl: praise makes her bolder; she must ask before making you cum. Two-girl rivalry: two girls compete to edge you. Watch party: you watch porn together. Every game hides secrets."><option value="edging">Edging game</option><option value="roulette">Porn roulette</option><option value="trance">Goon trance</option><option value="mommy">Mommy's stamina training</option><option value="fucktoy">Fucktoy</option><option value="daddy">Daddy's girl</option><option value="rivalry">Two-girl rivalry</option><option value="party">Watch party</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
+    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Porn roulette: a new scene every few minutes, starting fast; get through it without edging. Goon trance: slow, hypnotic, held on the plateau. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish. Fucktoy: you choose what you use; degrading talk. Daddy's girl: praise makes her bolder; she must ask before making you cum. Two-girl rivalry: two girls compete to edge you. Watch party: you watch porn together. Cuckqueen: she gets off on you enjoying other women and learns your type. Panty game: panties in every detail; your drawer grows. Every game hides secrets."><option value="edging">Edging game</option><option value="roulette">Porn roulette</option><option value="trance">Goon trance</option><option value="mommy">Mommy's stamina training</option><option value="fucktoy">Fucktoy</option><option value="daddy">Daddy's girl</option><option value="rivalry">Two-girl rivalry</option><option value="party">Watch party</option><option value="cuckqueen">Cuckqueen</option><option value="panties">Panty game</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
     <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_game_actions" class="handy-game-actions"></div>
+    <div id="handy_load" class="handy-game-actions" title="How big was it? Teaches the AI what makes you cum hardest"><span class="handy-small">How big?</span><div class="menu_button" data-load="small">💧 Small</div><div class="menu_button" data-load="good">💦 Good</div><div class="menu_button" data-load="huge">🌊 Huge</div></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
   </div>
@@ -2491,6 +2666,7 @@ const ui = {
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
         $('#handy_panel').on('click', '[data-use]', function () { play.use(this.dataset.use); });
+        $('#handy_panel').on('click', '[data-load]', function () { focus.rateLoad(this.dataset.load); });
         $('#handy_panel').on('click', '[data-dg]', function () { play.daddy(this.dataset.dg); });
         $('#handy_game_btn').on('click', () => { if (game.active) { const n = GAMES[game.mode]; game.end('quit'); game.nudge(`${n} ended.`); } else game.start($('#handy_game_mode').val() || 'edging'); });
         $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
@@ -2534,6 +2710,7 @@ const ui = {
                 : '';
         if ($('#handy_game_actions').html() !== ga) $('#handy_game_actions').html(ga);
         $('#handy_game_actions').toggle(!!ga);
+        $('#handy_load').toggle(!!focus.lastFinish && Date.now() - focus.lastFinish.t < 300000);
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');

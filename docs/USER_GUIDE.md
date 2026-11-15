@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.10.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.11.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -512,7 +512,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Favorites dropdown** | Replay a saved favorite or signature move (the character in control's come first) |
 | **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
 | **Style line** (bottom, in italics) | The style of the character in control, in plain words |
-| **Game menu + Start** | The character runs a game: edging, roulette, trance, mommy, fucktoy, daddy's girl, rivalry or watch party (see below). Some games add their own buttons under the menu. |
+| **Game menu + Start** | The character runs a game: edging, roulette, trance, mommy, fucktoy, daddy's girl, rivalry, watch party, cuckqueen or the panty game (see below). Some games add their own buttons under the menu. |
 | **⌄** (top right) | Collapse the panel |
 
 5. You can always take over manually with the panel. The AI picks up from the new state on its next reply. Your feedback since its last reply is passed to it, so the character can react ("You like it slower like this?").
@@ -600,9 +600,37 @@ Choose **Two-girl rivalry** and press **Start**. Two girls compete to bring you 
 
 Choose **Watch party** and press **Start**. You watch porn together, side by side. She reacts to every scene, says what she'd do, and compares herself to the women on screen, sometimes jealous and sometimes turned on. The Handy mirrors what's on screen. Press **⚡ Finish me** when you're ready.
 
+#### Cuckqueen
+
+Choose **Cuckqueen** and press **Start**. She's your partner, and she gets off on watching you enjoy other women:
+
+- **The other women:** she picks them for you (the porn on your screen) and offers them up as objects for your use, with crude, degrading talk. She degrades herself too: they're better than her, and she's just the one who watches.
+- **Her arousal follows yours:** the panel shows *her %*. It rises with your edges, your ❤ and your finishes, and she tells you how close she is from watching you.
+- **She learns your type:** she labels each woman (*busty redhead*), outfit (*red lingerie*), fantasy (*hotel affair*) and dirty-talk style (*degrading*, *worshipful*…). All of it is learned from your edges, finishes, ❤, 👎 and load sizes. She uses the best, avoids the least, and keeps trying new things so it keeps learning.
+- **You decide when you cum.** She tells you to cum for *her*, the other woman.
+
+The other women are always porn performers or women she invents, never people you know.
+
+#### Panty game
+
+Choose **Panty game** and press **Start**. It's all about panties:
+
+- **The details:** the cut and how it frames her ass, thighs and hips, the fabric (lace, satin, silk, cotton, sheer mesh…) and how it clings, the color, and why a woman picks that pair for a man.
+- **The fantasy:** she has you imagine them used on you (warm, wrapped around you, soaked) and talks about how women want your cum in their panties.
+- **Your drawer:** every pair she names goes in your drawer (the panel shows the count). Each pair is also read into its **cut**, **fabric** and **color**, so she learns that you like, say, black lace thongs, and why.
+- **The office:** sometimes she spins an office fantasy, where women at work each picked a pair for you today. These women are always invented characters, never your real coworkers or anyone you've mentioned.
+
+#### How big was it?
+
+After every **🥂 Finished** in any game (or outside one), the panel asks **How big?** with three buttons: 💧 Small, 💦 Good, 🌊 Huge. They show for 5 minutes. A big one gives extra credit to whatever was on screen, so she learns what makes you cum *hardest*, not just what makes you cum. She's also told the size, and some games react to it.
+
+#### Every game remembers
+
+Each game keeps a short note on how it went last time. From your second game on, she calls back to it and is told to go further. Your type and taste notes (women, outfits, fantasies, dirty talk, panties, cuts, fabrics and colors) build up across every game.
+
 #### Secrets
 
-Every game hides **secrets**: surprise twists triggered by what you do, never announced in advance. There are 16 to find. When one happens, a toast says 🔓 *Secret found*, and she reveals it in character. Some leave something behind for future games. **Secrets** in the settings counts the ones you've found. No spoilers here: play to discover them.
+Every game hides **secrets**: surprise twists triggered by what you do, never announced in advance. Every game has some, 32 in all. When one happens, a toast says 🔓 *Secret found*, and she reveals it in character. Some leave something behind for future games. **Secrets** in the settings counts the ones you've found. No spoilers here: play to discover them.
 
 #### What gets you there (learning what you watch)
 

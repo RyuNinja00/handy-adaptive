@@ -941,10 +941,18 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('…and what to avoid', /DOES LITTLE FOR THEM[^\n]*"the sounds she makes"/.test(p));
     check('…which themes carry over, with a strategy and things not yet tried', /THEMES[^\n]*strongest[^\n]*eye contact/.test(p) && /weakest[^\n]*sounds & voice/.test(p) && /STRATEGY: /.test(p) && /Not tried yet: /.test(p));
     const fin = FS().finishes.at(-1), shareA = FS().items['w:her eyes on the camera'].finishes, shareC = FS().items['w:the sounds she makes'].finishes;
-    check('a finish is shared by time with what was on screen in the 90 s before', fin.act === 'blowjob' && shareA >= 0.5 && shareA <= 1 && shareC > 0 && shareC < 0.5, `current ${shareA.toFixed(2)}, before ${shareC.toFixed(2)}`);
+    check('a finish goes to what was on screen, and nothing you said "not this" to shares it', fin.act === 'blowjob' && shareA === 1 && shareC === 0, `current ${shareA.toFixed(2)}, rejected before ${shareC.toFixed(2)}`);
     f.H.game.start('trance'); await f.advance(1000);
     check('the strategy follows the game being played', /STRATEGY: Stay with slow burners/.test(P()));
     f.H.game.end('quit');
+    {   // time share: two focuses you liked in the last 90 s split it, the one on screen at least 60%
+        const ts = await boot({ seed: 282 });
+        ts.message('<handy act="blowjob" intensity="0.6" watch="her lips"/>'); await ts.advance(60000);
+        ts.message('<handy act="blowjob" intensity="0.7" watch="her hands"/>'); await ts.advance(20000);
+        ts.H.feedback('finish'); await ts.advance(1000);
+        const it = ts.H.profile().focus.items, a1 = it['w:her hands'].finishes, b1 = it['w:her lips'].finishes;
+        check('a finish is shared by time with what you watched in the 90 s before', a1 >= 0.6 && b1 > 0 && Math.abs(a1 + b1 - 1) < 0.01, `on screen ${a1.toFixed(2)}, before ${b1.toFixed(2)}`);
+    }
     const f2 = await boot({ seed: 281 });
     f2.H.run({ act: 'handjob', intensity: 0.6 }); await f2.advance(5000); f2.H.feedback('close'); await f2.advance(1000);
     check('nothing is learned about porn when nothing is on screen', !Object.keys(f2.H.profile().focus?.items || {}).length && !/WHAT GETS THE USER OFF/.test(f2.st.prompts.filter(Boolean).pop() || ''));
@@ -986,7 +994,7 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('fucktoy: ass falls back to doggy, deeper, when there is no anal act', ft.H.actEngine.intent.act === 'doggy');
     ft.H.play.use('hands'); await ft.advance(2000);
     const sec = () => ft.H.profile().secrets || {};
-    check('secret: using every hole unlocks spitroast', !!sec()['full-set'] && ft.H.play.spitroast() && /SURPRISE: He has used every one/.test(last(ft)) && ft.toasts.some((t) => /Secret found: Complete set \(1\/16/.test(t.m)));
+    check('secret: using every hole unlocks spitroast', !!sec()['full-set'] && ft.H.play.spitroast() && /SURPRISE: He has used every one/.test(last(ft)) && ft.toasts.some((t) => /Secret found: Complete set \(1\/32/.test(t.m)));
     ft.H.play.use('spitroast'); await ft.advance(2000);
     check('spitroast blends mouth and pussy', ft.H.actEngine.intent.act === 'blowjob' && /missionary/.test(JSON.stringify(ft.H.actEngine.intent.blend)));
     for (let k = 0; k < 5; k++) { ft.H.play.use('mouth'); await ft.advance(1500); }
@@ -1058,7 +1066,81 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     wp.H.feedback('close'); await wp.advance(30000); wp.H.feedback('close'); await wp.advance(40000);
     check('secret: hitting the edge twice in 90 s and she climbs into the scene', !!wp.H.profile().secrets?.['join-in']);
     const found = Object.keys(wp.H.profile().secrets || {}).length;
-    check('the settings count secrets found', /2\/16 secrets found: Jealous \(Watch party\), Into the scene \(Watch party\)/.test(wp.H.secrets.summary()), wp.H.secrets.summary());
+    check('the settings count secrets found', /2\/32 secrets found: Jealous \(Watch party\), Into the scene \(Watch party\)/.test(wp.H.secrets.summary()), wp.H.secrets.summary());
+
+    // ---- taste by type and the load rating
+    const cq = await boot({ seed: 350 });
+    const CQ = cq.H.game; CQ.start('cuckqueen'); await cq.advance(1000);
+    check('cuckqueen: her rules, with type learning', /CUCKQUEEN — ON/.test(last(cq)) && /never real people he knows/.test(last(cq)) && /woman="WHAT KIND OF WOMAN"/.test(last(cq)) && /Your own arousal: 0%/.test(last(cq)));
+    cq.message('<handy act="blowjob" intensity="0.6" scene="busty redhead POV" watch="her eyes" woman="busty redhead" outfit="red lingerie" fantasy="hotel affair" talk="degrading"/>'); await cq.advance(30000);
+    for (let k = 0; k < 3; k++) { cq.H.feedback('love'); await cq.advance(15000); }
+    check('secret: loving one kind of woman three times makes her the other woman', !!cq.H.profile().secrets?.['other-woman'] && cq.H.profile().otherWoman === 'busty redhead');
+    for (let k = 0; k < 3; k++) { cq.H.feedback('close'); await cq.advance(25000); }
+    check('secret: edging three times for one kind of woman makes her second best', !!cq.H.profile().secrets?.['second-best'] && /better than you will ever be/.test(last(cq)));
+    check('cuckqueen: her arousal follows his', CQ.her >= 45 && /her \d+%/.test(CQ.status()), `her ${Math.round(CQ.her)}%`);
+    cq.message('<handy act="doggy" intensity="0.5" woman="petite blonde" outfit="schoolgirl skirt" talk="worshipful"/>'); await cq.advance(90000);
+    cq.H.feedback('nope'); await cq.advance(20000); cq.H.feedback('nope'); await cq.advance(20000);
+    cq.message('<handy act="blowjob" intensity="0.8" woman="busty redhead" outfit="red lingerie" talk="degrading" watch="her eyes" scene="busty redhead POV"/>'); await cq.advance(40000);
+    cq.H.feedback('finish'); await cq.advance(1000);
+    check('after a finish the panel asks how big', cq.H.focus.lastFinish && !CQ.active && CQ.stats('cuckqueen').finished === 1);
+    cq.H.focus.rateLoad('huge'); await cq.advance(1000);
+    const cqp = last(cq);
+    check('a huge load is learned and told to her', /HE RATED HIS LOAD: HUGE/.test(cqp) && cq.H.profile().focus.finishes.at(-1).load === 'huge' && /HUGEST loads came during blowjob/.test(cqp));
+    check('secret: a huge load in cuckqueen', !!cq.H.profile().secrets?.['huge-load']);
+    check('her taste notes learn by type: women, outfits, dirty talk', /HIS TASTE BY TYPE[^\n]*Women: best busty redhead[^\n]*least petite blonde/.test(cqp) && /Outfits: best red lingerie/.test(cqp) && /Dirty talk: best degrading/.test(cqp), (cqp.match(/HIS TASTE BY TYPE[^\n]*/) || [''])[0].slice(0, 220));
+
+    // ---- panty game: the drawer, parsed cuts/fabrics/colors
+    const pg = await boot({ seed: 360 });
+    const PG = pg.H.game; PG.start('panties'); await pg.advance(1000);
+    check('panty game: her rules (invented women only)', /PANTY GAME — ON/.test(last(pg)) && /invented characters only/.test(last(pg)) && /panties="CUT, FABRIC, COLOR"/.test(last(pg)));
+    const pairs = ['black lace thong', 'white cotton cheeky', 'red satin g-string', 'pink sheer boyshorts', 'purple silk briefs', 'nude mesh high-cut', 'black latex crotchless', 'blue fishnet thong', 'leopard print tanga', 'white lace french cut'];
+    for (const [k, pp] of pairs.entries()) { pg.message(`<handy act="${k % 2 ? 'doggy' : 'blowjob'}" intensity="0.5" panties="${pp}"/>`); await pg.advance(k < 2 ? 60000 : 8000); if (k === 0) { pg.H.feedback('love'); pg.H.feedback('close'); await pg.advance(3000); } }
+    check('secret: ten pairs in the drawer', !!pg.H.profile().secrets?.drawer && Object.keys(pg.H.profile().drawer).length === 10 && /drawer 10/.test(PG.status()));
+    const items = pg.H.profile().focus.items;
+    check('panties are read into cut, fabric and color', items['f:cut:thong'] && items['f:fabric:lace'] && items['f:color:black'] && items['f:cut:g-string'] && items['f:fabric:sheer'] && items['f:cut:french cut']);
+    pg.message('<handy act="blowjob" intensity="0.6" panties="black lace thong"/>'); await pg.advance(30000);
+    pg.H.feedback('finish'); await pg.advance(1000); pg.H.focus.rateLoad('huge'); await pg.advance(1000);
+    check('secret: a huge load fills her panties, and she wears them next time', !!pg.H.profile().secrets?.filled && pg.H.profile().pantiesFilled === 'black lace thong');
+    PG.start('panties'); await pg.advance(2000);
+    check('next panty game: she wears the filled pair, and it calls back to last time', /wearing the pair he filled last time \(black lace thong\)/.test(last(pg)) && /This is game #2 of Panty game; last time: finished/.test(last(pg)));
+    await pg.advance(12 * 60000);
+    check('secrets: her own pair and the office happen in a later game', !!pg.H.profile().secrets?.['her-pair'] && !!pg.H.profile().secrets?.office);
+    PG.end('quit');
+
+    // ---- secrets in the first four games
+    const e10 = await boot({ seed: 370 });
+    e10.H.game.start('edging'); e10.H.run({ act: 'blowjob', intensity: 0.6 }); await e10.advance(3000);
+    for (let k = 0; k < 10; k++) { e10.H.feedback('close'); await e10.advance(4000); }
+    check('secret: ten edges', !!e10.H.profile().secrets?.['edge-ten']);
+    e10.message('<handy game="deny"/>'); await e10.advance(1000);
+    e10.H.game.start('edging'); e10.message('<handy game="ruin"/>'); await e10.advance(30000);
+    e10.H.game.start('edging'); await e10.advance(5000);
+    check('secret: mercy after two ruins or denials in a row', !!e10.H.profile().secrets?.mercy && /already decided to let him cum/.test(last(e10)));
+    e10.H.game.end('quit');
+
+    const jr = await boot({ seed: 371, settings: { rouletteMinutes: 10 } });
+    jr.H.game.start('roulette'); await jr.advance(1000);
+    for (const sc of ['a', 'b', 'c', 'd']) { jr.message(`<handy act="blowjob" scene="scene ${sc}"/>`); await jr.advance(20000); }
+    check('secret: jackpot after three scenes survived in a row', !!jr.H.profile().secrets?.jackpot);
+    jr.H.play.rand = () => 0; jr.H.game.spin(); await jr.advance(2000);
+    check('secret: double spin blends two acts', !!jr.H.profile().secrets?.['double-spin'] && !!jr.H.actEngine.intent.blend);
+    jr.H.game.end('quit');
+
+    const tr = await boot({ seed: 372 });
+    tr.H.game.start('trance'); tr.message('<handy act="handjob" intensity="0.5"/>'); await tr.advance(3000);
+    for (let k = 0; k < 8; k++) { tr.H.feedback('close'); await tr.advance(44000); }
+    check('secret: float after five minutes on the edge', !!tr.H.profile().secrets?.float);
+    await tr.advance(15 * 60000);
+    check('secret: a trigger phrase after twenty minutes, kept for later trances', !!tr.H.profile().secrets?.['deep-trance'] && !!tr.H.profile().trigger && /TRIGGER PHRASE/.test(last(tr)));
+    tr.H.game.end('quit'); tr.H.game.start('trance'); await tr.advance(1000);
+    check('the trigger phrase is used in the next trance', new RegExp(`trigger phrase is "${tr.H.profile().trigger}"`).test(last(tr)));
+    tr.H.game.end('quit');
+
+    const mb = await boot({ seed: 373 });
+    mb.H.profile().mommy = { played: 1, allowed: 1, slipped: 0, quit: 0, edges: 0, lasted: [2], best: 2 };
+    mb.H.game.start('mommy'); mb.H.run({ act: 'handjob', intensity: 0.5 }); await mb.advance(3 * 60000);
+    check('secret: a new stamina record', !!mb.H.profile().secrets?.['beat-best'] && /NEW RECORD/.test(last(mb)));
+    check('there are 32 secrets', mb.H.secrets.total() === 32);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

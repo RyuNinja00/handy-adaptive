@@ -77,6 +77,13 @@ Also:
 - Settings and learned taste are kept in Marinara's private extension storage. A very large motion library is kept in the browser instead, so on a new browser you'll need to re-import `motion_library.json`. Export your taste profile as a backup either way.
 - After **you** switch chats in Marinara, the device stops when you send your first message there, not the moment you click the other chat. Use STOP or Esc if you leave a chat mid-scene.
 
+**Games in Marinara.** All ten games work, including their buttons, secrets, learning and the "How big?" rating. Because an extension can't start a reply here:
+- After you press **Start**, send a message (anything, even "hi") and she opens the game. A toast reminds you.
+- Game buttons (Good girl, Make her wait, the Fucktoy use buttons) act on the device at once. Her spoken reaction comes in her next reply, and a toast tells you once per game.
+- Timed events (a roulette spin, a surprise) show a toast. Send a message to hear her side of it.
+- If you open another chat, press **Start**, and then say hi, the game comes with you. A game that has already had a reply ends when you change chats.
+- Video and picture search links appear on the panel only, not under her message.
+
 ## Updating
 
 1. Download the new `dist/handy-adaptive-marinara.zip`.

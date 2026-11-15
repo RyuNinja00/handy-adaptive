@@ -1193,6 +1193,24 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     vs.st.extensionSettings.handy_adaptive.picLinks = false;
     vs.message('<handy pics="lace"/>Text.'); await vs.advance(1000);
     check('pictures turned off too: nothing', !/📷/.test(vs.st.chat.at(-1).mes) && !/Suggestions:/.test(last(vs)));
+
+    // ---- Marinara-style flows
+    const mz = await boot({ seed: 400 });
+    mz.st.executeSlashCommandsWithOptions = async () => { throw new Error('not available'); };
+    mz.H.game.start('edging'); await mz.advance(2000);
+    mz.handlers.chat_changed(); await mz.advance(500);
+    check('a game with no reply yet survives a chat change (Marinara learns the chat only when you send)', mz.H.game.active);
+    mz.message('<handy act="blowjob" intensity="0.5"/>'); await mz.advance(1000);
+    mz.handlers.chat_changed(); await mz.advance(500);
+    check('…but ends once the game has had a reply', !mz.H.game.active);
+    mz.st.extensionSettings.handy_adaptive.injectProfile = false;
+    mz.H.game.start('edging'); await mz.advance(500);
+    check('games refuse to start without the AI instructions, and say why', !mz.H.game.active && mz.toasts.some((x) => /Games need the AI instructions/.test(x.m)));
+    mz.st.extensionSettings.handy_adaptive.injectProfile = true;
+    mz.st.extensionSettings.handy_adaptive.closeAction = 'ai';
+    mz.H.run({ act: 'handjob', intensity: 0.6 }); await mz.advance(3000);
+    mz.H.feedback('close'); await mz.advance(2000); mz.H.feedback('close'); await mz.advance(2000);
+    check('where a reply cannot be started, you are told once to send a message', mz.toasts.filter((x) => /Send a message for her reply/.test(x.m)).length === 1);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

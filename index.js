@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.12.1; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.12.2; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -1467,8 +1467,9 @@ const game = {
     minutes() { return (Date.now() - this.t0) / 60000; },
     start(mode = this.mode) {
         if (this.active || !S().enabled) return;
+        if (S().injectProfile === false) return toast('Games need the AI instructions: turn on "Send acts, learned taste + controls to the AI" in the settings first.', 'warning');
         this.stopTimers();
-        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false });
+        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false, replies: 0 });
         if (this.mode === 'mommy') this.goal = this.target();
         play.onStart(this.mode);
         this.stats().played++; save();
@@ -2175,7 +2176,13 @@ async function playFavorite(f) {
 let replyTimer = null;
 function debouncedReply(ms = 4000) {
     clearTimeout(replyTimer);
-    replyTimer = setTimeout(async () => { try { await ctx().executeSlashCommandsWithOptions('/trigger'); } catch (e) { console.warn(e); } }, ms);
+    replyTimer = setTimeout(async () => {
+        try { await ctx().executeSlashCommandsWithOptions('/trigger'); }
+        catch (e) {   // Marinara: an extension can't start a reply. Say so once, so a silent wait isn't a mystery.
+            console.warn(e);
+            if (!debouncedReply.told) { debouncedReply.told = true; toast('Send a message for her reply (this chat app can\'t start one on its own).', 'info'); }
+        }
+    }, ms);
 }
 
 // Typing a stop works at once, without waiting for the AI to write a stop tag. Only a message that is
@@ -2455,6 +2462,7 @@ function handleMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg || msg.is_user || typeof msg.mes !== 'string') return;
     const tags = [...msg.mes.matchAll(TAG_RE)];
+    if (game.active) game.replies++;
     pending = [];
     clearBeats();   // a new reply replaces whatever was still waiting from the last one
     if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
@@ -2889,7 +2897,9 @@ jQuery(() => {
         const k = ctx().characters?.[chId]?.avatar;
         if (k && S().charStyles) { chars.speaker = k; updatePrompt(); }
     });
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); game.reset(); focus.clear(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    // A game that hasn't had a reply yet goes with you to the new chat: in Marinara the extension only learns
+// which chat you're in when you send a message, so "open a chat, press Start, say hi" must keep the game.
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;

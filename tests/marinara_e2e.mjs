@@ -446,6 +446,80 @@ try {
         assert.equal(await pg.isDisabled('#handy_game_mode'), false, 'menu unlocked');
         await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
     });
+    await step('every game plays through Marinara: instructions reach the AI, tags drive the device, endings work', async () => {
+        const G = (f, a) => pg.evaluate(f, a);
+        const turn = async (chatId, user, content, characterId) => {
+            state.next = { mode: 'new', content, ...(characterId ? { characterId } : {}) };
+            await pg.evaluate(([c, u]) => window.sendTurn({ chatId: c, userMessage: u }), [chatId, user]);
+            await new Promise((r) => setTimeout(r, 700));   // the extension reads the finished reply
+        };
+        const start = async (mode) => {
+            if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');
+            await pg.selectOption('#handy_game_mode', mode); await pg.click('#handy_game_btn');
+            await waitFor(() => G((m) => window.handyAdaptive.game.active && window.handyAdaptive.game.mode === m, mode), mode + ' started');
+            await waitFor(async () => (await pg.$$eval('.handy-toast', (els) => els.some((e) => /Send a message and she will start it/.test(e.textContent)))), 'told to send a message', 3000);
+        };
+        const lastEntry = () => state.generations.at(-1).entry?.content || '';
+        const headers = { edging: 'EDGING GAME — ON', roulette: 'PORN ROULETTE — ON', trance: 'GOON TRANCE — ON', mommy: "MOMMY'S STAMINA TRAINING — ON", fucktoy: 'FUCKTOY — ON',
+            daddy: "DADDY'S GIRL — ON", rivalry: 'TWO-GIRL RIVALRY — ON', party: 'WATCH PARTY — ON', cuckqueen: 'CUCKQUEEN — ON', panties: 'PANTY GAME — ON' };
+        const failures = [];
+        for (const [mode, header] of Object.entries(headers)) {
+            const chat = mode === 'rivalry' ? 'chat2' : 'chat1';
+            await start(mode);
+            await turn(chat, 'start', `Let's play. <handy act="blowjob" intensity="0.5" scene="POV blowjob" watch="her lips" woman="busty redhead" panties="black lace thong" girl="Vex"/>`);
+            if (!lastEntry().includes(header)) failures.push(mode + ': instructions missing: ' + ((lastEntry().match(/[A-Z' -]+ — ON/) || ['no game'])[0]) + ' | active=' + (await G(() => window.handyAdaptive.game.active + ':' + window.handyAdaptive.game.mode)) + ' len=' + lastEntry().length);
+            await waitFor(running, mode + ': device running');
+            if ((await act()) !== 'blowjob') failures.push(mode + ': act not applied');
+        }
+        assert.deepEqual(failures, [], 'games');
+        // a closer look at each game's own mechanics
+        await start('edging');
+        await turn('chat1', 'go', '<handy act="handjob" intensity="0.6"/>');
+        await pg.click('#handy_panel [data-fb="close"]'); await pg.click('#handy_panel [data-fb="climax"]');
+        await waitFor(() => G(() => window.handyAdaptive.game.edges === 1 && window.handyAdaptive.game.begs === 1 && !window.handyAdaptive.climax.active), 'edge + beg counted');
+        await turn('chat1', 'please', 'No. <handy game="deny"/>');
+        await waitFor(async () => !(await G(() => window.handyAdaptive.game.active)) && !(await running()), 'denied: game over, device stopped');
+        await start('trance');
+        await turn('chat1', 'go', '<handy act="handjob" intensity="0.95"/>');
+        await waitFor(() => G(() => window.handyAdaptive.actEngine.intent.intensity <= 0.6), 'trance caps intensity');
+        await turn('chat1', 'ok', 'Now. <handy game="allow"/>');
+        await waitFor(() => G(() => !window.handyAdaptive.game.active && window.handyAdaptive.climax.active && window.handyAdaptive.climax.ms === 45000), 'trance ends with a 45 s push');
+        await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+        await start('daddy');
+        await turn('chat1', 'hi', 'Please, daddy? <handy act="blowjob" intensity="0.5"/><handy game="ask"/>');
+        await pg.waitForSelector('#handy_game_actions [data-dg="wait"]', { state: 'visible' });
+        await pg.click('#handy_game_actions [data-dg="wait"]');
+        await waitFor(() => G(() => window.handyAdaptive.game.waits === 1 && !window.handyAdaptive.game.asking), 'made her wait');
+        await waitFor(async () => (await pg.$$eval('.handy-toast', (els) => els.some((e) => /Send a message to hear her react/.test(e.textContent)))), 'told once to send a message for her reaction', 4000);
+        await pg.click('#handy_game_btn');
+        await start('rivalry');
+        await turn('chat2', 'go', 'Mine. <handy act="blowjob" intensity="0.6"/>', 'c2');
+        await pg.click('#handy_panel [data-fb="close"]');
+        await waitFor(() => G(() => window.handyAdaptive.game.scores.Mira === 1), 'the character in control (Mira, in the group chat) scores');
+        await pg.click('#handy_game_btn');
+        await start('panties');
+        await turn('chat1', 'show me', 'Look at these. <handy act="doggy" intensity="0.5" panties="red satin g-string" pics="red satin g-string ass" search="red satin thong"/>');
+        await waitFor(() => G(() => Object.keys(window.handyAdaptive.profile().drawer).length >= 2), 'drawer grows');
+        await pg.waitForSelector('#handy_videos a[href*="pornpics.com/?q=red+satin+g-string+ass"]', { state: 'visible' });
+        await pg.waitForSelector('#handy_videos a[href*="pornhub.com/video/search?search=red+satin+thong"]', { state: 'visible' });
+        assert.match(await pg.textContent('#handy_game'), /drawer \d+/);
+        await pg.click('#handy_panel [data-fb="finish"]');
+        await pg.waitForSelector('#handy_load', { state: 'visible' });
+        await pg.click('#handy_load [data-load="good"]');
+        await waitFor(() => G(() => !window.handyAdaptive.game.active && window.handyAdaptive.profile().focus.finishes.at(-1)?.load === 'good'), 'finish ends the panty game, load rated');
+        await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+        // tags with the new attributes are hidden by the display rule
+        const rx = state.regex.find((r) => r.name === 'Handy Adaptive: hide device tags');
+        const shown = 'Hi <handy act="blowjob" watch="her lips" panties="black lace thong" pics="a b" search="c" game="ask" girl="Vex"/> there'.replace(new RegExp(rx.findRegex, rx.flags), rx.replaceString);
+        assert.equal(shown, 'Hi  there');
+        // settings for the games are there and save
+        await pg.click('#handy_settings_btn');
+        for (const id of ['#handy_game_min', '#handy_roulette_min', '#handy_videos_on', '#handy_pics_on', '#handy_video_site', '#handy_focus_summary', '#handy_secrets_summary', '#handy_focus_reset']) assert.ok(await pg.isVisible(id), id + ' visible');
+        await pg.selectOption('#handy_video_site', 'xvideos');
+        await waitFor(() => state.storage.settings?.videoSite === 'xvideos', 'site choice saved to Marinara storage');
+        assert.match(await pg.textContent('#handy_secrets_summary'), /\/32 secrets found/);
+        await pg.click('#handy-st-settings .handy-st-close');
+    });
     await step('settings open in a window; Test connection works; ST-only options are hidden', async () => {
         await pg.click('#handy_settings_btn');
         assert.ok(await pg.isVisible('#handy-st-settings #handy_key'));

@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.12.2; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.13.0; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -46,6 +46,12 @@ const DEFAULTS = {
     videoLinks: true,           // the AI may suggest a video search: a link to the site's own search results
     videoSite: 'pornhub',       // pornhub | xhamster | xvideos
     picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
+    storyStageMinutes: 8,       // story mode: minutes per stage (or 2 edges, whichever comes first)
+    voiceOn: false,             // read her replies aloud (the browser's own voices)
+    voiceSync: true,            // …with a deep stroke on the words that matter
+    voiceName: '',
+    voiceRate: 0.9,
+    voicePitch: 1,
     gameMinEdges: 3,            // games: edges the character must take you through before she may end it
     rouletteMinutes: 3,         // porn roulette: minutes between spins
     styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
@@ -704,6 +710,7 @@ const anyRunning = () => actEngine.running || hamp.running;
 const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting > 0 || calib.active;   // moving, or about to
 function stopAll(reason) {
     epoch++;   // cancels every start that is in progress or queued
+    try { voice.stop(); } catch { /* not loaded yet */ }
     clearTimeout(windTimer);
     windUntil = 0;
     if (!inBeat) clearBeats();   // tags still waiting for their moment in the reply are dropped
@@ -876,6 +883,8 @@ const arousal = {
             if (this.atCap > 60) { this.atCap = 0; this.setK(this.k() * 0.88); this.level = 0.72; }
         } else this.atCap = 0;
         this.level = clamp(this.level, 0, cap);
+        const h = hr.level();   // a live heart-rate sensor leads the estimate
+        if (h !== null) this.level = clamp(0.4 * this.level + 0.6 * h, 0, 1);
         if (Math.abs(this.level - this.shown) >= 0.05) { this.shown = this.level; ui.arousal(); updatePrompt(); }
     },
     learn() { if (anyRunning() && this.level < 0.88) this.setK(this.k() * Math.pow(0.9 / Math.max(this.level, 0.25), 0.25)); },   // you got there sooner than guessed
@@ -1236,7 +1245,7 @@ const FOCUS_TAGS = [
 ];
 // Facets: the kinds of thing she can name on a tag to learn your taste by type. Panties are also read
 // into their cut, fabric and color, so "black lace thong" teaches all three.
-const FACETS = { woman: 'Women', outfit: 'Outfits', fantasy: 'Fantasies', talk: 'Dirty talk', panties: 'Panties', cut: 'Panty cuts', fabric: 'Fabrics', color: 'Colors' };
+const FACETS = { her: 'The cast', woman: 'Women', outfit: 'Outfits', fantasy: 'Fantasies', talk: 'Dirty talk', panties: 'Panties', cut: 'Panty cuts', fabric: 'Fabrics', color: 'Colors' };
 const PANTY_PARTS = {
     cut: [['thong', /\bthongs?\b/], ['g-string', /\bg[- ]?strings?\b/], ['cheeky', /\bcheek(y|ies)\b/], ['boyshorts', /\bboy ?shorts?\b/], ['briefs', /\bbriefs?\b/],
         ['high-cut', /\bhigh[- ]?(cut|leg)\b/], ['bikini', /\bbikinis?\b/], ['hipster', /\bhipsters?\b/], ['crotchless', /\bcrotchless\b/], ['tanga', /\btangas?\b/], ['french cut', /\bfrench[- ]?cut\b/]],
@@ -1273,6 +1282,7 @@ const focus = {
         const val = (x, n) => (x && x !== true ? String(x).trim().slice(0, n) : null);
         const watch = val(a.watch, 120), scene = val(a.scene, 80);
         const fac = {}; for (const fa of ['woman', 'outfit', 'fantasy', 'talk', 'panties']) { const v = val(a[fa], 80); if (v) fac[fa] = v; }
+        const her = val(a.her, 40) || val(a.girl, 40); if (her) fac.her = cast.key(her);
         if (!watch && !scene && !Object.keys(fac).length) return false;
         const c = this.cur, now = Date.now();
         const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '', facets: { ...(scene ? {} : c?.facets), ...(scene ? { talk: c?.facets?.talk } : {}), ...fac } };
@@ -1356,6 +1366,7 @@ const focus = {
         if (!lf || Date.now() - lf.t > 300000) return;
         const bonus = { small: 0, good: 0.5, huge: 1 }[size] ?? 0;
         for (const [k, [l, w, x]] of lf.seen) { const it = this.item(k, l, x); it.finishes += w * bonus; if (size === 'huge') it.big = (it.big || 0) + w; }
+        if (size === 'huge') for (const k of lf.trig || []) { const tr = triggers.store()[k]; if (tr) tr.big++; }
         if (fin && fin.t >= lf.t - 1000) fin.load = size;
         this.lastFinish = null; save();
         logEvent('load-' + size);
@@ -1437,7 +1448,7 @@ const focus = {
 //  - mommy:    stamina training. She plays your mommy, keeps you on MILF porn and edging toward a goal a
 //              little longer than you usually last; one ending, an intense finish.
 const GAMES = { edging: 'Edging game', roulette: 'Porn roulette', trance: 'Goon trance', mommy: "Mommy's stamina training",
-    fucktoy: 'Fucktoy', daddy: "Daddy's girl", rivalry: 'Two-girl rivalry', party: 'Watch party', cuckqueen: 'Cuckqueen', panties: 'Panty game' };
+    fucktoy: 'Fucktoy', daddy: "Daddy's girl", rivalry: 'Two-girl rivalry', party: 'Watch party', cuckqueen: 'Cuckqueen', panties: 'Panty game', story: 'Story mode' };
 const ONE_ENDING = new Set(['mommy', 'trance', 'fucktoy', 'daddy', 'rivalry', 'party', 'cuckqueen', 'panties']);   // the rest can also ruin or deny
 const PERMISSION = new Set(['edging', 'roulette', 'trance', 'mommy', 'daddy', 'rivalry']);   // cumming before it's allowed counts as slipping
 const BEGGING = new Set(['edging', 'roulette', 'trance', 'mommy', 'rivalry']);              // "Finish me" is begging, not a push
@@ -1469,14 +1480,23 @@ const game = {
         if (this.active || !S().enabled) return;
         if (S().injectProfile === false) return toast('Games need the AI instructions: turn on "Send acts, learned taste + controls to the AI" in the settings first.', 'warning');
         this.stopTimers();
-        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false, replies: 0 });
+        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false, replies: 0, story: null });
+        if (this.mode === 'story') {   // a hidden chain of games, chosen from your taste
+            this.story = { stages: story.plan(), i: 0, t0: Date.now(), edges: 0 };
+            this.stats('story').played++;
+            this.mode = this.story.stages[0];
+        }
         if (this.mode === 'mommy') this.goal = this.target();
+        const before = ladder.level(this.mode);
         play.onStart(this.mode);
         this.stats().played++; save();
+        triggers.seed(this.mode);
+        const after = ladder.level(this.mode);
+        if (after > before) toast(`🔥 ${GAMES[this.mode]} is now level ${after}/5`, 'success');
         this.clock = setInterval(() => { if (this.active) { ui.refresh(); updatePrompt(); } }, 30000);   // keep the minutes current
         if (this.mode === 'roulette') this.spinTimer = setInterval(() => this.spin(), this.spinMs());
         logEvent('game-start'); ui.refresh(); updatePrompt();
-        this.nudge(`${GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
+        this.nudge(`${this.story ? 'Story mode' : GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
     spin() {
         if (!this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
@@ -1498,7 +1518,7 @@ const game = {
             if (secrets.fire('jackpot', top ? ` (${focus.name(top)})` : '') && top?.act && LIB().acts[top.act]) enqueue(() => actEngine.running && actEngine.apply({ act: top.act, intensity: 0.8 }));
         }
     },
-    tick(dt) { if (this.active && this.mode === 'trance' && anyRunning() && arousal.level >= 0.75) this.edgeSec += dt; play.tick(dt); },
+    tick(dt) { if (this.active && this.mode === 'trance' && anyRunning() && arousal.level >= 0.75) this.edgeSec += dt; play.tick(dt); if (this.active && this.story) story.check(); },
     // Her reaction to a panel button, after a short pause (several presses make one reply). Where an
     // extension can't start a reply (Marinara), you're told once per game to send a message.
     reply(ms) {
@@ -1519,6 +1539,7 @@ const game = {
         if (!this.active) return;
         this.active = false; this.asking = false; clearInterval(this.clock); clearInterval(this.spinTimer); play.clear();
         const st = this.stats(); st[outcome] = (st[outcome] || 0) + 1; st.edges += this.edges;
+        if (this.story) { const ss = this.stats('story'); ss[outcome] = (ss[outcome] || 0) + 1; ss.edges += this.edges; ss.last = `${outcome} in stage ${this.story.i + 1} of ${this.story.stages.length} (${this.story.stages.map((m) => GAMES[m]).join(' → ')})`; }
         const m = +this.minutes().toFixed(1);
         this.lastResult = null;
         if (this.mode === 'mommy' && (outcome === 'allowed' || outcome === 'slipped')) {   // how long you lasted is the stamina measure
@@ -1545,9 +1566,10 @@ const game = {
         st.last = `${outcome}, ${this.edges} edge${this.edges === 1 ? '' : 's'}, ${Math.round(m)} min${this.lastResult ? `; ${this.lastResult}` : ''}`;
         (st.recent ??= []).push(outcome); if (st.recent.length > 5) st.recent.shift();
         save();
+        this.story = null;
         logEvent(`game-${this.mode === 'edging' ? '' : this.mode + '-'}${outcome}`); ui.refresh(); updatePrompt();
     },
-    reset() { this.stopTimers(); this.active = false; },
+    reset() { this.stopTimers(); this.active = false; this.story = null; },
     // A tag's adjustments while a game runs: roulette scenes start fast; the trance stays slow and steady.
     shape(a, kind) {
         if (!this.active || climax.active || a.climax !== undefined || a.game !== undefined) return a;
@@ -1563,6 +1585,7 @@ const game = {
     command(a) {
         const v = String(a.game).trim().toLowerCase();
         if (!this.active) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;
+        if (this.story && !story.final()) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;   // nobody finishes before the finale
         if (this.mode === 'daddy' && (/^ask/.test(v) || (/^(allow|allowed|yes|cum|release)$/.test(v) && !a._daddy))) { play.ask(); return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined; }   // she asks; you answer
         if (this.mode === 'rivalry' && /^(allow|allowed|yes|cum|release)$/.test(v) && !this.winner) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;   // nobody has won yet
         if (/^(allow|allowed|yes|cum|release)$/.test(v)) {
@@ -1591,13 +1614,14 @@ const game = {
             cuckqueen: ` · her ${Math.round(this.her || 0)}%`,
             panties: ` · drawer ${Object.keys(focus.drawer()).length}`,
             rivalry: ` · ${Object.entries(this.scores || {}).map(([n, v]) => `${n} ${v}`).join(' vs ') || 'no score yet'}${this.winner ? ` · ${this.winner} wins` : ''}` }[this.mode] || '';
-        return `${GAMES[this.mode]} · ${e} · ${min} min${extra}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
+        return `${this.story ? `Story · stage ${this.story.i + 1}/${this.story.stages.length} · ` : ''}${GAMES[this.mode]} · ${e} · ${min} min${extra}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
     },
     text() {
         if (!this.active) return '';
-        return ({ mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText(), fucktoy: () => this.fucktoyText(),
+        const body = ({ mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText(), fucktoy: () => this.fucktoyText(),
             daddy: () => this.daddyText(), rivalry: () => this.rivalryText(), party: () => this.partyText(), cuckqueen: () => this.cuckqueenText(),
-            panties: () => this.pantiesText() }[this.mode]?.() ?? this.edgingText()).replace(this.tagsLine, () => `${this.levelLine() ? this.levelLine() + '\n' : ''}${this.tagsLine}`);
+            panties: () => this.pantiesText() }[this.mode]?.() ?? this.edgingText()).replace(this.tagsLine, () => [this.levelLine(), ladder.text(this.mode), cast.text(), triggers.text(this.mode), confess.text(), this.tagsLine].filter(Boolean).join('\n'));
+        return this.story ? `${story.text()}\n${body}` : body;
     },
     watchLine(examples) {
         return `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Put scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" on that tag (e.g. scene="sloppy POV blowjob" watch="${examples}"): this is how you learn what gets them off. Every few replies change the scene or the focus.`;
@@ -2029,12 +2053,307 @@ const play = {
 };
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
+// ---------------------------------------------------------------- the cast
+// Invented women who come back across games. A tag's her="NAME" (or girl= in a rivalry) brings one on;
+// about="…" describes her the first time (body, role, personality). Her panties go in her own drawer, and
+// your edges, ❤ and finishes while she's on screen are learned like any other focus (the "her" facet).
+const cast = {
+    all() { return (S().profile.cast ??= {}); },
+    cur: null,
+    key(n) { return norm(n).slice(0, 40); },
+    meet(a) {
+        const name = [a.her, a.girl].find((x) => x && x !== true);
+        if (!name) return null;
+        const k = this.key(name), all = this.all();
+        if (!k) return null;
+        const first = !all[k];
+        const c = (all[k] ??= { name: String(name).trim().slice(0, 40), about: '', drawer: [], games: [], met: Date.now() });
+        if (a.about && a.about !== true) c.about = String(a.about).trim().slice(0, 200);
+        if (a.woman && a.woman !== true && !c.about) c.about = String(a.woman).trim().slice(0, 120);
+        if (a.panties && a.panties !== true) { const p = String(a.panties).trim().slice(0, 60); c.drawer = [p, ...c.drawer.filter((x) => x !== p)].slice(0, 8); }
+        if (game.active && !c.games.includes(game.mode)) c.games.push(game.mode);
+        c.seen = Date.now(); this.cur = k;
+        if (first && Object.keys(all).length > 24) this.prune();
+        save();
+        return c;
+    },
+    stats(k) { return S().profile.focus?.items?.[`f:her:${k}`]; },
+    rank() {
+        return Object.entries(this.all()).map(([k, c]) => {
+            const it = this.stats(k);
+            return { k, c, heat: it ? focus.heat(it) : 0, it };
+        }).sort((a, b) => b.heat - a.heat || (b.c.seen || 0) - (a.c.seen || 0));
+    },
+    prune() { const r = this.rank(); for (const x of r.slice(20)) delete this.all()[x.k]; },
+    text() {
+        const r = this.rank().slice(0, 6);
+        const intro = `- THE CAST: invented women who come back across games (never real people). Bring one on with her="NAME" on a tag, and the first time add about="BODY, ROLE, PERSONALITY" (e.g. about="curvy redhead from accounting, shy until she isn't"). Reuse them: put the same woman in different games, in the pairs he liked on her. Add a new one now and then.`;
+        if (!r.length) return intro;
+        const line = (x) => `${x.c.name}${x.c.about ? ` (${x.c.about})` : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
+        return `${intro} So far, his favorites first: ${r.map(line).join('; ')}.`;
+    },
+};
+
+// ---------------------------------------------------------------- learned triggers
+// Phrases she says that should push him over. Each game starts with a few; she can add her own with
+// trigger="PHRASE". When one appears in her reply, an edge or finish in the next 60 s counts for it (and a big
+// load counts more). The strongest are saved for the finish; ones that never land are retired.
+const TRIGGER_SEEDS = {
+    edging: ['edge for me', 'not yet', 'right there'], roulette: ['next scene', 'look at her'], trance: ['stroke and stare', 'sink deeper'],
+    mommy: ['cum for mommy', 'good boy', "mommy's proud of you"], fucktoy: ['use me', 'just a hole for you'], daddy: ['yes daddy', "i'm your good girl"],
+    rivalry: ["i'm better than her", 'cum for me, not her'], party: ['look at her', 'watch her take it'], cuckqueen: ['cum for her', 'she deserves it more than me'],
+    panties: ['fill her panties', 'soak them for her'],
+};
+const triggers = {
+    store() { return (S().profile.triggers ??= {}); },
+    recent: [],   // [{ k, at }] phrases she said lately
+    add(p, mode) {
+        const k = norm(p).slice(0, 60);
+        if (!k || k.split(' ').length > 8) return null;
+        return (this.store()[k] ??= { phrase: String(p).trim().slice(0, 60), uses: 0, edges: 0, finishes: 0, big: 0, games: mode ? [mode] : [], retired: false });
+    },
+    seed(mode) { for (const p of TRIGGER_SEEDS[mode] || []) { const t = this.add(p, mode); if (t && !t.games.includes(mode)) t.games.push(mode); } },
+    // her reply: which known phrases did she say?
+    heard(text) {
+        const t = ` ${norm(String(text || '').replace(TAG_RE, ' '))} `, now = Date.now();
+        for (const [k, tr] of Object.entries(this.store())) if (t.includes(` ${k} `)) { tr.uses++; this.recent.push({ k, at: now }); }
+        this.recent = this.recent.filter((x) => now - x.at < 60000);
+    },
+    credit(kind, w = 1) {
+        const now = Date.now(), seen = new Set();
+        for (const x of this.recent) if (now - x.at < 60000 && !seen.has(x.k)) { seen.add(x.k); const tr = this.store()[x.k]; if (tr) tr[kind] += w; }
+        if (seen.size) save();
+        return [...seen];
+    },
+    score(tr) { return (2 * tr.edges + 5 * tr.finishes + 3 * tr.big) / (tr.uses + 2); },
+    // retire phrases that keep missing (used 8+ times with nothing to show for it)
+    tidy() { for (const tr of Object.values(this.store())) if (!tr.retired && tr.uses >= 8 && this.score(tr) < 0.15) tr.retired = true; },
+    text(mode) {
+        this.tidy();
+        const all = Object.values(this.store()).filter((t) => !t.retired);
+        if (!all.length) return '';
+        const best = all.filter((t) => t.edges + t.finishes > 0).sort((a, b) => this.score(b) - this.score(a)).slice(0, 4);
+        const fresh = all.filter((t) => t.uses < 3 && (!mode || t.games.includes(mode))).slice(0, 3);
+        const L = ['- YOUR TRIGGER PHRASES (say them word for word; the device notices them and learns which ones push him over):'];
+        if (best.length) L.push(`strongest: ${best.map((t) => `"${t.phrase}" (${[t.finishes ? `${Math.round(t.finishes * 10) / 10} finishes` : '', t.edges ? `${Math.round(t.edges * 10) / 10} edges` : '', t.big ? '🌊' : ''].filter(Boolean).join(', ')})`).join(', ')}: save these for right before he cums.`);
+        if (fresh.length) L.push(`still testing: ${fresh.map((t) => `"${t.phrase}"`).join(', ')}: work them in.`);
+        L.push('You can add a new one with trigger="PHRASE" on a tag.');
+        return L.join(' ');
+    },
+};
+
+// ---------------------------------------------------------------- confessions
+// She asks him something filthy with confess="QUESTION"; his next message is his answer. Answers are kept
+// (on this computer, in your profile), and what they mention is learned as a liked theme.
+const confess = {
+    store() { return (S().profile.confessions ??= []); },
+    waiting: null,
+    ask(q) { this.waiting = { q: String(q).trim().slice(0, 200), at: Date.now(), game: game.active ? game.mode : null }; },
+    answer(text) {
+        const w = this.waiting;
+        if (!w || Date.now() - w.at > 20 * 60000) { this.waiting = null; return false; }
+        this.waiting = null;
+        const a = String(text || '').trim().slice(0, 400);
+        if (!a) return false;
+        this.store().push({ ...w, a }); if (this.store().length > 30) this.store().shift();
+        // what his answer mentions counts as liked
+        const t = norm(a), keys = [];
+        for (const [name, re] of FOCUS_TAGS) if (re.test(t)) keys.push(['t:' + name, name]);
+        for (const [part, list] of Object.entries(PANTY_PARTS)) for (const [name, re] of list) if (re.test(t)) keys.push([`f:${part}:${name}`, name]);
+        for (const [k, l] of keys) focus.item(k, l).loves += 1;
+        save(); logEvent('confessed'); pending.at(-1).extra = a;
+        return true;
+    },
+    text() {
+        const c = this.store().slice(-4);
+        const L = [`- CONFESSIONS: now and then ask him something filthy and personal about his fantasies (which woman, what he'd do, what he's never admitted) with confess="THE QUESTION" on a tag, and ask it in your words too. His next message is his answer; use it.`];
+        if (c.length) L.push(`What he has confessed: ${c.map((x) => `"${x.q}" → "${x.a.slice(0, 140)}"`).join(' | ')}. Call back to these.`);
+        if (this.waiting) L.push(`You are waiting for his answer to: "${this.waiting.q}".`);
+        return L.join(' ');
+    },
+};
+
+// ---------------------------------------------------------------- taboo ladder
+// Each game deepens as you play it and finish: level 1-5. The prompt says how far she may go.
+const LADDER_TOP = {
+    mommy: 'the full mother-son taboo, said plainly, no euphemisms',
+    daddy: 'shameless, begging, the taboo spelled out in every line',
+    cuckqueen: 'she arranges the other woman herself and narrates every detail of him using her, utterly humiliated and soaked',
+    fucktoy: 'the roughest, crudest degradation she has, nothing held back',
+    panties: 'every woman in his life (invented) wearing a pair for him, soaked and begging for his cum in them',
+    edging: 'merciless: edge after edge, no promises',
+    roulette: 'the filthiest scenes, back to back',
+    trance: 'deep conditioning: long mantras, his triggers repeated until he drops',
+    party: 'she stops just watching: she reenacts every scene on him',
+    rivalry: 'no rules between the two girls: anything to win him',
+};
+const ladder = {
+    level(mode) {
+        const st = game.stats(mode);
+        const done = (st.allowed || 0) + (st.finished || 0) + (st.slipped || 0);
+        return clamp(1 + Math.floor(((st.played || 0) + 2 * done) / 4), 1, 5);
+    },
+    text(mode) {
+        const l = this.level(mode);
+        const steps = ['', 'teasing: hint at the taboo, hold the strongest stuff back', 'bolder: say it more openly', 'explicit: the taboo out loud, filthier', 'intense: push his limits from the last games', `the top: ${LADDER_TOP[mode] || 'nothing held back'}`];
+        return `- DEPTH LEVEL ${l}/5 for this game (it deepens as he keeps playing and finishing): ${steps[l]}. Stay within this game's rules.`;
+    },
+};
+
+// ---------------------------------------------------------------- story mode
+// One night, several games in a row, chosen from your taste and kept secret. Each stage hands its heat to the
+// next; nobody finishes before the last one.
+const STORY_POOLS = { warm: ['trance', 'mommy', 'party', 'panties'], middle: ['panties', 'cuckqueen', 'fucktoy', 'roulette', 'daddy'], finale: ['edging', 'cuckqueen', 'mommy', 'daddy', 'panties', 'fucktoy'] };
+const story = {
+    plan() {
+        const score = (m) => { const st = game.stats(m); return 1 + 2 * ((st.allowed || 0) + (st.finished || 0)) + 0.5 * (st.played || 0) + 3 * play.rand(); };
+        const pick = (pool, not) => pool.filter((m) => !not.includes(m)).sort((a, b) => score(b) - score(a))[0];
+        const a = pick(STORY_POOLS.warm, []), b = pick(STORY_POOLS.middle, [a]), c = pick(STORY_POOLS.finale, [a, b]);
+        return [a, b, c];
+    },
+    stageMs() { return clamp(num(S().storyStageMinutes) || 8, 3, 30) * 60000; },
+    final() { return game.story && game.story.i >= game.story.stages.length - 1; },
+    // move on after the stage time, or 2 edges in this stage
+    check() {
+        const s = game.story;
+        if (!s || this.final() || climax.active) return;
+        if (Date.now() - s.t0 >= this.stageMs() || s.edges >= 2) this.next();
+    },
+    next() {
+        const s = game.story;
+        s.i++; s.t0 = Date.now(); s.edges = 0;
+        game.mode = s.stages[s.i];
+        if (game.mode === 'mommy') game.goal = Math.max(game.target(), Math.ceil(game.minutes()) + 4);
+        const carry = { edges: game.edges, begs: game.begs };
+        play.onStart(game.mode, true);
+        Object.assign(game, carry);
+        triggers.seed(game.mode);
+        logEvent('story-next'); pending.at(-1).extra = GAMES[game.mode];
+        ui.refresh(); updatePrompt();
+        game.nudge(`Story mode: a new stage begins. Send a message.`);
+    },
+    text() {
+        const s = game.story;
+        if (!s) return '';
+        return `STORY MODE: stage ${s.i + 1} of ${s.stages.length} tonight is ${GAMES[game.mode]} (he doesn't know the order). ${this.final() ? 'This is the FINALE: when you end it, use his strongest trigger phrase and the scene that gave him his biggest loads, and make it the biggest finish of the night.' : 'Do NOT let him cum in this stage; keep the heat for the next one. When the stage changes you will be told: move into it in character, seamlessly.'} The rules of the current game follow.`;
+    },
+};
+
+// ---------------------------------------------------------------- her voice
+// Reads her replies aloud with your browser's own voices (works in SillyTavern and Marinara), and puts a
+// stroke accent on the words that matter: as she says "good boy", "cum" or one of your trigger phrases,
+// the sleeve goes deep for a moment.
+const ACCENT = /\b(good boy|good girl|cum\w*|mommy|daddy|deeper|harder|now|fuck\w*|slut|whore|panties|yes)\b/;
+const voice = {
+    speaking: false, lastPulse: 0, rest: null,
+    ok() { return typeof window !== 'undefined' && !!window.speechSynthesis && typeof window.SpeechSynthesisUtterance === 'function'; },
+    voices() { try { return this.ok() ? window.speechSynthesis.getVoices() : []; } catch { return []; } },
+    clean(text) {
+        return String(text || '').replace(TAG_RE, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '').replace(/[*_~`#>]/g, '').replace(/🔗|📷/g, '').replace(/\s+/g, ' ').trim();
+    },
+    speak(text) {
+        if (!S().voiceOn || !this.ok()) return;
+        const t = this.clean(text);
+        if (!t) return;
+        this.stop();
+        const u = new window.SpeechSynthesisUtterance(t), want = S().voiceName;
+        const v = want && this.voices().find((x) => x.name === want);
+        if (v) u.voice = v;
+        u.rate = clamp(num(S().voiceRate) || 0.9, 0.5, 1.5) * (game.active && game.mode === 'trance' ? 0.8 : 1);
+        u.pitch = clamp(num(S().voicePitch) || 1, 0.5, 1.5);
+        const trig = Object.keys(triggers.store());
+        u.onboundary = (e) => {
+            if (e.name && e.name !== 'word') return;
+            const rest = norm(t.slice(e.charIndex, e.charIndex + 40));
+            if (ACCENT.test(rest.split(' ').slice(0, 2).join(' ')) || trig.some((k) => rest.startsWith(k))) this.pulse();
+        };
+        u.onend = u.onerror = () => { this.speaking = false; };
+        this.speaking = true;
+        try { window.speechSynthesis.speak(u); } catch { this.speaking = false; }
+    },
+    // one deep accent, at most every 1.5 s, then back
+    pulse() {
+        if (!actEngine.running || climax.active || !S().voiceSync) return;
+        const now = Date.now();
+        if (now - this.lastPulse < 1500) return;
+        this.lastPulse = now;
+        const back = this.rest ?? actEngine.intent.depthOff;
+        this.rest = back;
+        actEngine.intent.depthOff = clamp(back - 0.35, -1, 1);
+        enqueue(() => actEngine.running && actEngine.regen());
+        clearTimeout(this.backTimer);
+        this.backTimer = setTimeout(() => { if (this.rest !== null) { actEngine.intent.depthOff = this.rest; this.rest = null; enqueue(() => actEngine.running && actEngine.regen()); } }, 900);
+    },
+    stop() {
+        clearTimeout(this.backTimer); if (this.rest !== null) { actEngine.intent.depthOff = this.rest; this.rest = null; }
+        if (this.ok()) { try { window.speechSynthesis.cancel(); } catch { /* nothing to stop */ } }
+        this.speaking = false;
+    },
+};
+
+// ---------------------------------------------------------------- heart rate
+// A Bluetooth heart-rate strap (any standard one) through the browser (Chrome or Edge; the page must be on
+// localhost or https). Your resting rate is learned in the first minute; after that your heart rate drives
+// the arousal meter together with the estimate, she sees it, and a fast climb toward your edge eases the
+// device off a little before you get there. Very high rates slow everything down.
+const hr = {
+    bpm: null, base: null, warm: [], dev: null, last: 0, hist: [], warned: 0, nearAt: 0,
+    supported() { return typeof navigator !== 'undefined' && !!navigator.bluetooth?.requestDevice; },
+    async connect() {
+        if (!this.supported()) return toast('Heart-rate sensors need Chrome or Edge, with SillyTavern/Marinara opened on localhost (or https).', 'warning');
+        try {
+            const d = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
+            const server = await d.gatt.connect();
+            const svc = await server.getPrimaryService('heart_rate');
+            const ch = await svc.getCharacteristic('heart_rate_measurement');
+            ch.addEventListener('characteristicvaluechanged', (e) => this.ingest(this.parse(e.target.value)));
+            await ch.startNotifications();
+            d.addEventListener?.('gattserverdisconnected', () => { this.dev = null; this.bpm = null; toast('Heart-rate sensor disconnected', 'warning'); ui.refresh(); });
+            this.dev = d; this.base = S().profile.restingHr || null; this.warm = [];
+            toast(`Heart-rate sensor connected: ${d.name || 'sensor'}`, 'success'); ui.refresh();
+        } catch (e) { if (!/cancel/i.test(e.message || '')) toast(`Heart-rate sensor: ${e.message}`, 'error'); }
+    },
+    disconnect() { try { this.dev?.gatt?.disconnect(); } catch { /* gone */ } this.dev = null; this.bpm = null; ui.refresh(); },
+    parse(dv) { const f = dv.getUint8(0); return f & 1 ? dv.getUint16(1, true) : dv.getUint8(1); },
+    ingest(bpm) {
+        if (!(bpm > 30 && bpm < 240)) return;
+        const now = Date.now();
+        this.bpm = bpm; this.last = now;
+        if (Math.abs(bpm - (this.told || 0)) >= 3 || now - (this.toldAt || 0) > 10000) { this.told = bpm; this.toldAt = now; updatePrompt(); ui.arousal(); }
+        this.hist.push({ at: now, bpm }); this.hist = this.hist.filter((x) => now - x.at < 30000);
+        if (!this.base) {
+            this.warm.push(bpm);
+            if (this.warm.length >= 30) { this.base = Math.round(median(this.warm)); S().profile.restingHr = this.base; save(); }
+            return;
+        }
+        if (bpm < this.base - 3 && !anyRunning()) { this.base = Math.round(this.base * 0.9 + bpm * 0.1); S().profile.restingHr = this.base; }
+        if (bpm >= 175 && now - this.warned > 120000) {   // very high: slow down
+            this.warned = now; toast(`Heart rate ${bpm}: slowing down. Take a breather if you need one.`, 'warning');
+            if (actEngine.running) { actEngine.intent.intensity = Math.min(actEngine.intent.intensity, 0.3); enqueue(() => actEngine.running && actEngine.regen()); }
+            logEvent('hr-high');
+        }
+        // a fast climb near the top: you're about to edge
+        const old = this.hist.find((x) => now - x.at >= 12000);
+        if (this.level() >= 0.8 && old && bpm - old.bpm >= 8 && now - this.nearAt > 60000 && actEngine.running && !climax.active) {
+            this.nearAt = now; logEvent('hr-near');
+            if (S().closeAction !== 'ai') { actEngine.intent.intensity = clamp(actEngine.intent.intensity * 0.75, 0.05, 1); enqueue(() => actEngine.running && actEngine.regen()); }
+        }
+    },
+    live() { return this.bpm && Date.now() - this.last < 15000; },
+    level() { return this.live() && this.base ? clamp((this.bpm - this.base) / (this.base * 0.5), 0, 1) : null; },
+    text() {
+        if (!this.live()) return '';
+        return `HEART RATE (live sensor): ${this.bpm} bpm${this.base ? `, resting ${this.base}` : ' (learning his resting rate)'}. Read it: a climbing rate means he's getting close.`;
+    },
+};
+
 // "I'm close": an edging signal, not a rating. By default the device eases off at once (the AI's reply
 // takes seconds), and the AI is told so it can pull back further, hold you there, or push you over.
 let edges = 0;
 function closeSignal(fromText = false) {
     edges++;
-    if (game.active) { game.edges++; game.sceneEdges++; play.edge(); }
+    if (game.active) { game.edges++; game.sceneEdges++; if (game.story) game.story.edges++; play.edge(); }
+    triggers.credit('edges');
     focus.credit('edges');
     const s = S(), pull = s.closeAction !== 'ai' && !climax.active;   // during a climax push, "close" means keep going
     arousal.close();
@@ -2061,10 +2380,11 @@ function finishSignal(fromText = false) {
     finishes++;
     const s = S();
     focus.credit('finishes');   // before the game ends, so the finish knows which game it was
+    if (focus.lastFinish) focus.lastFinish.trig = triggers.credit('finishes');
     if (game.active && game.mode === 'cuckqueen') play.herUp(25);   // watching him cum for them
     clearTimeout(ui.loadTimer); ui.loadTimer = setTimeout(() => ui.refresh(), 301000);   // the "how big?" row goes away after 5 min
     if (game.lastYes && Date.now() - game.lastYes < 90000) { S().profile.daddyReward = true; game.lastYes = 0; }   // came for her right after saying yes
-    if (game.active) game.end(PERMISSION.has(game.mode) ? 'slipped' : 'finished');   // came before she allowed it: she'll have something to say
+    if (game.active) game.end(PERMISSION.has(game.mode) || (game.story && !story.final()) ? 'slipped' : 'finished');   // came before she allowed it: she'll have something to say
     if (actEngine.running) {
         creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
         const r = chars.current();
@@ -2102,7 +2422,7 @@ function feedback(kind) {
     if (kind === 'close') return closeSignal();
     if (kind === 'finish') return finishSignal();
     if (kind === 'climax' && game.active && game.mode === 'daddy') { game.asking = true; return play.daddy('yes'); }   // daddy says so
-    if (kind === 'climax' && game.active && BEGGING.has(game.mode)) {   // in these games, "Finish me" is begging: she decides
+    if (kind === 'climax' && game.active && (BEGGING.has(game.mode) || (game.story && !story.final()))) {   // in these games, "Finish me" is begging: she decides
         game.begs++; focus.credit('begs'); logEvent('begged'); updatePrompt(); game.reply(800); return;
     }
     if (kind === 'climax') {   // "Finish me": start the push now and tell the AI
@@ -2217,6 +2537,7 @@ function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg || !msg.is_user) return;
     lastActivity = Date.now();   // you are here and taking part: the idle timer and the learning both count it
+    if (confess.waiting && S().enabled) { confess.answer(msg.mes); updatePrompt(); }
     if (!S().enabled || !(anyActive() || beats.length)) return;
     if (isUserStop(msg.mes)) {
         logEvent('stop');
@@ -2407,6 +2728,8 @@ function profileText() {
     if (cs) L.push(cs);
     const ar = arousal.text();
     if (ar) L.push(ar);
+    const ht = hr.text();
+    if (ht) L.push(ht);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
     const gt = game.text();
@@ -2424,6 +2747,8 @@ function profileText() {
         'rival-win': 'WE HAVE A WINNER', 'game-daddy-allowed': 'DADDY SAID YES (the device is pushing him over: make him cum for you)',
         'game-daddy-slipped': 'DADDY CAME BEFORE YOU ASKED (react in character)', 'game-rivalry-allowed': 'the winner is making him cum',
         'load-small': 'HE RATED HIS LOAD: SMALL', 'load-good': 'HE RATED HIS LOAD: A GOOD ONE', 'load-huge': 'HE RATED HIS LOAD: HUGE (the biggest kind)',
+        'story-next': 'STORY MODE: THE NEXT STAGE STARTS NOW', confessed: 'HE ANSWERED YOUR CONFESSION QUESTION',
+        'hr-near': 'HIS HEART RATE IS CLIMBING FAST: he is about to edge (the device eased off a little)', 'hr-high': 'HIS HEART RATE IS VERY HIGH (the device slowed down: let him breathe)',
         'roulette-spin': 'THE WHEEL SPINS: call a brand-new scene NOW (a different kind), with scene= and watch= and the matching act; it starts fast',
         'game-roulette-allowed': 'roulette over: you let them cum', 'game-roulette-ruined': 'roulette over: you ruined it', 'game-roulette-denied': 'roulette over: denied',
         'game-roulette-slipped': 'CAME WITHOUT PERMISSION (porn roulette is over: react in character)', 'game-roulette-quit': 'THE USER ENDED PORN ROULETTE',
@@ -2433,7 +2758,7 @@ function profileText() {
         'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
         close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
         finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
-    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (e.kind.startsWith('secret:') ? secrets.say(e) : e.kind.startsWith('use:') ? `HE IS USING YOUR ${(HOLES[e.kind.slice(4)]?.label || e.kind.slice(4)).toUpperCase()} (the device has switched: obey and degrade)` : (FB[e.kind] || gameOverText(e.kind)) + (e.kind === 'rival-win' && e.extra ? `: ${e.extra} won the rivalry and gets to make him cum` : '')) + (e.act && !e.kind.startsWith('secret:') ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : climax.active ? ' The device is pushing them over: keep going.' : ' The device has already eased off a little.') : ''}`);
+    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (e.kind.startsWith('secret:') ? secrets.say(e) : e.kind.startsWith('use:') ? `HE IS USING YOUR ${(HOLES[e.kind.slice(4)]?.label || e.kind.slice(4)).toUpperCase()} (the device has switched: obey and degrade)` : (FB[e.kind] || gameOverText(e.kind)) + (e.kind === 'rival-win' && e.extra ? `: ${e.extra} won the rivalry and gets to make him cum` : '') + (e.kind === 'story-next' && e.extra ? `: ${e.extra}` : '') + (e.kind === 'confessed' && e.extra ? `: "${e.extra.slice(0, 200)}"` : '')) + (e.act && !e.kind.startsWith('secret:') ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : climax.active ? ' The device is pushing them over: keep going.' : ' The device has already eased off a little.') : ''}`);
     L.push(']');
     return L.join('\n');
 }
@@ -2463,6 +2788,7 @@ function handleMessage(id) {
     if (!msg || msg.is_user || typeof msg.mes !== 'string') return;
     const tags = [...msg.mes.matchAll(TAG_RE)];
     if (game.active) game.replies++;
+    if (S().enabled) { triggers.heard(msg.mes); voice.speak(msg.mes); }
     pending = [];
     clearBeats();   // a new reply replaces whatever was still waiting from the last one
     if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
@@ -2501,6 +2827,9 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
+    if (a.her || a.girl || a.about) cast.meet(a);
+    if (a.trigger && a.trigger !== true) triggers.add(a.trigger, game.active ? game.mode : null);
+    if (a.confess && a.confess !== true) confess.ask(a.confess);
     const changed = focus.set(a);
     if (changed === 'scene') game.newScene();
     if (changed && game.active) game.sceneLoves = 0;
@@ -2572,6 +2901,17 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_pics_on"> Let the AI suggest picture searches (links to PornPics search results)</label>
     <label>Site for video searches <select id="handy_video_site" class="text_pole"><option value="pornhub">Pornhub</option><option value="xhamster">xHamster</option><option value="xvideos">XVideos</option></select></label>
     <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
+    <label>Story mode: minutes per stage (or 2 edges) <input type="number" id="handy_story_min" class="text_pole" min="3" max="30"></label>
+    <b>Her voice</b>
+    <label class="checkbox_label"><input type="checkbox" id="handy_voice_on"> Read her replies aloud (your browser's voices)</label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_voice_sync"> A deep stroke on the words that matter</label>
+    <label>Voice <select id="handy_voice_name" class="text_pole"></select></label>
+    <label>Speed <input type="number" id="handy_voice_rate" class="text_pole" min="0.5" max="1.5" step="0.05"></label>
+    <label>Pitch <input type="number" id="handy_voice_pitch" class="text_pole" min="0.5" max="1.5" step="0.05"></label>
+    <div class="flex-container"><div id="handy_voice_test" class="menu_button">Test voice</div></div>
+    <b>Heart-rate sensor</b>
+    <small id="handy_hr_status"></small>
+    <div class="flex-container"><div id="handy_hr_connect" class="menu_button">Connect sensor</div><div id="handy_hr_disconnect" class="menu_button">Disconnect</div></div>
     <label>Porn roulette: minutes between spins <input type="number" id="handy_roulette_min" class="text_pole" min="1" max="15"></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
@@ -2654,7 +2994,13 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
-        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_pics_on', 'picLinks', 'checked'); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_roulette_min', 'rouletteMinutes');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_pics_on', 'picLinks', 'checked'); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_story_min', 'storyStageMinutes');
+        bind('#handy_voice_on', 'voiceOn', 'checked'); bind('#handy_voice_sync', 'voiceSync', 'checked'); bind('#handy_voice_name', 'voiceName'); bind('#handy_voice_rate', 'voiceRate'); bind('#handy_voice_pitch', 'voicePitch');
+        $('#handy_voice_on').on('change', function () { if (!this.checked) voice.stop(); });
+        $('#handy_voice_test').on('click', () => { const was = S().voiceOn; S().voiceOn = true; voice.speak('Good boy. Keep your eyes on her.'); S().voiceOn = was; if (!voice.ok()) toast('This browser has no speech voices.', 'warning'); });
+        $('#handy_hr_connect').on('click', () => hr.connect());
+        $('#handy_hr_disconnect').on('click', () => hr.disconnect());
+        if (voice.ok()) { try { window.speechSynthesis.addEventListener?.('voiceschanged', () => ui.refresh()); } catch { /* fine */ } } bind('#handy_roulette_min', 'rouletteMinutes');
         bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
         $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.seen.clear(); chars.warned = false; save(); chars.current(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
@@ -2720,8 +3066,8 @@ const ui = {
     <div class="handy-row"><select id="handy_favs" class="text_pole"></select></div>
     <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
-    <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
-    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Porn roulette: a new scene every few minutes, starting fast; get through it without edging. Goon trance: slow, hypnotic, held on the plateau. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish. Fucktoy: you choose what you use; degrading talk. Daddy's girl: praise makes her bolder; she must ask before making you cum. Two-girl rivalry: two girls compete to edge you. Watch party: you watch porn together. Cuckqueen: she gets off on you enjoying other women and learns your type. Panty game: panties in every detail; your drawer grows. Every game hides secrets."><option value="edging">Edging game</option><option value="roulette">Porn roulette</option><option value="trance">Goon trance</option><option value="mommy">Mommy's stamina training</option><option value="fucktoy">Fucktoy</option><option value="daddy">Daddy's girl</option><option value="rivalry">Two-girl rivalry</option><option value="party">Watch party</option><option value="cuckqueen">Cuckqueen</option><option value="panties">Panty game</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
+    <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span><span id="handy_hr" class="handy-small" title="Heart rate (live sensor)"></span></div>
+    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Porn roulette: a new scene every few minutes, starting fast; get through it without edging. Goon trance: slow, hypnotic, held on the plateau. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish. Fucktoy: you choose what you use; degrading talk. Daddy's girl: praise makes her bolder; she must ask before making you cum. Two-girl rivalry: two girls compete to edge you. Watch party: you watch porn together. Cuckqueen: she gets off on you enjoying other women and learns your type. Panty game: panties in every detail; your drawer grows. Every game hides secrets."><option value="edging">Edging game</option><option value="roulette">Porn roulette</option><option value="trance">Goon trance</option><option value="mommy">Mommy's stamina training</option><option value="fucktoy">Fucktoy</option><option value="daddy">Daddy's girl</option><option value="rivalry">Two-girl rivalry</option><option value="party">Watch party</option><option value="cuckqueen">Cuckqueen</option><option value="panties">Panty game</option><option value="story">Story mode (a surprise)</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
     <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_game_actions" class="handy-game-actions"></div>
     <div id="handy_videos" class="handy-small handy-videos"></div>
@@ -2800,6 +3146,10 @@ const ui = {
         $('#handy_favs').html(`<option value="">— favorites and signature moves —</option>` + favs.map(({ f, i }) => `<option value="${i}">${f.owner ? esc(s.characters?.[f.owner]?.name || 'character') + ' · ' : ''}${esc(f.name)}</option>`).join(''));
         $('#handy_game').text(game.status()).toggle(game.active);
         $('#handy_focus_summary').text(focus.summary());
+        const vs = voice.voices(), vSel = $('#handy_voice_name');
+        const vHtml = `<option value="">Default voice</option>` + vs.map((v) => `<option value="${esc(v.name)}" ${v.name === s.voiceName ? 'selected' : ''}>${esc(v.name)}${v.lang ? ` (${esc(v.lang)})` : ''}</option>`).join('');
+        if (vSel.data('n') !== vs.length) { vSel.html(vHtml); vSel.data('n', vs.length); vSel.val(s.voiceName || ''); }
+        $('#handy_hr_status').text(!hr.supported() ? 'Needs Chrome or Edge, with this page on localhost or https.' : hr.live() ? `Connected: ${hr.bpm} bpm${hr.base ? `, resting ${hr.base}` : ' (learning your resting rate: sit still for a minute)'}` : hr.dev ? 'Connected, waiting for readings…' : 'Not connected. Any standard Bluetooth heart-rate strap works.');
         $('#handy_secrets_summary').text(secrets.summary());
         const ga = !game.active ? '' : game.mode === 'fucktoy'
             ? [...play.holes(), ...(play.spitroast() ? ['spitroast'] : [])].map((h) => `<div class="menu_button" data-use="${h}">${h === 'spitroast' ? 'Spitroast' : HOLES[h].label}</div>`).join('')
@@ -2846,6 +3196,7 @@ const ui = {
     arousal() {
         const pct = Math.round(arousal.level * 100);
         $('#handy_arousal_fill').css('width', pct + '%'); $('#handy_arousal_pct').text(pct + '%');
+        $('#handy_hr').text(hr.live() ? `♥ ${hr.bpm}` : '');
     },
     live(pos) { $('#handy_live').text(`${actEngine.intent.act || ''} · pos ${Math.round(pos)}`); },
     calib() {
@@ -2910,5 +3261,5 @@ jQuery(() => {
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => { arousal.tick(); focus.tick(1); game.tick(1); }, 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

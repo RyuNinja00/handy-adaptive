@@ -199,6 +199,15 @@ let passed = 0;
 const step = async (name, fn) => { await fn(); passed++; console.log('  ok  ' + name); };
 
 try {
+    await pg.addInitScript(() => {   // a speech engine and a Bluetooth heart-rate strap, faked
+        window.__spoken = []; window.__cancels = 0;
+        window.SpeechSynthesisUtterance = function (text) { this.text = text; };
+        Object.defineProperty(window, 'speechSynthesis', { value: { speak: (u) => window.__spoken.push(u), cancel: () => { window.__cancels++; }, getVoices: () => [{ name: 'Test Voice', lang: 'en-US' }], addEventListener() {} }, configurable: true });
+        const listeners = [];
+        const ch = { addEventListener: (ev, fn) => listeners.push(fn), startNotifications: async () => {} };
+        window.__beat = (bpm) => { const dv = new DataView(new ArrayBuffer(2)); dv.setUint8(0, 0); dv.setUint8(1, bpm); for (const fn of listeners) fn({ target: { value: dv } }); };
+        Object.defineProperty(navigator, 'bluetooth', { value: { requestDevice: async () => ({ name: 'Test Strap', addEventListener() {}, gatt: { connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => ch }) }), disconnect() {} } }) }, configurable: true });
+    });
     await pg.goto(base + '/');
     await pg.waitForFunction(() => (window.__extReady && document.querySelector('#handy_panel')) || window.__extError, null, { timeout: 10000 });
     assert.equal(await pg.evaluate(() => window.__extError), undefined, 'extension failed to start');
@@ -519,6 +528,53 @@ try {
         await waitFor(() => state.storage.settings?.videoSite === 'xvideos', 'site choice saved to Marinara storage');
         assert.match(await pg.textContent('#handy_secrets_summary'), /\/32 secrets found/);
         await pg.click('#handy-st-settings .handy-st-close');
+    });
+    await step('cast, triggers, confessions, story mode, voice and heart rate all work in Marinara', async () => {
+        const G = (f, a) => pg.evaluate(f, a);
+        const turn = async (content, user = 'go') => {
+            state.next = { mode: 'new', content };
+            await pg.evaluate((u) => window.sendTurn({ chatId: 'chat1', userMessage: u }), user);
+            await new Promise((r) => setTimeout(r, 700));
+        };
+        if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');
+        // voice: on, read her reply aloud
+        await pg.click('#handy_settings_btn');
+        await pg.check('#handy_voice_on');
+        assert.ok(await pg.isVisible('#handy_voice_name'));
+        assert.match(await pg.innerHTML('#handy_voice_name'), /Test Voice/);
+        // heart rate: connect the (fake) strap from the settings window
+        await pg.click('#handy_hr_connect');
+        await waitFor(() => G(() => !!window.handyAdaptive.hr.dev), 'sensor connected');
+        await pg.click('#handy-st-settings .handy-st-close');
+        // story mode from the panel
+        await pg.selectOption('#handy_game_mode', 'story'); await pg.click('#handy_game_btn');
+        await waitFor(() => G(() => !!window.handyAdaptive.game.story), 'story started');
+        assert.match(await pg.textContent('#handy_game'), /Story · stage 1\/3/);
+        await turn('Mm, good boy. <handy act="blowjob" intensity="0.6" her="Dana" about="curvy redhead from accounting" panties="black lace thong" confess="Who do you picture?"/>');
+        assert.ok(state.generations.at(-1).entry.content.includes('STORY MODE: stage 1 of 3'), 'story instructions in the lorebook');
+        await waitFor(() => G(() => window.__spoken.length > 0 && /good boy/i.test(window.__spoken.at(-1).text) && !/handy/.test(window.__spoken.at(-1).text)), 'reply spoken');
+        await waitFor(() => G(() => !!window.handyAdaptive.profile().cast?.dana), 'cast member met');
+        // his next message answers her confession question
+        await turn('Okay.', 'Dana, bent over in a black lace thong');
+        await waitFor(() => G(() => /black lace thong/.test(window.handyAdaptive.profile().confessions?.at(-1)?.a || '')), 'confession kept');
+        assert.ok(state.generations.at(-1).entry.content.includes('HE ANSWERED YOUR CONFESSION QUESTION'), 'confession reaches the AI');
+        assert.ok(state.generations.at(-1).entry.content.includes('Dana (curvy redhead from accounting'), 'cast reaches the AI');
+        assert.ok(state.generations.at(-1).entry.content.includes('YOUR TRIGGER PHRASES'), 'triggers reach the AI');
+        // heart rate: resting, then a climb
+        for (let k = 0; k < 30; k++) await G(() => window.__beat(68));
+        for (let k = 0; k < 6; k++) await G((b) => window.__beat(b), 90 + k);
+        await waitFor(async () => /♥ 9\d/.test(await pg.textContent('#handy_hr')), 'heart rate on the panel');
+        await turn('Mm.');
+        assert.match(state.generations.at(-1).entry.content, /HEART RATE \(live sensor\): 9\d bpm, resting 68/);
+        // two edges move the story on
+        await pg.click('#handy_panel [data-fb="close"]'); await pg.click('#handy_panel [data-fb="close"]');
+        await waitFor(() => G(() => window.handyAdaptive.game.story?.i === 1), 'story stage 2');
+        await waitFor(async () => (await pg.$$eval('.handy-toast', (els) => els.some((e) => /Story mode: a new stage begins/.test(e.textContent)))), 'told to send a message', 3000);
+        // STOP silences her and stops the device; end the game
+        await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+        assert.ok(await G(() => window.__cancels > 0), 'speech cancelled');
+        await pg.click('#handy_game_btn');
+        await pg.click('#handy_settings_btn'); await pg.uncheck('#handy_voice_on'); await pg.click('#handy_hr_disconnect'); await pg.click('#handy-st-settings .handy-st-close');
     });
     await step('settings open in a window; Test connection works; ST-only options are hidden', async () => {
         await pg.click('#handy_settings_btn');

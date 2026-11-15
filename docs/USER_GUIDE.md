@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.12.2.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.13.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -635,6 +635,39 @@ When a scene would help, she can suggest a video search or a picture search. A l
 - **Which site:** video searches go to Pornhub, xHamster or XVideos (pick under *Site for video searches* in the settings). Picture searches (📷) go to PornPics, and the Panty game uses them to show the cut, fabric or body part she's describing. Each kind has its own on/off switch in the settings.
 - **Query filter:** before any link is made, words that point at minors (ages, "teen", "young", school, family words) or at non-consensual material (hidden cams, upskirts, drunk, sleeping, forced and the like) are removed from the query. If nothing is left, no link is made. The sites' own moderation is good but not perfect, so this is an extra layer.
 - **In Marinara**, the links appear only on the panel.
+
+#### Story mode
+
+Choose **Story mode (a surprise)** and press **Start**. She plans a night of three games in a row, picked from what you've enjoyed, and doesn't tell you the order. Each stage moves on after a set time (*Story mode: minutes per stage*, 8 by default) or after 2 edges, whichever comes first, and your arousal and edges carry over. Nobody finishes before the finale. The finale is where she uses your strongest trigger phrase and the scene behind your biggest loads. The panel shows *Story · stage 2/3*.
+
+#### The cast
+
+The games share a cast of invented women. She introduces one with a name and a short description (*Dana, a curvy redhead from accounting*) and brings her back in later games, wearing the pairs you liked on her. What you do while each woman is on screen (edges, ❤, finishes, load size) is learned, so your favorites come back more often. The cast is always invented, never real people.
+
+#### Trigger phrases
+
+Every game starts with a few phrases to test ("cum for mommy", "fill her panties"…), and she can add her own. When she says one, an edge or finish in the next minute counts for it, and a huge load counts extra. The ones that work are saved for right before you finish. Ones that never land (8 tries with nothing to show for it) are retired.
+
+#### Confessions
+
+Now and then she asks you something filthy and personal. Your next message is taken as your answer. It's kept in your profile, on this computer only, and whatever it mentions (thighs, lace, a thong, eye contact…) is learned as something you like. She calls back to your confessions later.
+
+#### Depth levels
+
+Each game deepens as you play it and finish: level 1 teases, level 5 holds nothing back (within that game's rules). A toast tells you when a new level unlocks.
+
+#### Her voice
+
+In the settings, under **Her voice**, turn on *Read her replies aloud*. She speaks with your browser's built-in voices. Pick a voice, speed and pitch, and use **Test voice** to try it. On Windows, Microsoft Edge has the most natural-sounding voices. With *A deep stroke on the words that matter* on, the sleeve goes deep for a moment as she says "good boy", "cum", "mommy" or one of your trigger phrases (at most once every 1.5 seconds). STOP silences her. This works in SillyTavern and Marinara alike.
+
+#### Heart-rate sensor
+
+Any standard Bluetooth heart-rate chest strap works. Under **Heart-rate sensor** in the settings, press **Connect sensor** and pick it. This needs Chrome or Edge, with SillyTavern or Marinara opened on `localhost` (or https). Sit still for the first minute so it can learn your resting rate.
+
+- **The arousal meter** follows your heart rate, and she sees it (the panel shows ♥ and your bpm).
+- **Early warning:** a fast climb near the top eases the device off a little before you edge.
+- **Safety:** at 175 bpm or more, everything slows down and you get a warning.
+- **Dropouts:** if the readings stop for 15 seconds, the sensor is ignored until they come back.
 
 #### Secrets
 

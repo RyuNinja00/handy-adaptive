@@ -1211,6 +1211,119 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     mz.H.run({ act: 'handjob', intensity: 0.6 }); await mz.advance(3000);
     mz.H.feedback('close'); await mz.advance(2000); mz.H.feedback('close'); await mz.advance(2000);
     check('where a reply cannot be started, you are told once to send a message', mz.toasts.filter((x) => /Send a message for her reply/.test(x.m)).length === 1);
+
+    // ---- the cast
+    const cs = await boot({ seed: 410 });
+    cs.H.game.start('panties'); await cs.advance(1000);
+    check('the cast is introduced to her in every game', /THE CAST: invented women who come back/.test(last(cs)));
+    cs.message('<handy act="blowjob" intensity="0.6" her="Dana" about="curvy redhead from accounting, shy until she isn\'t" panties="red satin thong" watch="her hips"/>'); await cs.advance(60000);
+    cs.H.feedback('close'); await cs.advance(20000); cs.H.feedback('love'); await cs.advance(30000);
+    const dana = cs.H.profile().cast.dana;
+    check('a cast member is remembered with her description, her pairs and her games', dana && /accounting/.test(dana.about) && dana.drawer[0] === 'red satin thong' && dana.games.includes('panties'));
+    cs.H.game.end('quit'); cs.H.game.start('cuckqueen'); await cs.advance(1000);
+    check('she comes back in the next game, with what he did for her', /Dana \(curvy redhead from accounting[^)]*\), wears red satin thong — [^;]*1 edges/.test(last(cs)), (last(cs).match(/So far, his favorites first:[^\n]*/) || [''])[0].slice(0, 200));
+    cs.message('<handy act="doggy" intensity="0.6" girl="Mia" about="tall brunette"/>'); await cs.advance(2000);
+    check('girl= in a rivalry or any tag also joins the cast', !!cs.H.profile().cast.mia);
+    cs.H.game.end('quit');
+
+    // ---- learned triggers
+    const tg = await boot({ seed: 420 });
+    tg.H.game.start('mommy'); await tg.advance(1000);
+    check('each game starts with trigger phrases to test', /YOUR TRIGGER PHRASES[^\n]*still testing: "cum for mommy"/.test(last(tg)));
+    tg.message('<handy act="handjob" intensity="0.6"/>That\'s it, good boy. Cum for mommy.'); await tg.advance(20000);
+    tg.H.feedback('finish'); await tg.advance(1000); tg.H.focus.rateLoad('huge'); await tg.advance(1000);
+    const T = tg.H.profile().triggers;
+    check('a phrase she said right before you came gets the credit (and a huge load counts extra)', T['cum for mommy'].finishes === 1 && T['cum for mommy'].big === 1 && T['good boy'].finishes === 1 && T['not yet'] === undefined);
+    tg.H.game.start('mommy'); await tg.advance(1000);
+    check('the strongest ones are saved for the finish', /strongest: "cum for mommy" \(1 finishes, 🌊\)/.test(last(tg)) || /strongest: "good boy" \(1 finishes, 🌊\)/.test(last(tg)), (last(tg).match(/strongest:[^\n]*?:/) || [''])[0]);
+    tg.message('<handy trigger="look at those thighs" act="handjob"/>'); await tg.advance(1000);
+    check('she can add her own trigger phrase', !!tg.H.profile().triggers['look at those thighs']);
+    const dud = tg.H.triggers.add('a phrase that never works', 'mommy'); dud.uses = 9;
+    tg.H.game.end('quit'); tg.H.game.start('mommy'); await tg.advance(1000);
+    check('phrases that never land are retired', dud.retired && !/a phrase that never works/.test(last(tg)));
+    tg.H.game.end('quit');
+
+    // ---- confessions
+    const cf = await boot({ seed: 430 });
+    cf.H.game.start('panties'); await cf.advance(1000);
+    check('she is told how to ask for confessions', /CONFESSIONS: now and then ask him/.test(last(cf)));
+    cf.message('<handy act="blowjob" intensity="0.5" confess="Which girl at the office do you picture in black lace?"/>Tell me.'); await cf.advance(2000);
+    cf.say('The tall one with the thick thighs, in a black lace thong'); await cf.advance(1000);
+    const cn = cf.H.profile().confessions.at(-1), cItems = cf.H.profile().focus.items;
+    check('his next message is kept as the answer, and what it mentions is learned as liked', cn && /thick thighs/.test(cn.a) && /black lace/.test(cn.q) && cItems['t:curves & thighs']?.loves >= 1 && cItems['f:fabric:lace']?.loves >= 1 && cItems['f:cut:thong']?.loves >= 1);
+    check('she hears his answer and keeps it for later', /HE ANSWERED YOUR CONFESSION QUESTION: "The tall one/.test(last(cf)) && /What he has confessed:/.test(last(cf)));
+    cf.say('stop'); await cf.advance(500);
+    check('a later message is not taken as another answer', cf.H.profile().confessions.length === 1);
+    cf.H.game.end('quit');
+
+    // ---- taboo ladder
+    const ld = await boot({ seed: 440 });
+    check('a new game starts at depth level 1', ld.H.ladder.level('mommy') === 1);
+    for (let k = 0; k < 4; k++) { ld.H.game.start('mommy'); ld.H.run({ act: 'handjob', intensity: 0.5 }); await ld.advance(2000); ld.H.feedback('finish'); await ld.advance(25000); }
+    ld.H.game.start('mommy'); await ld.advance(1000);
+    check('playing and finishing deepens it, with a toast when a level unlocks', ld.H.ladder.level('mommy') >= 3 && /DEPTH LEVEL [3-5]\/5/.test(last(ld)) && ld.toasts.some((x) => /Mommy's stamina training is now level/.test(x.m)));
+    ld.H.game.end('quit');
+
+    // ---- story mode
+    const sm = await boot({ seed: 450, settings: { storyStageMinutes: 5 } });
+    sm.H.play.rand = () => 0.5;
+    sm.H.game.start('story'); await sm.advance(1000);
+    const st0 = sm.H.game.story;
+    check('story mode plans three different games and keeps the order secret', st0 && new Set(st0.stages).size === 3 && /STORY MODE: stage 1 of 3/.test(last(sm)) && /Story · stage 1\/3/.test(sm.H.game.status()));
+    sm.message('<handy act="handjob" intensity="0.5"/>'); await sm.advance(3000);
+    sm.message('<handy game="allow"/>'); await sm.advance(1000);
+    check('nobody finishes before the finale', sm.H.game.active && !sm.H.climax.active);
+    sm.H.feedback('close'); await sm.advance(3000); sm.H.feedback('close'); await sm.advance(3000);
+    check('two edges move it to the next stage, and edges carry over', sm.H.game.story.i === 1 && sm.H.game.edges === 2 && sm.H.game.mode === st0.stages[1] && /THE NEXT STAGE STARTS NOW/.test(last(sm)));
+    await sm.advance(5 * 60000 + 2000);
+    check('the stage time moves it on too; the finale is marked', sm.H.game.story.i === 2 && /This is the FINALE/.test(last(sm)));
+    sm.H.feedback('climax'); await sm.advance(1000);
+    const finMode = st0.stages[2];
+    sm.message(finMode === 'daddy' ? '<handy game="ask"/>' : '<handy game="allow"/>'); await sm.advance(1000);
+    if (finMode === 'daddy') { sm.H.play.daddy('yes'); await sm.advance(1000); }
+    check('the finale can end it', !sm.H.game.active && sm.H.climax.active && sm.H.game.stats('story').allowed === 1, finMode);
+    const sm2 = await boot({ seed: 451 });
+    sm2.H.game.start('story'); sm2.H.run({ act: 'handjob', intensity: 0.5 }); await sm2.advance(3000);
+    sm2.H.feedback('finish'); await sm2.advance(1000);
+    check('cumming before the finale counts as slipping', sm2.H.game.stats('story').slipped === 1);
+
+    // ---- her voice
+    const vo = await boot({ seed: 460, settings: { voiceOn: true } });
+    const spoken = [];
+    vo.H.voice.ok = () => true;
+    globalThis.window.speechSynthesis = { speak: (u) => spoken.push(u), cancel: () => { spoken.cancel = (spoken.cancel || 0) + 1; }, getVoices: () => [{ name: 'Test Voice', lang: 'en-US' }] };
+    globalThis.window.SpeechSynthesisUtterance = function (text) { this.text = text; };
+    vo.message('<handy act="handjob" intensity="0.5"/>Mm, *slowly*. Good boy, now cum for me. [x](http://y)'); await vo.advance(3000);
+    const u = spoken.at(-1);
+    check('her reply is read aloud without tags, markup or links', u && u.text === 'Mm, slowly. Good boy, now cum for me.', u && u.text);
+    const d0 = vo.H.actEngine.intent.depthOff;
+    u.onboundary({ name: 'word', charIndex: u.text.indexOf('Good') }); await vo.advance(300);
+    const deep = vo.H.actEngine.intent.depthOff;
+    u.onboundary({ name: 'word', charIndex: u.text.indexOf('now') }); await vo.advance(300);
+    check('a deep stroke lands on "good boy", at most every 1.5 s', deep < d0 - 0.3 && vo.H.actEngine.intent.depthOff === deep);
+    await vo.advance(1200);
+    check('…and it goes back after', Math.abs(vo.H.actEngine.intent.depthOff - d0) < 1e-9);
+    vo.H.stop('stop button');
+    check('STOP silences her', spoken.cancel >= 1);
+    vo.st.extensionSettings.handy_adaptive.voiceOn = false; const n0 = spoken.length;
+    vo.message('Hello.'); await vo.advance(500);
+    check('voice off: nothing is spoken', spoken.length === n0);
+
+    // ---- heart rate
+    const hb = await boot({ seed: 470 });
+    hb.H.run({ act: 'handjob', intensity: 0.7 }); await hb.advance(2000);
+    for (let k = 0; k < 30; k++) { hb.H.hr.ingest(70); await hb.advance(1000); }
+    check('the resting rate is learned from the first readings', hb.H.hr.base === 70 && hb.H.profile().restingHr === 70);
+    for (let k = 0; k < 10; k++) { hb.H.hr.ingest(85 + k); await hb.advance(1000); }
+    check('a live heart rate drives the arousal meter and she sees it', hb.H.arousal.level > 0.3 && /HEART RATE \(live sensor\): 9[2-4] bpm, resting 70/.test(hb.st.prompts.filter(Boolean).pop()));
+    const i0 = hb.H.actEngine.intent.intensity;
+    for (const b of [100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122, 124]) { hb.H.hr.ingest(b); await hb.advance(1000); }
+    check('a fast climb near the top eases off before you get there, and she is told', hb.H.actEngine.intent.intensity < i0 && /HEART RATE IS CLIMBING FAST/.test(hb.st.prompts.filter(Boolean).pop()), `${i0.toFixed(2)} → ${hb.H.actEngine.intent.intensity.toFixed(2)}`);
+    hb.H.run({ act: 'handjob', intensity: 0.9 }); await hb.advance(2000);
+    hb.H.hr.ingest(182); await hb.advance(500);
+    check('a very high rate slows everything down, with a warning', hb.H.actEngine.intent.intensity <= 0.3 && hb.toasts.some((x) => /Heart rate 182: slowing down/.test(x.m)));
+    await hb.advance(16000);
+    check('no readings for 15 s: the sensor is ignored', !hb.H.hr.live() && !/HEART RATE \(live/.test(hb.st.prompts.filter(Boolean).pop() || ''));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

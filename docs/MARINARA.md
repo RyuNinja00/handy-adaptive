@@ -83,6 +83,7 @@ Also:
 - Timed events (a roulette spin, a surprise) show a toast. Send a message to hear her side of it.
 - If you open another chat, press **Start**, and then say hi, the game comes with you. A game that has already had a reply ends when you change chats.
 - Video and picture search links appear on the panel only, not under her message.
+- Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
 ## Updating
 

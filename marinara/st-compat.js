@@ -179,7 +179,7 @@ async function ensureHideRegex({ quiet = true } = {}) {
     try {
         const existing = asList(await mapi('GET', '/regex-scripts'));
         const rules = [
-            { name: REGEX_NAME, findRegex: '</?handy\\\\b[^>]*>' },
+            { name: REGEX_NAME, findRegex: "</?handy\\b[^>]*>" },
             { name: PICS_REGEX_NAME, findRegex: "<pics\\s*=\\s*(?:\"[^\"]*\"|'[^']*')\\s*\\/?\\s*>" },
         ];
         for (const rule of rules) {

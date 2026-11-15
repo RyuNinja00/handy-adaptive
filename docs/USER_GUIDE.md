@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.9.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.10.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -512,7 +512,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Favorites dropdown** | Replay a saved favorite or signature move (the character in control's come first) |
 | **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
 | **Style line** (bottom, in italics) | The style of the character in control, in plain words |
-| **Game menu + Start** | The character runs a game: the edging game, porn roulette, goon trance or Mommy's stamina training (see below) |
+| **Game menu + Start** | The character runs a game: edging, roulette, trance, mommy, fucktoy, daddy's girl, rivalry or watch party (see below). Some games add their own buttons under the menu. |
 | **⌄** (top right) | Collapse the panel |
 
 5. You can always take over manually with the panel. The AI picks up from the new state on its next reply. Your feedback since its last reply is passed to it, so the character can react ("You like it slower like this?").
@@ -570,6 +570,39 @@ Choose **Mommy's stamina training** and press **Start**. The character takes the
 - **Cumming early:** press **🥂 Finished**. That still counts as a stamina result, and she's gentle about it.
 
 How long you lasted and your best time are remembered. She tells you how you did, and the next goal adjusts.
+
+#### Fucktoy
+
+Choose **Fucktoy** and press **Start**. You're in control, and she's your toy:
+
+- **Use buttons** appear on the panel: Mouth, Throat, Pussy, Ass, Tits, Hands, Feet. Only the ones your motion library has an act for are shown. Press one and the Handy switches to that act at once. She's told, and narrates being used that way.
+  - Ass uses an `anal` act if you've trained one. Otherwise it uses doggy, deeper.
+- **Degrading dirty talk:** intense, crude and misogynistic, aimed at the women in the porn and at her character. She feeds you porn of women being used, to match what you're using.
+- **You decide when you cum:** press **⚡ Finish me** whenever you want.
+
+#### Daddy's girl
+
+Choose **Daddy's girl** and press **Start**. She plays your adoring, needy daughter in a taboo roleplay. She's always written as a grown woman in her twenties, with nothing childlike.
+
+- **Good girl** (a panel button) is her reward. Every two make her bolder: faster, filthier and more daring, from shy at boldness 1 to shameless at 5. The panel shows her boldness.
+- **She has to ask before making you cum.** When she does, the panel shows **Yes, make daddy cum** and **Make her wait**. Yes starts the push. Wait makes her pull back and work for it.
+- **⚡ Finish me** gives her permission right away.
+
+#### Two-girl rivalry
+
+Choose **Two-girl rivalry** and press **Start**. Two girls compete to bring you to the edge:
+
+- **In a group chat**, the two characters are the rivals. **In a one-on-one chat**, your character plays both girls: herself and a rival she invents.
+- **Scoring:** whoever is in control when you press **🔥 I'm close** scores. The panel shows the score, for example "Vex 2 vs Lola 1".
+- **Winning:** the first to reach the minimum number of edges (at least 3) wins and earns the right to make you cum. Nobody can before then. Wins are remembered across rivalries.
+
+#### Watch party
+
+Choose **Watch party** and press **Start**. You watch porn together, side by side. She reacts to every scene, says what she'd do, and compares herself to the women on screen, sometimes jealous and sometimes turned on. The Handy mirrors what's on screen. Press **⚡ Finish me** when you're ready.
+
+#### Secrets
+
+Every game hides **secrets**: surprise twists triggered by what you do, never announced in advance. There are 16 to find. When one happens, a toast says 🔓 *Secret found*, and she reveals it in character. Some leave something behind for future games. **Secrets** in the settings counts the ones you've found. No spoilers here: play to discover them.
 
 #### What gets you there (learning what you watch)
 

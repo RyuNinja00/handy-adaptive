@@ -64,3 +64,7 @@
 .handy-game-btn { flex: 0 0 auto; text-align: center; white-space: nowrap; }
 .handy-game-btn.on { background: #e0559a44; border-color: #e0559a; }
 .handy-game { color: #e0559a; margin-top: 2px; }
+
+.handy-game-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.handy-game-actions .menu_button { flex: 1 1 30%; text-align: center; margin: 0; padding: 4px 6px; font-size: .9em; }
+.handy-game-actions .handy-yes { background: #e0559a55; border-color: #e0559a; }

@@ -975,6 +975,90 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('trance: time on the edge is counted, and deny is not part of it', TG.active && TG.edgeSec >= 25 && /on the edge 0:[2-9]\d/.test(TG.status()));
     g.message('<handy game="allow"/>'); await g.advance(2000);
     check('trance: it ends with a long finish and a record', !TG.active && g.H.climax.ms === 45000 && TG.stats('trance').bestEdgeSec >= 25 && /of it on the edge/.test(last(g)));
+
+    // ---- fucktoy: you choose what you use; secrets
+    const ft = await boot({ seed: 310, settings: { library: { ...lib, acts: { ...lib.acts, handjob: lib.acts.blowjob, missionary: lib.acts.doggy } } } });
+    const FT = ft.H.game; FT.start('fucktoy'); await ft.advance(1000);
+    check('fucktoy: her rules are in the prompt with the holes he can use', /FUCKTOY — ON/.test(last(ft)) && /consenting adults/.test(last(ft)) && /mouth, pussy, ass, hands/.test(last(ft)));
+    ft.H.play.use('mouth'); await ft.advance(3000);
+    check('fucktoy: using her mouth switches the device to that act and tells her', ft.H.actEngine.intent.act === 'blowjob' && /HE IS USING YOUR MOUTH/.test(last(ft)) && FT.uses.mouth === 1);
+    for (const h of ['pussy', 'ass']) { ft.H.play.use(h); await ft.advance(2000); }
+    check('fucktoy: ass falls back to doggy, deeper, when there is no anal act', ft.H.actEngine.intent.act === 'doggy');
+    ft.H.play.use('hands'); await ft.advance(2000);
+    const sec = () => ft.H.profile().secrets || {};
+    check('secret: using every hole unlocks spitroast', !!sec()['full-set'] && ft.H.play.spitroast() && /SURPRISE: He has used every one/.test(last(ft)) && ft.toasts.some((t) => /Secret found: Complete set \(1\/16/.test(t.m)));
+    ft.H.play.use('spitroast'); await ft.advance(2000);
+    check('spitroast blends mouth and pussy', ft.H.actEngine.intent.act === 'blowjob' && /missionary/.test(JSON.stringify(ft.H.actEngine.intent.blend)));
+    for (let k = 0; k < 5; k++) { ft.H.play.use('mouth'); await ft.advance(1500); }
+    const wild = ft.H.actEngine.intent.variation >= 0.9 && ft.H.actEngine.intent.intensity >= 0.9;
+    await ft.advance(21000);
+    check('secret: five uses of one hole in a row breaks the toy (wild, then back)', !!sec()['broken-toy'] && wild && ft.H.actEngine.intent.intensity < 0.9);
+    await ft.advance(12 * 60000);
+    check('secret: free use (she takes over at a random moment)', !!sec()['free-use'] && Date.now() >= 0);
+    ft.H.feedback('finish'); await ft.advance(1000);
+    check('fucktoy: finishing is his call, not slipping', !FT.active && FT.stats('fucktoy').finished === 1 && !FT.stats('fucktoy').slipped);
+    FT.start('fucktoy'); await ft.advance(2000); FT.end('quit'); FT.start('fucktoy'); await ft.advance(6000);
+    check('secret: the ranking appears in his third game', !!sec().ranking && /RANKING[^\n]*mouth \d+×/.test(last(ft)));
+    FT.end('quit');
+
+    // ---- daddy's girl: praise makes her bolder; she must ask
+    const dg = await boot({ seed: 320 });
+    const DG = dg.H.game; DG.start('daddy'); await dg.advance(1000);
+    check("daddy's girl: an adults-only roleplay with her rules", /DADDY'S GIRL — ON/.test(last(dg)) && /grown woman in your twenties/.test(last(dg)) && /Never mention or imply childhood/.test(last(dg)) && /Boldness 1\/5/.test(last(dg)));
+    dg.message('<handy act="blowjob" intensity="0.4"/>'); await dg.advance(4000);
+    for (let k = 0; k < 4; k++) { dg.H.play.daddy('good'); await dg.advance(1500); }
+    check('"Good girl" makes her bolder and a little faster', dg.H.play.bold() === 3 && dg.H.actEngine.intent.intensity > 0.45 && /GOOD GIRL/.test(last(dg)) && /Boldness 3\/5/.test(last(dg)), `intensity ${dg.H.actEngine.intent.intensity.toFixed(2)}`);
+    dg.message('<handy game="allow"/>'); await dg.advance(1000);
+    check('she cannot make daddy cum without asking: an allow becomes a request', DG.active && DG.asking && !dg.H.climax.active && dg.toasts.some((t) => /asking permission/.test(t.m)));
+    for (let k = 0; k < 3; k++) { DG.asking = true; dg.H.play.daddy('wait'); await dg.advance(2000); }
+    const b0 = dg.H.actEngine.intent.intensity; await dg.advance(61000);
+    check('secret: made to wait three times, she turns bratty and sneaks the pace up', !!dg.H.profile().secrets?.brat && dg.H.actEngine.intent.intensity > b0 + 0.1, `${b0.toFixed(2)} → ${dg.H.actEngine.intent.intensity.toFixed(2)}`);
+    for (let k = 0; k < 6; k++) { dg.H.play.daddy('good'); await dg.advance(1500); }
+    check("secret: ten good girls make her daddy's perfect girl, saved as a move", !!dg.H.profile().secrets?.['perfect-girl'] && dg.H.profile().favorites.some((f) => f.name === "Daddy's Perfect Girl"));
+    dg.message('<handy game="ask"/>'); await dg.advance(1000); dg.H.play.daddy('yes'); await dg.advance(5000);
+    check('"Yes" pushes him over and ends the game', !DG.active && dg.H.climax.active && /DADDY SAID YES/.test(last(dg)));
+    dg.H.feedback('finish'); await dg.advance(2000);
+    DG.start('daddy'); await dg.advance(6000);
+    check("secret: coming right after saying yes earns daddy's reward next time", !!dg.H.profile().secrets?.reward && /his reward/.test(last(dg)));
+    DG.end('quit');
+
+    // ---- two-girl rivalry: whoever is in control when he edges scores
+    const rv = await boot({ seed: 330, settings: { gameMinEdges: 3 } });
+    const RV = rv.H.game; RV.start('rivalry'); await rv.advance(1000);
+    check('rivalry: one character plays two rivals in a one-on-one chat', /TWO-GIRL RIVALRY — ON/.test(last(rv)) && /You play TWO rival girls/.test(last(rv)));
+    const said = (girl) => rv.message(`<handy act="blowjob" intensity="0.6" girl="${girl}"/>`);
+    rv.H.play.rand = () => 0.9;   // no sabotage for the scoring check
+    said('Vex'); await rv.advance(3000); rv.H.feedback('close'); await rv.advance(3000);
+    said('Vex'); await rv.advance(3000); rv.H.feedback('close'); await rv.advance(3000);
+    said('Lola'); await rv.advance(3000); rv.H.feedback('close'); await rv.advance(3000);
+    check('rivalry: edges score for whoever is in control', RV.scores.Vex === 2 && RV.scores.Lola === 1 && /Vex 2 vs Lola 1/.test(RV.status()));
+    rv.message('<handy game="allow"/>'); await rv.advance(2000);
+    check('rivalry: nobody makes him cum before someone wins', RV.active && !rv.H.climax.active);
+    said('Lola'); await rv.advance(3000); rv.H.feedback('close'); await rv.advance(3000);
+    check('secret: a comeback from two behind to tie', !!rv.H.profile().secrets?.comeback && /Lola clawed back/.test(last(rv)));
+    said('Lola'); await rv.advance(3000); rv.H.feedback('close'); await rv.advance(3000);
+    check('rivalry: first to 3 wins and may finish him', RV.winner === 'Lola' && /Lola won the rivalry/.test(last(rv)) && /Lola HAS WON/.test(last(rv)));
+    rv.message('<handy game="allow" girl="Lola"/>'); await rv.advance(2000);
+    check('rivalry: the winner pushes him over; the result is kept', !RV.active && rv.H.climax.active && RV.stats('rivalry').wins.Lola === 1 && /Lola won/.test(last(rv)));
+    const sb = await boot({ seed: 331 }); sb.H.play.rand = () => 0;
+    sb.H.game.start('rivalry'); await sb.advance(1000);
+    sb.message('<handy act="blowjob" intensity="0.6" girl="Vex"/>'); await sb.advance(2000); sb.H.feedback('close'); await sb.advance(2000);
+    sb.message('<handy act="blowjob" intensity="0.6" girl="Lola"/>'); await sb.advance(2000);
+    sb.message('<handy act="blowjob" intensity="0.6" girl="Vex"/>'); await sb.advance(2000); sb.H.feedback('close'); await sb.advance(2000);
+    check('secret: sabotage (the trailing girl steals the leader\'s edge)', sb.H.game.scores.Vex === 1 && sb.H.game.scores.Lola === 1 && /Lola secretly stole/.test(sb.st.prompts.filter(Boolean).pop()));
+    sb.H.game.end('quit');
+
+    // ---- watch party: jealousy and joining the scene
+    const wp = await boot({ seed: 340 });
+    const WP = wp.H.game; WP.start('party'); await wp.advance(1000);
+    check('watch party: her rules', /WATCH PARTY — ON/.test(last(wp)));
+    wp.message('<handy act="doggy" intensity="0.5" scene="amateur doggy" watch="her back arching"/>'); await wp.advance(4000);
+    for (let k = 0; k < 3; k++) { wp.H.feedback('love'); await wp.advance(3000); }
+    check('secret: loving the girl on screen three times makes her jealous', !!wp.H.profile().secrets?.jealous && /JEALOUS/.test(last(wp)));
+    wp.H.feedback('close'); await wp.advance(30000); wp.H.feedback('close'); await wp.advance(40000);
+    check('secret: hitting the edge twice in 90 s and she climbs into the scene', !!wp.H.profile().secrets?.['join-in']);
+    const found = Object.keys(wp.H.profile().secrets || {}).length;
+    check('the settings count secrets found', /2\/16 secrets found: Jealous \(Watch party\), Into the scene \(Watch party\)/.test(wp.H.secrets.summary()), wp.H.secrets.summary());
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

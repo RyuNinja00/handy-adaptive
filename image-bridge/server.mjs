@@ -12,6 +12,7 @@ const ALLOWED_ORIGINS = (process.env.HANDY_IMAGE_ORIGINS || 'http://localhost:30
 const CACHE_MS = 15 * 60 * 1000;
 const MAX_BYTES = 8 * 1024 * 1024;
 const cache = new Map();
+const lastImageByQuery = new Map();
 const blocked = /\b(?:teen|underage|minor|child|kid|schoolgirl|rape|incest|voyeur|hidden|leaked)\b/i;
 
 function safeQuery(value) {
@@ -82,28 +83,56 @@ function candidates(html, base) {
   }
   return urls.slice(0, 40);
 }
+function shuffled(items) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
 async function searchImage(query) {
   const key = query.toLowerCase();
-  const saved = cache.get(key);
-  if (saved && saved.expires > Date.now()) return saved;
-  const searchUrl = 'https://www.pornpics.com/?q=' + encodeURIComponent(query);
-  const page = await fetchLimited(searchUrl, { siteOnly: true });
-  if (!/html/i.test(page.type)) throw new Error('Search did not return HTML');
-  const images = candidates(page.bytes.toString('utf8'), page.url);
-  if (!images.length) throw new Error('No image candidates found (site markup may have changed)');
-  for (const candidate of images.slice(0, 15)) {
+  let saved = cache.get(key);
+  if (!saved || saved.expires <= Date.now()) {
+    const searchUrl = 'https://www.pornpics.com/?q=' + encodeURIComponent(query);
+    const page = await fetchLimited(searchUrl, { siteOnly: true });
+    if (!/html/i.test(page.type)) throw new Error('Search did not return HTML');
+    const images = candidates(page.bytes.toString('utf8'), page.url);
+    if (!images.length) throw new Error('No image candidates found (site markup may have changed)');
+    saved = { images, searchUrl, expires: Date.now() + CACHE_MS };
+    cache.set(key, saved);
+    if (cache.size > 40) cache.delete(cache.keys().next().value);
+  }
+  // Cache search results, not the selected picture: each request gets a fresh draw.
+  // Avoid repeating the immediately previous image when alternatives exist.
+  const previous = lastImageByQuery.get(key);
+  const available = saved.images.length > 1
+    ? saved.images.filter(url => url !== previous)
+    : saved.images;
+  for (const candidate of shuffled(available).slice(0, 15)) {
     try {
       const image = await fetchLimited(candidate, { accept: 'image/avif,image/webp,image/jpeg,image/png' });
       const type = image.type.split(';')[0].trim().toLowerCase();
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(type) || image.bytes.length < 3000) continue;
-      const result = { bytes: image.bytes, type, source: image.url, searchUrl, expires: Date.now() + CACHE_MS };
-      cache.set(key, result);
-      if (cache.size > 40) cache.delete(cache.keys().next().value);
-      return result;
+      lastImageByQuery.set(key, candidate);
+      if (lastImageByQuery.size > 40) lastImageByQuery.delete(lastImageByQuery.keys().next().value);
+      return { bytes: image.bytes, type, source: image.url, searchUrl: saved.searchUrl };
     } catch (error) { console.warn('[image bridge] candidate skipped:', error.message); }
+  }
+  // If all alternatives fail, the previous image may still be downloadable.
+  if (previous && saved.images.length > 1) {
+    try {
+      const image = await fetchLimited(previous, { accept: 'image/avif,image/webp,image/jpeg,image/png' });
+      const type = image.type.split(';')[0].trim().toLowerCase();
+      if (['image/jpeg', 'image/png', 'image/webp'].includes(type) && image.bytes.length >= 3000) {
+        return { bytes: image.bytes, type, source: image.url, searchUrl: saved.searchUrl };
+      }
+    } catch (error) { console.warn('[image bridge] previous candidate skipped:', error.message); }
   }
   throw new Error('No downloadable image found');
 }
+
 function cors(res, origin) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);

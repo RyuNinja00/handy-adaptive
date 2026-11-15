@@ -85,6 +85,18 @@ Also:
 - Video and picture search links appear on the panel only, not under her message.
 - Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
+## Inline image proof of concept (experimental)
+
+The Marinara settings window now includes **🖼 Test inline image (POC)**.
+
+1. Build the Marinara extension from this branch with `node scripts/build-marinara.mjs`, then import `dist/handy-adaptive-marinara.zip` in Marinara.
+2. Approve the updated Full page access fingerprint and open a chat containing at least one message.
+3. Open Handy Adaptive's ⚙ settings and click **Test inline image (POC)**.
+4. The extension attempts to append a non-explicit placeholder image to the last recognizable message container. Check the status text below the button and the browser console/network tab if it fails.
+5. Refresh the page: **the preview is expected to disappear**. This tests only DOM insertion and image loading, not message persistence.
+
+This intentionally does **not** download or scrape third-party images, modify saved chat messages, schedule AI image requests, or affect device commands. The chat-message selector is heuristic and may need adjustment for your Marinara version. The placeholder image is served by placehold.co and requires network access.
+
 ## Updating
 
 1. Download the new `dist/handy-adaptive-marinara.zip`.

@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.12.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.12.1.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -628,11 +628,11 @@ After every **🥂 Finished** in any game (or outside one), the panel asks **How
 
 Each game keeps a short note on how it went last time. From your second game on, she calls back to it and is told to go further. Your type and taste notes (women, outfits, fantasies, dirty talk, panties, cuts, fabrics and colors) build up across every game.
 
-#### Video suggestions
+#### Video and picture suggestions
 
-When a scene would help, she can suggest a video search. A link appears under her message (in SillyTavern) and on the panel, which keeps the last three. Clicking it opens the site's own search results for her terms, for example *milf black lace lingerie POV* on Pornhub. The extension never fetches or chooses videos itself.
+When a scene would help, she can suggest a video search or a picture search. A link appears under her message (in SillyTavern) and on the panel, which keeps the last three. Clicking it opens the site's own search results for her terms, for example *milf black lace lingerie POV* on Pornhub. The extension never fetches or chooses videos itself.
 
-- **Which site:** pick Pornhub, xHamster or XVideos under *Site for video searches* in the settings. Turn it off with *Let the AI suggest video searches*.
+- **Which site:** video searches go to Pornhub, xHamster or XVideos (pick under *Site for video searches* in the settings). Picture searches (📷) go to PornPics, and the Panty game uses them to show the cut, fabric or body part she's describing. Each kind has its own on/off switch in the settings.
 - **Query filter:** before any link is made, words that point at minors (ages, "teen", "young", school, family words) or at non-consensual material (hidden cams, upskirts, drunk, sleeping, forced and the like) are removed from the query. If nothing is left, no link is made. The sites' own moderation is good but not perfect, so this is an extra layer.
 - **In Marinara**, the links appear only on the panel.
 

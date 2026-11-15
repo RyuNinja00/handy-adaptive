@@ -1,4 +1,4 @@
-// Handy Adaptive v0.12.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.12.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.12.0; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.12.1; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -909,6 +909,7 @@ const DEFAULTS = {
     arousalMeter: true,         // keep a running arousal estimate and tell the AI
     videoLinks: true,           // the AI may suggest a video search: a link to the site's own search results
     videoSite: 'pornhub',       // pornhub | xhamster | xvideos
+    picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
     gameMinEdges: 3,            // games: edges the character must take you through before she may end it
     rouletteMinutes: 3,         // porn roulette: minutes between spins
     styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
@@ -2038,6 +2039,7 @@ const VIDEO_SITES = {
     xhamster: { name: 'xHamster', url: (q) => `https://xhamster.com/search/${encodeURIComponent(q).replace(/%20/g, '+')}` },
     xvideos: { name: 'XVideos', url: (q) => `https://www.xvideos.com/?k=${encodeURIComponent(q).replace(/%20/g, '+')}` },
 };
+const PIC_SITE = { name: 'PornPics', url: (q) => `https://www.pornpics.com/?q=${encodeURIComponent(q).replace(/%20/g, '+')}` };
 const SEARCH_BLOCK = /\b(teens?|teenage\w*|tee?ny|underage\w*|minors?|young\w*|youth|little|tiny|kids?|child\w*|school\w*|students?|high ?school|barely|legal|loli\w*|shota\w*|babysitter\w*|daughter\w*|son|sister|brother|niece|nephew|incest\w*|family|virgin\w*|1[0-8]|eighteen|nineteen|years? old|hidden|spy\w*|voyeur\w*|upskirt\w*|creep\w*|leak\w*|stolen|revenge|drunk\w*|passed out|sleep\w*|asleep|unconscious|forc\w*|rap(e|ed|ing)|non ?con\w*|abus\w*|real (coworker|colleague|boss|neighbou?r)s?)\b/g;
 function cleanQuery(q) {
     const t = String(q || '').toLowerCase().replace(/[’`]/g, "'").replace(/[^\p{L}\p{N}\s'-]/gu, ' ');
@@ -2045,20 +2047,28 @@ function cleanQuery(q) {
 }
 const videos = {
     list: [],   // the latest suggestions, newest last
+    // search= → a video search; pics= → a picture search on PornPics
     make(a) {
-        if (!S().videoLinks || !a.search || a.search === true) return null;
-        const q = cleanQuery(a.search);
-        if (!q) return null;
-        const key = VIDEO_SITES[String(a.site || '').toLowerCase()] ? String(a.site).toLowerCase() : (VIDEO_SITES[S().videoSite] ? S().videoSite : 'pornhub');
-        const site = VIDEO_SITES[key], v = { q, site: site.name, url: site.url(q), at: Date.now() };
-        this.list.push(v); if (this.list.length > 5) this.list.shift();
-        return v;
+        const out = [];
+        if (S().videoLinks && a.search && a.search !== true) {
+            const q = cleanQuery(a.search);
+            const key = VIDEO_SITES[String(a.site || '').toLowerCase()] ? String(a.site).toLowerCase() : (VIDEO_SITES[S().videoSite] ? S().videoSite : 'pornhub');
+            if (q) out.push({ q, site: VIDEO_SITES[key].name, url: VIDEO_SITES[key].url(q), at: Date.now(), icon: '🔗' });
+        }
+        if (S().picLinks && a.pics && a.pics !== true) {
+            const q = cleanQuery(a.pics);
+            if (q) out.push({ q, site: PIC_SITE.name, url: PIC_SITE.url(q), at: Date.now(), icon: '📷' });
+        }
+        for (const v of out) { this.list.push(v); if (this.list.length > 5) this.list.shift(); }
+        return out;
     },
-    md(v) { return `🔗 [${v.q} (${v.site} search)](${v.url})`; },
+    md(v) { return `${v.icon} [${v.q} (${v.site} search)](${v.url})`; },
     text() {
-        if (!S().videoLinks) return '';
-        const site = VIDEO_SITES[S().videoSite]?.name || 'Pornhub';
-        return `- Video suggestions: when a scene would help, add search="SHORT SEARCH TERMS" to a tag (e.g. search="milf black lace lingerie POV"); the user gets a link to ${site}'s search results for it, so tell them what to look for. Describe adult performers only: never ages, "teen", young-sounding or family words, and nothing non-consensual (they are removed anyway).`;
+        const L = [];
+        if (S().videoLinks) L.push(`add search="SHORT SEARCH TERMS" to a tag for a video (e.g. search="milf black lace lingerie POV"): the user gets a link to ${VIDEO_SITES[S().videoSite]?.name || 'Pornhub'}'s search results`);
+        if (S().picLinks) L.push(`add pics="SHORT SEARCH TERMS" for pictures (e.g. pics="white cotton cheeky panties ass"): a link to PornPics search results, great for showing a cut, fabric or body part`);
+        if (!L.length) return '';
+        return `- Suggestions: when it would help, ${L.join('; or ')}. Tell them what to look for. Describe adult performers only: never ages, "teen", young-sounding or family words, and nothing non-consensual (they are removed anyway).`;
     },
 };
 
@@ -2575,6 +2585,7 @@ const game = {
         return [
             `PANTY GAME — ON (a fantasy between consenting adults: the women are porn performers and women you invent; never real people he knows, and never use the names of real people he mentions; stay in character):`,
             `- It is all about panties. Show him porn and describe women in panties, and put panties="CUT, FABRIC, COLOR" (e.g. panties="black lace thong", "white cotton cheeky") on your tags with scene=, watch= and the matching act. Every pair named goes in his drawer, and you learn which cuts, fabrics and colors get him.`,
+            ...(S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
             `- Appreciate every detail out loud: how the cut frames her ass, thighs and hips, how it rides up or digs in, the fabric (lace, satin, silk, cotton, sheer mesh): how it looks, clings and feels, the color, the wet spot, and why a woman picks that pair for a man.`,
             `- Make him imagine them used on him: slipped off warm, wrapped around his cock, stroking him off, soaked through. Tell him how women wish they had his cum in their panties and in their pussy.`,
             `- Sometimes take him into the office fantasy: invent women at a workplace (names, roles, little glimpses) who each picked a special pair just for him today. They are invented characters only.`,
@@ -3334,7 +3345,7 @@ function handleMessage(id) {
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
         }
-        const vids = tags.map((t) => videos.make(parseAttrs(t[1]))).filter(Boolean);
+        const vids = tags.flatMap((t) => videos.make(parseAttrs(t[1])));
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
     }
@@ -3414,6 +3425,7 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_ornaments"> Add detail: flutters at the tip, slow drags, deep pulses</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_videos_on"> Let the AI suggest video searches (links to the site's own search results)</label>
+    <label class="checkbox_label"><input type="checkbox" id="handy_pics_on"> Let the AI suggest picture searches (links to PornPics search results)</label>
     <label>Site for video searches <select id="handy_video_site" class="text_pole"><option value="pornhub">Pornhub</option><option value="xhamster">xHamster</option><option value="xvideos">XVideos</option></select></label>
     <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
     <label>Porn roulette: minutes between spins <input type="number" id="handy_roulette_min" class="text_pole" min="1" max="15"></label>
@@ -3498,7 +3510,7 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
-        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_roulette_min', 'rouletteMinutes');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_pics_on', 'picLinks', 'checked'); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_roulette_min', 'rouletteMinutes');
         bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
         $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.seen.clear(); chars.warned = false; save(); chars.current(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
@@ -3653,7 +3665,7 @@ const ui = {
         if ($('#handy_game_actions').html() !== ga) $('#handy_game_actions').html(ga);
         $('#handy_game_actions').toggle(!!ga);
         const vl = S().videoLinks ? videos.list.slice(-3).reverse() : [];
-        $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
+        $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${v.icon} ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
         $('#handy_load').toggle(!!focus.lastFinish && Date.now() - focus.lastFinish.t < 300000);
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);

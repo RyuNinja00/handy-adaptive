@@ -1175,7 +1175,7 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     const msg = vs.message('<handy act="blowjob" intensity="0.6" search="milf black lace lingerie POV"/>Put this on.'); await vs.advance(2000);
     const m0 = vs.st.chat.at(-1).mes;
     check('a search tag becomes a link to Pornhub search results in the message and on the panel', /\[milf black lace lingerie pov \(Pornhub search\)\]\(https:\/\/www\.pornhub\.com\/video\/search\?search=milf\+black\+lace\+lingerie\+pov\)/.test(m0) && vs.H.videos.list.length === 1 && !/<handy/.test(m0), m0.slice(-140));
-    check('the AI is told how to suggest searches, adults only', /Video suggestions: when a scene would help, add search=/.test(last(vs)) && /never ages, "teen"/.test(last(vs)));
+    check('the AI is told how to suggest searches, adults only', /Suggestions: when it would help, add search=/.test(last(vs)) && /pics=/.test(last(vs)) && /never ages, "teen"/.test(last(vs)));
     const bad = [['petite teen schoolgirl daddy', 'petite daddy'], ['18 year old babysitter', ''], ['hidden cam office upskirt', 'cam office'], ['drunk sleeping step sister', 'step'], ['young little daughter', ''], ['rough abuse forced', 'rough']];
     const outs = bad.map(([q]) => vs.H.cleanQuery(q));
     check('young-sounding, family and non-consent words are removed from every query', outs.every((o, i) => o === bad[i][1]), JSON.stringify(outs));
@@ -1187,7 +1187,12 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('the site can be chosen per tag or in settings', vs.H.videos.list.at(-2).url === 'https://www.xvideos.com/?k=redhead+cowgirl' && vs.H.videos.list.at(-1).url === 'https://xhamster.com/search/big+ass+thong');
     vs.st.extensionSettings.handy_adaptive.videoLinks = false;
     vs.message('<handy search="milf"/>Text.'); await vs.advance(1000);
-    check('turned off: no links and no instructions', !/🔗/.test(vs.st.chat.at(-1).mes) && !/Video suggestions/.test(last(vs)));
+    vs.message('<handy pics="white cotton cheeky panties teen ass"/>Look.'); await vs.advance(1000);
+    check('pics= becomes a filtered PornPics search link', /📷 \[white cotton cheeky panties ass \(PornPics search\)\]\(https:\/\/www\.pornpics\.com\/\?q=white\+cotton\+cheeky\+panties\+ass\)/.test(vs.st.chat.at(-1).mes), vs.st.chat.at(-1).mes.slice(-120));
+    check('turned off: no video links and no video instructions', !/🔗/.test(vs.st.chat.at(-1).mes) && !/add search=/.test(last(vs)));
+    vs.st.extensionSettings.handy_adaptive.picLinks = false;
+    vs.message('<handy pics="lace"/>Text.'); await vs.advance(1000);
+    check('pictures turned off too: nothing', !/📷/.test(vs.st.chat.at(-1).mes) && !/Suggestions:/.test(last(vs)));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

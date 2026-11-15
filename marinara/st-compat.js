@@ -270,11 +270,53 @@ const settingsWin = $(`
   <div class="handy-st-compat">
     <div id="handy-st-ai" class="handy-st-small"></div>
     <div class="menu_button" id="handy-st-hide-tags">Hide device tags in chat</div>
+    <div class="menu_button" id="handy-st-test-image" role="button" tabindex="0">🖼 Test inline image (POC)</div>
+    <div id="handy-st-image-status" class="handy-st-small" aria-live="polite"></div>
   </div>
   <div id="extensions_settings2"></div>
 </div>`).appendTo(document.body);
 settingsWin.find('.handy-st-close').on('click', () => settingsWin.prop('hidden', true));
 settingsWin.find('#handy-st-hide-tags').on('click', () => ensureHideRegex({ quiet: false }));
+
+ // Image POC: browser-only preview. Does not mutate persisted messages or device state.
+const TEST_IMAGE_URL = 'https://placehold.co/640x360/png?text=Handy+Adaptive+Image+Test';
+function testInlineImage() {
+    const status = settingsWin.find('#handy-st-image-status');
+    const candidates = [
+        '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
+        '.chat-message', '.message', '[role="article"]',
+    ];
+    let target = null;
+    for (const selector of candidates) {
+        const matches = [...document.querySelectorAll(selector)].filter((el) =>
+            !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
+            el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
+        if (matches.length) { target = matches[matches.length - 1]; break; }
+    }
+    if (!target) {
+        status.text('No recognizable chat message found. Open a conversation with at least one message, then retry.');
+        compatToast('Image POC: no chat message container found', 'warning');
+        return;
+    }
+    document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove());
+    const preview = document.createElement('figure');
+    preview.dataset.handyImagePoc = 'true';
+    preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
+    const img = document.createElement('img');
+    img.src = TEST_IMAGE_URL;
+    img.alt = 'Handy Adaptive test image';
+    img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
+    img.onload = () => { status.text('Image loaded in chat DOM. Refresh to confirm this preview is temporary.'); };
+    img.onerror = () => { status.text('Image request failed: check browser network/CSP restrictions.'); };
+    const caption = document.createElement('figcaption');
+    caption.textContent = 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
+    caption.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
+    preview.append(img, caption);
+    target.append(preview);
+    status.text('Preview inserted. Waiting for image to load…');
+}
+settingsWin.find('#handy-st-test-image').on('click', testInlineImage);
+
 function refreshCompatStatus() {
     const s = extensionSettings[MODULE];
     $('#handy-st-ai').text(!s.enabled || s.injectProfile === false || !promptText ? 'AI instructions: off'
@@ -313,6 +355,7 @@ marinara.onCleanup(async () => {
         await ensureLorebook();
         await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
     } catch { /* best effort */ }
+    $('[data-handy-image-poc]').remove();
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;

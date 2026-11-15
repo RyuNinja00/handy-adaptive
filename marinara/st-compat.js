@@ -216,6 +216,7 @@ async function afterReply(res, chatId, before) {
         const old = handled.has(m.id) ? handled.get(m.id) : before.get(m.id);
         if (old === m.content) continue;
         handled.set(m.id, m.content);
+        scheduleImagePreview(m.id, m.content);
         const text = old && m.content.startsWith(old) ? m.content.slice(old.length) : m.content;   // Continue: only the new part
         const ch = scene.characters.find((c) => c.id === m.characterId);
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
@@ -232,7 +233,7 @@ async function hookedFetch(input, init) {
     if (!chatId || body.impersonate || body.turnGameBots) return nativeFetch.apply(window, arguments);
     let before = new Map();
     try {
-        if (chatId !== scene.chatId) { await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
+        if (chatId !== scene.chatId) { imagePreviewSeen.clear(); lastImagePreviewAt = 0; document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove()); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
         if (typeof body.userMessage === 'string' && body.userMessage.trim()) {
             const idx = mirror({ name: scene.name1, is_user: true, is_system: false, mes: body.userMessage, send_date: Date.now(), extra: {} });
             eventSource.emit(eventTypes.MESSAGE_SENT, idx);
@@ -270,11 +271,88 @@ const settingsWin = $(`
   <div class="handy-st-compat">
     <div id="handy-st-ai" class="handy-st-small"></div>
     <div class="menu_button" id="handy-st-hide-tags">Hide device tags in chat</div>
+    <div class="menu_button" id="handy-st-test-image" role="button" tabindex="0">🖼 Test inline image (POC)</div>
+    <label class="handy-st-small"><input type="checkbox" id="handy-st-auto-images"> Show image previews for AI picture requests (including games)</label>
+    <div id="handy-st-image-status" class="handy-st-small" aria-live="polite"></div>
   </div>
   <div id="extensions_settings2"></div>
 </div>`).appendTo(document.body);
 settingsWin.find('.handy-st-close').on('click', () => settingsWin.prop('hidden', true));
 settingsWin.find('#handy-st-hide-tags').on('click', () => ensureHideRegex({ quiet: false }));
+
+ // Image POC: browser-only preview. Does not mutate persisted messages or device state.
+const TEST_IMAGE_URL = 'https://placehold.co/640x360/png?text=Handy+Adaptive+Image+Test';
+const imagePreviewSeen = new Set();
+let lastImagePreviewAt = 0;
+const IMAGE_PREVIEW_COOLDOWN = 45000;
+const pictureQuery = (content) => {
+    for (const match of String(content).matchAll(/<handy\b([^>]*?)\/?>(?:\s*<\/handy>)?/gi)) {
+        const attrs = Object.fromEntries([...match[1].matchAll(/(\w+)\s*=\s*["']([^"']*)["']/g)].map((m) => [m[1].toLowerCase(), m[2]]));
+        if (attrs.pics) {
+            const cleaned = attrs.pics.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+            if (cleaned && !/\b(teen|underage|minor|child|kid|schoolgirl)\b/i.test(cleaned)) return cleaned;
+        }
+    }
+    return null;
+};
+
+function testInlineImage(query = null) {
+    const status = settingsWin.find('#handy-st-image-status');
+    const candidates = [
+        '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
+        '.chat-message', '.message', '[role="article"]',
+    ];
+    let target = null;
+    for (const selector of candidates) {
+        const matches = [...document.querySelectorAll(selector)].filter((el) =>
+            !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
+            el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
+        if (matches.length) { target = matches[matches.length - 1]; break; }
+    }
+    if (!target) {
+        status.text('No recognizable chat message found. Open a conversation with at least one message, then retry.');
+        compatToast('Image POC: no chat message container found', 'warning');
+        return;
+    }
+    if (!query) document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove());
+    const preview = document.createElement('figure');
+    preview.dataset.handyImagePoc = 'true';
+    preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
+    const img = document.createElement('img');
+    img.src = TEST_IMAGE_URL;
+    img.alt = 'Handy Adaptive test image';
+    img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
+    img.onload = () => { status.text('Image loaded in chat DOM. Refresh to confirm this preview is temporary.'); };
+    img.onerror = () => { status.text('Image request failed: check browser network/CSP restrictions.'); };
+    const caption = document.createElement('figcaption');
+    caption.textContent = query ? `Picture request: ${query} (placeholder preview; not a matching image)` : 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
+    if (query) {
+        const link = document.createElement('a');
+        link.href = `https://www.pornpics.com/?q=${encodeURIComponent(query)}`;
+        link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.textContent = 'Open matching picture search';
+        caption.append(' · ', link);
+    }
+    caption.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
+    preview.append(img, caption);
+    target.append(preview);
+    status.text('Preview inserted. Waiting for image to load…');
+}
+settingsWin.find('#handy-st-test-image').on('click', () => testInlineImage());
+settingsWin.find('#handy-st-auto-images').prop('checked', !!extensionSettings[MODULE].imagePreviewPoc).on('change', function () {
+    extensionSettings[MODULE].imagePreviewPoc = this.checked;
+    saveSettingsDebounced();
+});
+function scheduleImagePreview(messageId, content) {
+    if (!extensionSettings[MODULE].imagePreviewPoc || !extensionSettings[MODULE].picLinks) return;
+    const query = pictureQuery(content);
+    if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
+    imagePreviewSeen.add(messageId);
+    lastImagePreviewAt = Date.now();
+    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) testInlineImage(query); }, 700);
+}
+
+
 function refreshCompatStatus() {
     const s = extensionSettings[MODULE];
     $('#handy-st-ai').text(!s.enabled || s.injectProfile === false || !promptText ? 'AI instructions: off'
@@ -313,6 +391,7 @@ marinara.onCleanup(async () => {
         await ensureLorebook();
         await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
     } catch { /* best effort */ }
+    $('[data-handy-image-poc]').remove();
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;

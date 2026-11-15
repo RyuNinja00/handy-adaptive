@@ -22,6 +22,7 @@ const MODULE = 'handy_adaptive';
 const LORE_NAME = 'Handy Adaptive (managed)';
 const LORE_ENTRY = 'Device control instructions';
 const REGEX_NAME = 'Handy Adaptive: hide device tags';
+const PICS_REGEX_NAME = 'Handy Adaptive: hide picture request tags';
 const LIB_KEY = 'handy-adaptive-library';
 const nativeFetch = window.fetch;
 
@@ -176,15 +177,22 @@ function schedulePromptSync() { clearTimeout(syncTimer); syncTimer = setTimeout(
 
 async function ensureHideRegex({ quiet = true } = {}) {
     try {
-        if (asList(await mapi('GET', '/regex-scripts')).some((r) => r.name === REGEX_NAME)) return true;
-        await mapi('POST', '/regex-scripts', {
-            name: REGEX_NAME, enabled: true, findRegex: '</?handy\\b[^>]*>', replaceString: '',
-            placement: ['ai_output'], flags: 'gi', applyMode: 'display',
-        });
-        if (!quiet) compatToast('Device tags are now hidden in the chat', 'success');
+        const existing = asList(await mapi('GET', '/regex-scripts'));
+        const rules = [
+            { name: REGEX_NAME, findRegex: '</?handy\\\\b[^>]*>' },
+            { name: PICS_REGEX_NAME, findRegex: '<pics\\\\s*=\\\\s*(?:"[^"]*"|\\'[^\\']*\\')\\\\s*\\\\/?\\\\s*>' },
+        ];
+        for (const rule of rules) {
+            if (existing.some((r) => r.name === rule.name)) continue;
+            await mapi('POST', '/regex-scripts', {
+                ...rule, enabled: true, replaceString: '',
+                placement: ['ai_output'], flags: 'gi', applyMode: 'display',
+            });
+        }
+        if (!quiet) compatToast('Device and picture request tags are hidden in chat', 'success');
         return true;
     } catch (e) {
-        if (!quiet) compatToast(`Couldn't add the hide-tags rule: ${e.message}`, 'error');
+        if (!quiet) compatToast(`Couldn't add the hide-tags rules: ${e.message}`, 'error');
         return false;
     }
 }

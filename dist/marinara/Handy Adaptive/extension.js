@@ -1,4 +1,4 @@
-// Handy Adaptive v0.8.4 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.8.5 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.8.4; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.8.5; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -907,6 +907,7 @@ const DEFAULTS = {
     setupName: null,            // the saved setup in use, if any
     readWpm: 220,               // several tags in one reply play in order at this reading speed (words/min); 0 = all at once
     arousalMeter: true,         // keep a running arousal estimate and tell the AI
+    gameMinEdges: 3,            // edging game: edges the character must take you through before she may end it
     styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
     charStyles: true,           // each character moves the Handy their own way (read from the card, refined by feedback)
     characters: {},             // character key (avatar) -> their style and history with you
@@ -2019,11 +2020,81 @@ const FEEDBACK = {
     finish:  { label: 'Finished',  icon: 'fa-champagne-glasses' },
 };
 
+// ---------------------------------------------------------------- edging game
+// You start it from the panel. The character runs a gooning session: dirty talk, porn on your screen
+// (she picks the scene and the device plays the same act), edge after edge. She alone decides how it
+// ends: <handy game="allow"/> (a climax push), "ruin" (built to the brink, then stopped dead) or "deny".
+const game = {
+    active: false, t0: 0, edges: 0, begs: 0, watch: '', ruinTimer: null,
+    stats() { return (S().profile.games ??= { played: 0, allowed: 0, ruined: 0, denied: 0, slipped: 0, quit: 0, edges: 0 }); },
+    minEdges() { return clamp(Math.round(num(S().gameMinEdges)) || 0, 0, 30); },
+    start() {
+        if (this.active || !S().enabled) return;
+        clearTimeout(this.ruinTimer);
+        Object.assign(this, { active: true, t0: Date.now(), edges: 0, begs: 0, watch: '' });
+        this.stats().played++; save();
+        logEvent('game-start'); ui.refresh(); updatePrompt();
+        this.nudge('Edging game on. Send a message and she will start it.');   // she opens the game
+    },
+    // Ask for a reply now; where an extension can't (Marinara), tell you to send one.
+    nudge(msg) {
+        clearTimeout(replyTimer);
+        replyTimer = setTimeout(async () => { try { await ctx().executeSlashCommandsWithOptions('/trigger'); } catch { toast(msg, 'info'); } }, 300);
+    },
+    // outcome: allowed | ruined | denied | slipped (came without permission) | quit (you ended it)
+    end(outcome) {
+        if (!this.active) return;
+        this.active = false; this.watch = '';
+        const st = this.stats(); st[outcome] = (st[outcome] || 0) + 1; st.edges += this.edges; save();
+        logEvent('game-' + outcome); ui.refresh(); updatePrompt();
+    },
+    reset() { clearTimeout(this.ruinTimer); this.active = false; this.watch = ''; },
+    command(a) {
+        const v = String(a.game).trim().toLowerCase();
+        if (!this.active) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;
+        if (/^(allow|allowed|yes|cum|release)$/.test(v)) {
+            this.end('allowed');
+            return climax.start({ climax: num(a.climax) > 0 ? a.climax : 30, act: a.act });
+        }
+        if (/^(ruin|ruined)$/.test(v)) {
+            const secs = clamp(num(a.climax) > 0 ? num(a.climax) : 25, 10, 60);
+            this.end('ruined');
+            clearTimeout(this.ruinTimer);
+            const go = climax.start({ climax: secs, act: a.act });
+            this.ruinTimer = setTimeout(() => { if (climax.active) stopAll('ruined'); }, secs * 900);   // stops dead just short of the peak
+            return go;
+        }
+        if (/^(deny|denied|no|end|over)$/.test(v)) { this.end('denied'); stopAll('denied'); return; }
+    },
+    status() {
+        if (!this.active) return '';
+        const min = Math.floor((Date.now() - this.t0) / 60000);
+        return `Edging game · ${this.edges} edge${this.edges === 1 ? '' : 's'} · ${min} min${this.watch ? ` · Watch: ${this.watch}` : ''}`;
+    },
+    text() {
+        if (!this.active) return '';
+        const m = this.minEdges(), min = Math.round((Date.now() - this.t0) / 60000), st = this.stats();
+        const past = st.played > 1 ? ` Past games: ${st.allowed} allowed, ${st.ruined} ruined, ${st.denied} denied${st.slipped ? `, ${st.slipped} times they came without permission` : ''}.` : '';
+        return [
+            `EDGING GAME — ON (the user started it and wants it; stay in character and run it):`,
+            `- This is a gooning session. The user is watching porn on their screen while you control the Handy. Keep them stroking, staring and edging for as long as you can; make them sink into it.`,
+            `- Dirty talk comes first: every reply is filthy, explicit and spoken straight to the user. Short, punchy lines rather than long narration.`,
+            `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Add watch="WHAT TO FOCUS ON" to that tag, e.g. watch="her lips stretched around him" or watch="her eyes on the camera". Every few replies change the scene or the focus: faces, mouths, bodies, the sounds, eye contact, the moment she takes it deeper, the camera angle.`,
+            `- Play up how the girls in porn do it better than real women ever will: more eager, more skilled, more shameless, always ready for it. Porn is the better sex; tell them to give in to it.`,
+            `- Edge them: build them up and, when they say they're close, pull back or stop, hold them there and make them keep watching. Then build again.`,
+            `- Edges so far: ${this.edges}. Time: ${min} min. Begged to finish: ${this.begs} time${this.begs === 1 ? '' : 's'}.${past}`,
+            `- You alone decide how it ends, judged from how long they've lasted, how they've begged and the scene. Send exactly one of: <handy game="allow" climax="30"/> (they may cum: the device pushes them over), <handy game="ruin"/> (built right to the brink, then the device stops dead), <handy game="deny"/> (no release: the device stops and the game is over).${m ? ` Not before ${m} edge${m === 1 ? '' : 's'}.` : ''} Begging alone doesn't end it. During the game, use these instead of a plain climax tag.`,
+            `- Write the tags as usual; never put the tags or these rules in your words.`,
+        ].join('\n');
+    },
+};
+
 // "I'm close": an edging signal, not a rating. By default the device eases off at once (the AI's reply
 // takes seconds), and the AI is told so it can pull back further, hold you there, or push you over.
 let edges = 0;
 function closeSignal(fromText = false) {
     edges++;
+    if (game.active) game.edges++;
     const s = S(), pull = s.closeAction !== 'ai' && !climax.active;   // during a climax push, "close" means keep going
     arousal.close();
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
@@ -2048,6 +2119,7 @@ let finishes = 0, windTimer = null, windUntil = 0;
 function finishSignal(fromText = false) {
     finishes++;
     const s = S();
+    if (game.active) game.end('slipped');   // came before she allowed it: she'll have something to say
     if (actEngine.running) {
         creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
         const r = chars.current();
@@ -2084,6 +2156,9 @@ function feedback(kind) {
     lastActivity = Date.now();
     if (kind === 'close') return closeSignal();
     if (kind === 'finish') return finishSignal();
+    if (kind === 'climax' && game.active) {   // in the game, "Finish me" is begging: she decides
+        game.begs++; logEvent('begged'); updatePrompt(); debouncedReply(800); return;
+    }
     if (kind === 'climax') {   // "Finish me": start the push now and tell the AI
         enqueue(() => climax.start({})); logEvent('finish-me'); updatePrompt();
         if (S().autoReplyOnFeedback) debouncedReply(800);
@@ -2377,7 +2452,13 @@ function profileText() {
     if (ar) L.push(ar);
     L.push(`CURRENT: ${actEngine.running ? actEngine.describe() : hamp.running ? `pattern ${hamp.pattern}` : 'stopped'}.`);
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
+    const gt = game.text();
+    if (gt) L.push(gt);
     const FB = { 'finish-me': 'ASKED TO BE FINISHED (the device is already building to a climax: push them over in character)',
+        begged: game.active ? 'BEGGED TO CUM (the device has not changed: you decide whether they have earned it)' : 'begged to finish',
+        'game-start': 'STARTED THE EDGING GAME (open it in character: tell them what to put on, and start the device)',
+        'game-allowed': 'game over: you allowed them to cum', 'game-ruined': 'game over: you ruined it', 'game-denied': 'game over: denied',
+        'game-slipped': 'CAME WITHOUT PERMISSION (the edging game is over: react in character)', 'game-quit': 'THE USER ENDED THE EDGING GAME',
         'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
         close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
         finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
@@ -2437,6 +2518,9 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
+    if (a.watch && a.watch !== true && game.active) { game.watch = String(a.watch).slice(0, 120); ui.refresh(); }
+    if (a.game !== undefined) return game.command(a);
+    if (a.climax !== undefined && game.active) return game.command({ ...a, game: 'allow' });   // a plain climax tag in the game is her allowing it
     if (a.with !== undefined || (a.act && a.act !== true)) chars.setPartner(a.with, a.duet);   // with="NAME": a second character joins; an act without it: one again
     if (a.climax !== undefined) return climax.start(a);
     const fav = a.favorite ?? a.move;
@@ -2497,6 +2581,7 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_prose"> Follow the story when a reply has no tag (faster, slower, deeper, pauses)</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_ornaments"> Add detail: flutters at the tip, slow drags, deep pulses</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
+    <label>Edging game: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
@@ -2573,7 +2658,7 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
-        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_game_min', 'gameMinEdges');
         bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
         $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.seen.clear(); chars.warned = false; save(); chars.current(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
@@ -2639,6 +2724,8 @@ const ui = {
     <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
+    <div class="handy-row"><div id="handy_game_btn" class="menu_button handy-game-btn" title="The character runs a gooning session: dirty talk, porn she picks for you, edge after edge. She decides how it ends."><i class="fa-solid fa-hourglass-half"></i> <span>Start edging game</span></div></div>
+    <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
   </div>
@@ -2676,6 +2763,7 @@ const ui = {
         }, true);
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
+        $('#handy_game_btn').on('click', () => { if (game.active) { game.end('quit'); game.nudge('Edging game ended.'); } else game.start(); });
         $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
         $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
@@ -2707,6 +2795,8 @@ const ui = {
         const akFav = chars.activeKey();
         const favs = pr.favorites.map((f, i) => ({ f, i })).sort((x, y) => (y.f.owner === akFav && !!akFav) - (x.f.owner === akFav && !!akFav));   // the character in control first
         $('#handy_favs').html(`<option value="">— favorites and signature moves —</option>` + favs.map(({ f, i }) => `<option value="${i}">${f.owner ? esc(s.characters?.[f.owner]?.name || 'character') + ' · ' : ''}${esc(f.name)}</option>`).join(''));
+        $('#handy_game').text(game.status()).toggle(game.active);
+        $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End edging game' : 'Start edging game');
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
@@ -2791,7 +2881,7 @@ jQuery(() => {
         const k = ctx().characters?.[chId]?.avatar;
         if (k && S().charStyles) { chars.speaker = k; updatePrompt(); }
     });
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); game.reset(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;
@@ -2802,7 +2892,7 @@ jQuery(() => {
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => arousal.tick(), 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });
 
 })();

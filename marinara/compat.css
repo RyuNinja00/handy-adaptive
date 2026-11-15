@@ -74,6 +74,7 @@
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-thumbs-down::before { content: "👎"; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-fire::before { content: "🔥"; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-bolt::before { content: "⚡"; }
+:is(#handy_panel, #handy_calib, #handy-st-settings) .fa-hourglass-half::before { content: "⏳"; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-champagne-glasses::before { content: "🥂"; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-hand::before { content: "✋"; }
 :is(#handy_panel, #handy_calib, #handy-st-settings) .fa-play::before { content: "▶"; }

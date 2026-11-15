@@ -867,5 +867,40 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('"Finished" set to "Stop at once" stops at once', !h3.H.active());
 }
 
+// edging game: she runs it, edges and begging are counted, and only her tag ends it
+{
+    const last = (h) => h.st.prompts.filter(Boolean).pop() || '';
+    const h = await boot({ seed: 260, settings: { gameMinEdges: 2 } });
+    const G = h.H.game, r0 = h.st.replies;
+    G.start(); await h.advance(1000);
+    check('starting the game asks her to open it and tells her the rules', G.active && h.st.replies === r0 + 1 && /EDGING GAME — ON/.test(last(h)) && /STARTED THE EDGING GAME/.test(last(h)) && /Not before 2 edges/.test(last(h)));
+    h.message('<handy act="blowjob" intensity="0.6" watch="her lips stretched around him"/>'); await h.advance(5000);
+    check('she picks the act and the focus', h.H.actEngine.intent.act === 'blowjob' && G.watch === 'her lips stretched around him' && /Watch: her lips/.test(G.status()));
+    h.H.feedback('close'); await h.advance(2000); h.H.feedback('close'); await h.advance(2000);
+    h.H.feedback('climax'); await h.advance(2000);
+    check('edges are counted; "Finish me" is begging and does not start a push', G.edges === 2 && G.begs === 1 && !h.H.climax.active && /Edges so far: 2/.test(last(h)) && /BEGGED TO CUM/.test(last(h)));
+    h.message('<handy game="allow" climax="20"/>'); await h.advance(3000);
+    check('game="allow" ends the game and pushes them over', !G.active && h.H.climax.active && G.stats().allowed === 1 && G.stats().edges === 2);
+
+    const h2 = await boot({ seed: 261 });
+    h2.H.game.start(); h2.message('<handy act="handjob" intensity="0.7"/>'); await h2.advance(5000);
+    h2.message('<handy game="deny"/>'); await h2.advance(2000);
+    check('game="deny" stops the device and ends the game', !h2.H.game.active && !h2.H.active() && h2.H.game.stats().denied === 1);
+
+    const h3 = await boot({ seed: 262 });
+    h3.H.game.start(); h3.message('<handy act="handjob" intensity="0.7"/>'); await h3.advance(5000);
+    h3.message('<handy game="ruin" climax="20"/>'); await h3.advance(10000);
+    const building = h3.H.climax.active; await h3.advance(10000);
+    check('game="ruin" builds, then stops dead just short of the peak', building && !h3.H.active() && h3.H.game.stats().ruined === 1);
+
+    const h4 = await boot({ seed: 263 });
+    h4.H.game.start(); h4.message('<handy act="handjob" intensity="0.7"/>'); await h4.advance(5000);
+    h4.H.feedback('finish'); await h4.advance(1000);
+    check('finishing without permission ends the game and she is told', !h4.H.game.active && h4.H.game.stats().slipped === 1 && /CAME WITHOUT PERMISSION/.test(last(h4)));
+    const h5 = await boot({ seed: 264 });
+    h5.message('<handy game="allow"/>'); await h5.advance(2000);
+    check('a game tag outside a game does nothing', !h5.H.climax.active && !h5.H.active() && !/EDGING GAME/.test(last(h5)));
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');
 process.exit(failed ? 1 : 0);

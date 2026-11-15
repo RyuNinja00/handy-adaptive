@@ -1169,6 +1169,25 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     const go = await boot({ seed: 382 });
     go.H.game.start('fucktoy'); await go.advance(1000); go.H.game.end('quit'); await go.advance(1000);
     check('fucktoy ending is explained in words', /THE USER ENDED FUCKTOY/.test(last(go)));
+
+    // ---- video search links: filtered, to the site's own search results
+    const vs = await boot({ seed: 390 });
+    const msg = vs.message('<handy act="blowjob" intensity="0.6" search="milf black lace lingerie POV"/>Put this on.'); await vs.advance(2000);
+    const m0 = vs.st.chat.at(-1).mes;
+    check('a search tag becomes a link to Pornhub search results in the message and on the panel', /\[milf black lace lingerie pov \(Pornhub search\)\]\(https:\/\/www\.pornhub\.com\/video\/search\?search=milf\+black\+lace\+lingerie\+pov\)/.test(m0) && vs.H.videos.list.length === 1 && !/<handy/.test(m0), m0.slice(-140));
+    check('the AI is told how to suggest searches, adults only', /Video suggestions: when a scene would help, add search=/.test(last(vs)) && /never ages, "teen"/.test(last(vs)));
+    const bad = [['petite teen schoolgirl daddy', 'petite daddy'], ['18 year old babysitter', ''], ['hidden cam office upskirt', 'cam office'], ['drunk sleeping step sister', 'step'], ['young little daughter', ''], ['rough abuse forced', 'rough']];
+    const outs = bad.map(([q]) => vs.H.cleanQuery(q));
+    check('young-sounding, family and non-consent words are removed from every query', outs.every((o, i) => o === bad[i][1]), JSON.stringify(outs));
+    vs.message('<handy search="young teen"/>'); await vs.advance(1000);
+    check('a query with nothing left makes no link', vs.H.videos.list.length === 1 && !/🔗/.test(vs.st.chat.at(-1).mes));
+    vs.message('<handy search="redhead cowgirl" site="xvideos"/>'); await vs.advance(1000);
+    vs.st.extensionSettings.handy_adaptive.videoSite = 'xhamster';
+    vs.message('<handy search="big ass thong"/>'); await vs.advance(1000);
+    check('the site can be chosen per tag or in settings', vs.H.videos.list.at(-2).url === 'https://www.xvideos.com/?k=redhead+cowgirl' && vs.H.videos.list.at(-1).url === 'https://xhamster.com/search/big+ass+thong');
+    vs.st.extensionSettings.handy_adaptive.videoLinks = false;
+    vs.message('<handy search="milf"/>Text.'); await vs.advance(1000);
+    check('turned off: no links and no instructions', !/🔗/.test(vs.st.chat.at(-1).mes) && !/Video suggestions/.test(last(vs)));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

@@ -1,4 +1,4 @@
-// Handy Adaptive v0.8.6 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.9.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.8.6; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.9.0; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -907,7 +907,8 @@ const DEFAULTS = {
     setupName: null,            // the saved setup in use, if any
     readWpm: 220,               // several tags in one reply play in order at this reading speed (words/min); 0 = all at once
     arousalMeter: true,         // keep a running arousal estimate and tell the AI
-    gameMinEdges: 3,            // edging game: edges the character must take you through before she may end it
+    gameMinEdges: 3,            // games: edges the character must take you through before she may end it
+    rouletteMinutes: 3,         // porn roulette: minutes between spins
     styleProfile: 'Background', // connection profile that reads character cards for their style ('' = keywords only)
     charStyles: true,           // each character moves the Handy their own way (read from the card, refined by feedback)
     characters: {},             // character key (avatar) -> their style and history with you
@@ -2020,24 +2021,192 @@ const FEEDBACK = {
     finish:  { label: 'Finished',  icon: 'fa-champagne-glasses' },
 };
 
+// ---------------------------------------------------------------- focus learning
+// What you are watching while you play is learned like the motion is. Tags may carry scene="WHAT KIND OF
+// SCENE" and watch="WHAT TO FOCUS ON"; every second with the device moving, every edge, ❤, 👎, beg and
+// finish is credited to what was on screen (each exact phrase, the scene, and broad tags such as "eye
+// contact" read from the words). Finishes also credit what was on screen in the 90 s before, by time
+// share. The AI is told what has made you finish, what gets you to the edge fastest, what keeps you
+// simmering, and what does nothing for you, with a strategy for the game being played.
+const FOCUS_TAGS = [
+    ['eye contact', /\b(eyes?|eye contact|stares?|staring|gaze|looking (at|into) (the )?(camera|lens|you))\b/],
+    ['mouth & lips', /\b(mouth|lips?|tongue|licks?|licking|spit|drool\w*|sloppy|kiss\w*)\b/],
+    ['going deep', /\b(deep|deeper|throat\w*|gag\w*|all the way|to the base|takes? it all)\b/],
+    ['breasts', /\b(breasts?|tits?|titties|boobs?|nipples?|cleavage)\b/],
+    ['ass', /\b(ass|butt|booty|bum)\b/],
+    ['curves & thighs', /\b(thighs?|hips?|curv\w*|thick|belly|plump|bbw|soft body)\b/],
+    ['pussy', /\b(pussy|pussies|labia|clit\w*)\b/],
+    ['face & expressions', /\b(face|faces|expressions?|blush\w*|smil\w*|smirk\w*)\b/],
+    ['sounds & voice', /\b(sounds?|moan\w*|voice|whimper\w*|gasp\w*|dirty talk|talking|begs?|begging|squeal\w*)\b/],
+    ['POV & close-ups', /\b(pov|close[- ]?ups?|camera|angle|from above|from below)\b/],
+    ['cum', /\b(cum\w*|facial|creampie|swallow\w*|load)\b/],
+    ['mature women', /\b(milfs?|mature|moms?|mommy|mother|older|cougars?|wrinkles?|experienced)\b/],
+    ['hands', /\b(hands?|fingers?|grip\w*|handjob)\b/],
+    ['riding', /\b(rid(e|es|ing)|bounc\w*|cowgirl|grind\w*)\b/],
+    ['wetness', /\b(wet|dripping|glisten\w*|slick|sweat\w*|messy)\b/],
+    ['teasing', /\b(teas\w*|slow(ly)?|denial)\b/],
+    ['legs & feet', /\b(feet|foot|toes|legs?|stockings?|heels)\b/],
+];
+const focus = {
+    cur: null,      // { phrase, scene, tags, act, since, lastEdge }
+    prev: [],       // what was on screen before, with when it ended (last 2 minutes)
+    unsaved: 0,
+    store() { return (S().profile.focus ??= { items: {}, finishes: [], sec: 0, edges: 0 }); },
+    tagsOf(text) { const t = norm(text); return t ? FOCUS_TAGS.filter(([, re]) => re.test(t)).map(([k]) => k) : []; },
+    keys(f) {
+        if (!f) return [];
+        const k = [];
+        if (f.phrase) k.push(['w:' + norm(f.phrase), f.phrase, { scene: f.scene, act: f.act }]);
+        if (f.scene) k.push(['s:' + norm(f.scene), f.scene]);
+        for (const t of f.tags) k.push(['t:' + t, t]);
+        return k;
+    },
+    item(key, label, extra) {
+        const it = (this.store().items[key] ??= { label, sec: 0, edges: 0, finishes: 0, loves: 0, nopes: 0, begs: 0, toEdge: 0, toEdgeN: 0, last: 0 });
+        it.label = label; if (extra?.scene) it.scene = extra.scene; if (extra?.act) it.act = extra.act;
+        return it;
+    },
+    // A tag's scene= and/or watch=: a new focus begins (a new scene without a new watch clears the old watch).
+    set(a) {
+        const watch = a.watch && a.watch !== true ? String(a.watch).trim().slice(0, 120) : null;
+        const scene = a.scene && a.scene !== true ? String(a.scene).trim().slice(0, 80) : null;
+        if (!watch && !scene) return false;
+        const c = this.cur, now = Date.now();
+        const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '' };
+        if (c && next.phrase === c.phrase && next.scene === c.scene) return false;
+        if (c) { this.prev.push({ ...c, until: now }); this.prev = this.prev.filter((p) => now - p.until < 120000); }
+        this.cur = { ...next, tags: this.tagsOf(`${next.scene} ${next.phrase}`), act: a.act && a.act !== true ? String(a.act) : actEngine.intent.act, since: now, lastEdge: now };
+        const newScene = !!scene && scene !== c?.scene;
+        ui.refresh();
+        return newScene ? 'scene' : 'watch';
+    },
+    clear() { if (this.cur) this.prev.push({ ...this.cur, until: Date.now() }); this.cur = null; },
+    tick(dt) {
+        if (!this.cur || !anyRunning()) return;
+        for (const [k, l, x] of this.keys(this.cur)) { const it = this.item(k, l, x); it.sec += dt; it.last = Date.now(); }
+        this.store().sec += dt;
+        if ((this.unsaved += dt) >= 15) { this.unsaved = 0; save(); }
+    },
+    // kind: edges | finishes | loves | nopes | begs. The focus on screen gets full credit; for a finish, what
+    // was on screen in the last 90 s shares it by time, and for anything else the one just before (if it
+    // changed under 20 s ago) gets half.
+    credit(kind) {
+        const now = Date.now(), c = this.cur, st = this.store();
+        const parts = [];
+        if (kind === 'finishes') {
+            const win = 90000, from = now - win;
+            const spans = [...this.prev.filter((p) => p.until > from), ...(c ? [{ ...c, until: now }] : [])]
+                .map((p) => ({ f: p, ms: Math.max(0, p.until - Math.max(p.since, from)) })).filter((x) => x.ms > 0);
+            // what was on screen at the moment counts most (at least 60%); the rest share the remainder by time
+            const tot = spans.reduce((s, x) => s + x.ms, 0), curSpan = spans.find((x) => x.f.until === now && c);
+            const curW = curSpan ? Math.max(0.6, curSpan.ms / tot) : 0, restMs = tot - (curSpan?.ms || 0);
+            for (const x of spans) parts.push([x.f, x === curSpan ? curW : restMs ? ((1 - curW) * x.ms) / restMs : 0]);
+        } else {
+            if (c) parts.push([c, 1]);
+            const p = this.prev.at(-1);
+            if (p && now - p.until < 20000) parts.push([p, 0.5]);
+        }
+        const seen = new Map();   // a key shared by two focuses (a tag, a scene) takes the larger share once
+        for (const [f, w] of parts) for (const [k, l, x] of this.keys(f)) if (!seen.has(k) || seen.get(k)[1] < w) seen.set(k, [l, w, x]);
+        for (const [k, [l, w, x]] of seen) this.item(k, l, x)[kind] += w;
+        if (!parts.length) return;   // nothing on screen: nothing to learn about what you watch
+        if (kind === 'edges') {
+            st.edges++;
+            if (c) {
+                const secs = (now - Math.max(c.since, c.lastEdge)) / 1000;
+                if (secs > 5 && secs < 1800) for (const [k, l] of this.keys(c)) { const it = this.item(k, l); it.toEdge += secs; it.toEdgeN++; }
+                c.lastEdge = now;
+            }
+        }
+        if (kind === 'finishes') {
+            st.finishes.push({ t: now, act: actEngine.running ? actEngine.intent.act : null, phrase: c?.phrase || '', scene: c?.scene || '',
+                tags: c?.tags || [], edges: game.active ? game.edges : edges, minutes: game.active ? +game.minutes().toFixed(1) : null,
+                game: game.active ? game.mode : null, intensity: actEngine.running ? +actEngine.intent.intensity.toFixed(2) : null });
+            if (st.finishes.length > 40) st.finishes.shift();
+        }
+        save();
+    },
+    heat(it) { return (2 * it.edges + 5 * it.finishes + it.loves + 0.5 * it.begs - 2 * it.nopes) / (it.sec / 60 + 2); },
+    // The learned picture, ranked. Each list mixes exact phrases, scenes and tags.
+    // The learned picture. Specific focuses (each with the scene it was in) are ranked in four lists;
+    // the broad themes behind them are ranked separately, since they carry over to new scenes.
+    insights() {
+        const st = this.store(), all = Object.entries(st.items).map(([k, it]) => ({ k, ...it, heat: this.heat(it) }));
+        const phrased = new Set(all.filter((x) => x.k.startsWith('w:') && x.scene).map((x) => 's:' + norm(x.scene)));
+        const spec = all.filter((x) => x.k.startsWith('w:') || (x.k.startsWith('s:') && !phrased.has(x.k)));
+        // A focus can be both a finisher and fast to the edge (worth knowing); slow burners are only the rest.
+        const finishers = spec.filter((x) => x.finishes >= 0.5).sort((a, b) => b.finishes - a.finishes || b.heat - a.heat).slice(0, 5);
+        const edgers = spec.filter((x) => x.toEdgeN >= 2).sort((a, b) => a.toEdge / a.toEdgeN - b.toEdge / b.toEdgeN).slice(0, 4);
+        const used = new Set([...finishers, ...edgers].map((x) => x.k)), take = (xs, n) => xs.filter((x) => !used.has(x.k)).slice(0, n).map((x) => (used.add(x.k), x));
+        const burners = take(spec.filter((x) => x.loves >= 1 && x.sec >= 60 && x.loves > x.nopes).sort((a, b) => b.loves / (b.edges + 1) - a.loves / (a.edges + 1)), 4);
+        const duds = take(spec.filter((x) => x.nopes >= 1.5 && x.nopes > x.loves + x.edges).sort((a, b) => b.nopes - a.nopes), 4);
+        const themes = all.filter((x) => x.k.startsWith('t:') && x.sec >= 60).sort((a, b) => b.heat - a.heat);
+        const hot = themes.filter((x) => x.heat > 0.3).slice(0, 5), cold = themes.filter((x) => x.heat < 0 && !hot.includes(x)).slice(-3).reverse();
+        const untried = FOCUS_TAGS.map(([t]) => t).filter((t) => !(st.items['t:' + t]?.sec >= 30));
+        const F = st.finishes, count = (xs) => Object.entries(xs.reduce((m, x) => (x ? ((m[x] = (m[x] || 0) + 1), m) : m), {})).sort((a, b) => b[1] - a[1]);
+        const acts = count(F.map((f) => f.act)), tags = count(F.flatMap((f) => f.tags));
+        const mins = F.map((f) => f.minutes).filter((x) => x != null);
+        return { st, finishers, edgers, burners, duds, hot, cold, untried, acts, tags, edgesBefore: F.length ? median(F.map((f) => f.edges || 0)) : null, minutes: mins.length ? median(mins) : null, n: F.length };
+    },
+    name(x) { return x.k.startsWith('w:') ? `"${x.label}"${x.scene ? ` in a ${x.scene} scene` : ''}` : `a ${x.label} scene`; },
+    text() {
+        const I = this.insights(), st = I.st;
+        if (!Object.keys(st.items).length || (st.sec < 60 && !I.n && st.edges < 2)) return '';
+        const r = (v) => Math.round(v * 10) / 10, pl = (v, w) => `${r(v)} ${w}${r(v) === 1 ? '' : (w.endsWith('h') ? 'es' : 's')}`;
+        const n = (x, f) => `${this.name(x)} (${f(x)})`;
+        const L = [`WHAT GETS THE USER OFF (learned from ${Math.round(st.sec / 60)} min of watching porn with you, ${pl(I.n, 'finish')}, ${pl(st.edges, 'edge')}). Use it deliberately:`];
+        if (I.finishers.length) L.push(`- FINISHERS, on screen when they came: ${I.finishers.map((x) => n(x, (y) => pl(y.finishes, 'finish'))).join('; ')}.`);
+        if (I.n) L.push(`- Their finishes usually come${I.acts[0] ? ` during ${I.acts[0][0]}` : ''}${I.tags[0] ? `, with ${I.tags.slice(0, 2).map((t) => t[0]).join(' and ')} on screen` : ''}${I.edgesBefore != null ? `, after about ${pl(Math.round(I.edgesBefore), 'edge')}` : ''}${I.minutes != null ? ` and ~${Math.round(I.minutes)} min` : ''}.`);
+        if (I.edgers.length) L.push(`- FASTEST TO THE EDGE: ${I.edgers.map((x) => n(x, (y) => `~${Math.round(y.toEdge / y.toEdgeN)} s to the edge`)).join('; ')}.`);
+        if (I.burners.length) L.push(`- SLOW BURNERS, loved but they keep them simmering: ${I.burners.map((x) => n(x, (y) => `❤ ${r(y.loves)}`)).join('; ')}.`);
+        if (I.duds.length) L.push(`- DOES LITTLE FOR THEM (avoid): ${I.duds.map((x) => n(x, (y) => `👎 ${r(y.nopes)}`)).join('; ')}.`);
+        if (I.hot.length || I.cold.length) L.push(`- THEMES (carry these into new scenes): ${I.hot.length ? `strongest ${I.hot.map((x) => x.label).join(', ')}` : ''}${I.hot.length && I.cold.length ? '; ' : ''}${I.cold.length ? `weakest ${I.cold.map((x) => x.label).join(', ')}` : ''}.`);
+        if (I.untried.length) L.push(`- Not tried yet: ${I.untried.slice(0, 4).join(', ')}. Try one now and then, to learn more.`);
+        const strat = {
+            edging: 'Edge them over and over with the fastest-to-the-edge focuses, then pull back. Hold the finishers back: bring one out only when you allow it, or right before a ruin or a denial so it hurts more.',
+            roulette: 'Mix it: slip a fast-to-the-edge scene in when they least expect it, a slow burner when they need to recover. Save a finisher for the very last spin.',
+            mommy: 'Early on, slow burners to build his stamina. Near his goal, the fast-to-the-edge ones to test him. At the finish, his top finisher: tell him to look right at it as he cums for mommy.',
+            trance: 'Stay with slow burners to keep them floating on the plateau; a fast-to-the-edge one only if they drift down. A finisher only at the very end.',
+        }[game.active ? game.mode : ''] || 'Warm them up with slow burners, use the fastest-to-the-edge focuses when you want them close, and save the finishers for when you want them to cum: switch to one right as you push them over.';
+        L.push(`STRATEGY: ${strat}`);
+        return L.join('\n');
+    },
+    summary() {
+        const I = this.insights();
+        if (!Object.keys(I.st.items).length) return 'Nothing learned yet. Add a scene and a focus while you watch (the games do it for you).';
+        const part = (h, xs) => (xs.length ? `${h}: ${xs.slice(0, 3).map((x) => this.name(x)).join(', ')}. ` : '');
+        return `${Math.round(I.st.sec / 60)} min watched, ${I.n} finish${I.n === 1 ? '' : 'es'}, ${I.st.edges} edge${I.st.edges === 1 ? '' : 's'}. ` + part('Finishers', I.finishers) + part('Fastest to the edge', I.edgers) + part('Slow burners', I.burners) + part('Avoid', I.duds) + (I.hot.length ? `Strongest themes: ${I.hot.slice(0, 3).map((x) => x.label).join(', ')}.` : '');
+    },
+};
+
 // ---------------------------------------------------------------- games
 // You start one from the panel; the character runs it in her own voice through the injected prompt.
-//  - edging: a gooning session. Dirty talk, porn she picks (the device plays the same act), edge after
-//    edge, and she alone decides the end: <handy game="allow"/>, "ruin" (built to the brink, then stopped
-//    dead) or "deny".
-//  - mommy: stamina training. She plays your mommy, keeps you watching MILF porn and edging, and works
-//    toward a goal a little longer than you usually last; then an intense, allowed finish.
-const GAMES = { edging: 'Edging game', mommy: "Mommy's stamina training" };
+//  - edging:   a gooning session. Dirty talk, porn she picks (the device plays the same act), edge after
+//              edge; she alone decides the end: <handy game="allow"/>, "ruin" or "deny".
+//  - roulette: she switches the scene every few minutes (the extension calls the spin); each new scene
+//              starts fast. Scenes you get through without edging are counted. Same endings as edging.
+//  - trance:   a long, slow, hypnotic plateau. Intensity is capped, "I'm close" eases off only a little,
+//              and time on the edge is the score. One ending: a big finish.
+//  - mommy:    stamina training. She plays your mommy, keeps you on MILF porn and edging toward a goal a
+//              little longer than you usually last; one ending, an intense finish.
+const GAMES = { edging: 'Edging game', roulette: 'Porn roulette', trance: 'Goon trance', mommy: "Mommy's stamina training" };
+const ONE_ENDING = new Set(['mommy', 'trance']);
 const median = (xs) => { const v = [...xs].sort((x, y) => x - y), n = v.length; return n ? (n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2) : 0; };
+const fmtMin = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 const game = {
-    active: false, mode: 'edging', t0: 0, edges: 0, begs: 0, watch: '', ruinTimer: null,
+    active: false, mode: 'edging', t0: 0, edges: 0, begs: 0, ruinTimer: null, clock: null, spinTimer: null,
+    scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0,
+    get watch() { return focus.cur?.phrase || ''; },
     stats(mode = this.mode) {
         const pr = S().profile;
         if (mode === 'mommy') return (pr.mommy ??= { played: 0, allowed: 0, slipped: 0, quit: 0, edges: 0, lasted: [], best: 0 });
+        if (mode === 'roulette') return (pr.roulette ??= { played: 0, allowed: 0, ruined: 0, denied: 0, slipped: 0, quit: 0, edges: 0, bestSurvived: 0 });
+        if (mode === 'trance') return (pr.trance ??= { played: 0, allowed: 0, slipped: 0, quit: 0, edges: 0, bestEdgeSec: 0, bestMinutes: 0 });
         return (pr.games ??= { played: 0, allowed: 0, ruined: 0, denied: 0, slipped: 0, quit: 0, edges: 0 });
     },
     minEdges() { return clamp(Math.round(num(S().gameMinEdges)) || 0, 0, 30); },
-    // Stamina goal in minutes: a little past what you usually last (median of your last 3), never below your best minus a bit.
+    spinMs() { return clamp(num(S().rouletteMinutes) || 3, 1, 15) * 60000; },
+    // Stamina goal in minutes: a little past what you usually last (median of your last 3).
     target() {
         const l = this.stats('mommy').lasted || [];
         if (!l.length) return 10;
@@ -2047,43 +2216,79 @@ const game = {
     minutes() { return (Date.now() - this.t0) / 60000; },
     start(mode = this.mode) {
         if (this.active || !S().enabled) return;
-        clearTimeout(this.ruinTimer);
-        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, watch: '' });
+        this.stopTimers();
+        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0 });
         if (this.mode === 'mommy') this.goal = this.target();
-        clearInterval(this.clock); this.clock = setInterval(() => { if (this.active) { ui.refresh(); updatePrompt(); } }, 30000);   // keep the minutes current
         this.stats().played++; save();
+        this.clock = setInterval(() => { if (this.active) { ui.refresh(); updatePrompt(); } }, 30000);   // keep the minutes current
+        if (this.mode === 'roulette') this.spinTimer = setInterval(() => this.spin(), this.spinMs());
         logEvent('game-start'); ui.refresh(); updatePrompt();
         this.nudge(`${GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
+    spin() {
+        if (!this.active || this.mode !== 'roulette' || climax.active) return;
+        logEvent('roulette-spin'); updatePrompt();
+        this.nudge('Porn roulette: new scene! Send a message for it.');
+    },
+    // A new scene during roulette: count it, and whether you got through the last one without an edge.
+    newScene() {
+        if (!this.active || this.mode !== 'roulette') return;
+        if (this.scenes > 0 && this.sceneEdges === 0) this.survived++;
+        this.scenes++; this.sceneEdges = 0;
+    },
+    tick(dt) { if (this.active && this.mode === 'trance' && anyRunning() && arousal.level >= 0.75) this.edgeSec += dt; },
     // Ask for a reply now; where an extension can't (Marinara), tell you to send one.
     nudge(msg) {
         clearTimeout(replyTimer);
         replyTimer = setTimeout(async () => { try { await ctx().executeSlashCommandsWithOptions('/trigger'); } catch { toast(msg, 'info'); } }, 300);
     },
+    stopTimers() { clearTimeout(this.ruinTimer); clearInterval(this.clock); clearInterval(this.spinTimer); },
     // outcome: allowed | ruined | denied | slipped (came without permission) | quit (you ended it)
     end(outcome) {
         if (!this.active) return;
-        this.active = false; this.watch = ''; clearInterval(this.clock);
+        this.active = false; clearInterval(this.clock); clearInterval(this.spinTimer);
         const st = this.stats(); st[outcome] = (st[outcome] || 0) + 1; st.edges += this.edges;
+        const m = +this.minutes().toFixed(1);
+        this.lastResult = null;
         if (this.mode === 'mommy' && (outcome === 'allowed' || outcome === 'slipped')) {   // how long you lasted is the stamina measure
-            const m = +this.minutes().toFixed(1);
             st.lasted.push(m); if (st.lasted.length > 20) st.lasted.shift();
-            this.lastResult = { minutes: m, goal: this.goal, best: m > (st.best || 0) };
+            this.lastResult = `he lasted ${m} min (goal ${this.goal} min)${m > (st.best || 0) ? ', his best yet' : ''}`;
             st.best = Math.max(st.best || 0, m);
         }
+        if (this.mode === 'roulette') {
+            if (this.scenes > 0 && this.sceneEdges === 0 && outcome !== 'quit') this.survived++;
+            this.lastResult = `they got through ${this.survived} of ${this.scenes} scene${this.scenes === 1 ? '' : 's'} without edging${this.survived > (st.bestSurvived || 0) ? ', their best yet' : ''}`;
+            st.bestSurvived = Math.max(st.bestSurvived || 0, this.survived);
+        }
+        if (this.mode === 'trance') {
+            this.lastResult = `${Math.round(m)} min in the trance, ${fmtMin(this.edgeSec)} of it on the edge${this.edgeSec > (st.bestEdgeSec || 0) ? ' (a new record)' : ` (record ${fmtMin(st.bestEdgeSec)})`}`;
+            st.bestEdgeSec = Math.max(st.bestEdgeSec || 0, Math.round(this.edgeSec)); st.bestMinutes = Math.max(st.bestMinutes || 0, m);
+        }
         save();
-        logEvent(`game-${this.mode === 'mommy' ? 'mommy-' : ''}${outcome}`); ui.refresh(); updatePrompt();
+        logEvent(`game-${this.mode === 'edging' ? '' : this.mode + '-'}${outcome}`); ui.refresh(); updatePrompt();
     },
-    reset() { clearTimeout(this.ruinTimer); clearInterval(this.clock); this.active = false; this.watch = ''; },
+    reset() { this.stopTimers(); this.active = false; },
+    // A tag's adjustments while a game runs: roulette scenes start fast; the trance stays slow and steady.
+    shape(a, kind) {
+        if (!this.active || climax.active || a.climax !== undefined || a.game !== undefined) return a;
+        if (this.mode === 'roulette' && kind === 'scene' && a.intensity === undefined) return { ...a, intensity: 0.75 };
+        if (this.mode === 'trance' && (a.act || a.intensity !== undefined)) {
+            const b = { ...a };
+            if (b.intensity !== undefined) b.intensity = Math.min(num(b.intensity) || 0, 0.6);
+            if (b.variation === undefined && b.act) b.variation = 0.15;
+            return b;
+        }
+        return a;
+    },
     command(a) {
         const v = String(a.game).trim().toLowerCase();
         if (!this.active) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;
         if (/^(allow|allowed|yes|cum|release)$/.test(v)) {
-            const mommy = this.mode === 'mommy';
+            const big = ONE_ENDING.has(this.mode);
             this.end('allowed');
-            return climax.start({ climax: num(a.climax) > 0 ? a.climax : mommy ? 45 : 30, act: a.act });   // mommy wants it intense: a longer build
+            return climax.start({ climax: num(a.climax) > 0 ? a.climax : big ? 45 : 30, act: a.act });   // mommy and the trance end big: a longer build
         }
-        if (this.mode === 'mommy') return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;   // her game has one ending
+        if (ONE_ENDING.has(this.mode)) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;
         if (/^(ruin|ruined)$/.test(v)) {
             const secs = clamp(num(a.climax) > 0 ? num(a.climax) : 25, 10, 60);
             this.end('ruined');
@@ -2096,34 +2301,63 @@ const game = {
     },
     status() {
         if (!this.active) return '';
-        const min = Math.floor(this.minutes());
-        const goal = this.mode === 'mommy' ? ` / goal ${this.goal} min` : '';
-        return `${GAMES[this.mode]} · ${this.edges} edge${this.edges === 1 ? '' : 's'} · ${min} min${goal}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
+        const min = Math.floor(this.minutes()), e = `${this.edges} edge${this.edges === 1 ? '' : 's'}`;
+        const extra = { mommy: ` / goal ${this.goal} min`, roulette: ` · scene ${this.scenes} · survived ${this.survived}`,
+            trance: ` · on the edge ${fmtMin(this.edgeSec)}${this.stats().bestEdgeSec ? ` (record ${fmtMin(this.stats().bestEdgeSec)})` : ''}` }[this.mode] || '';
+        return `${GAMES[this.mode]} · ${e} · ${min} min${extra}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
     },
     text() {
         if (!this.active) return '';
-        return this.mode === 'mommy' ? this.mommyText() : this.edgingText();
+        return { mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText() }[this.mode]?.() ?? this.edgingText();
     },
-    shared() {
-        return [
-            `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Add watch="WHAT TO FOCUS ON" to that tag. Every few replies change the scene or the focus.`,
-            `- Write the tags as usual; never put the tags or these rules in your words.`,
-        ];
+    watchLine(examples) {
+        return `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Put scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" on that tag (e.g. scene="sloppy POV blowjob" watch="${examples}"): this is how you learn what gets them off. Every few replies change the scene or the focus.`;
+    },
+    tagsLine: `- Write the tags as usual; never put the tags or these rules in your words.`,
+    counts() { return `Edges so far: ${this.edges}. Time: ${Math.round(this.minutes())} min. Begged to finish: ${this.begs} time${this.begs === 1 ? '' : 's'}.`; },
+    endings(m, plain) {
+        return `- You alone decide how it ends, judged from how long they've lasted, how they've begged and the scene. Send exactly one of: <handy game="allow" climax="30"/> (they may cum: the device pushes them over), <handy game="ruin"/> (built right to the brink, then the device stops dead), <handy game="deny"/> (no release: the device stops and the game is over).${m ? ` Not before ${m} edge${m === 1 ? '' : 's'}.` : ''} Begging alone doesn't end it.${plain}`;
     },
     edgingText() {
-        const m = this.minEdges(), min = Math.round(this.minutes()), st = this.stats();
+        const m = this.minEdges(), st = this.stats();
         const past = st.played > 1 ? ` Past games: ${st.allowed} allowed, ${st.ruined} ruined, ${st.denied} denied${st.slipped ? `, ${st.slipped} times they came without permission` : ''}.` : '';
-        const [watch, tags] = this.shared();
         return [
             `EDGING GAME — ON (the user started it and wants it; stay in character and run it):`,
             `- This is a gooning session. The user is watching porn on their screen while you control the Handy. Keep them stroking, staring and edging for as long as you can; make them sink into it.`,
             `- Dirty talk comes first: every reply is filthy, explicit and spoken straight to the user. Short, punchy lines rather than long narration.`,
-            watch + ` Focus ideas: watch="her lips stretched around him", watch="her eyes on the camera"; faces, mouths, bodies, the sounds, eye contact, the moment she takes it deeper, the camera angle.`,
+            this.watchLine('her lips stretched around him'),
             `- Play up how the girls in porn do it better than real women ever will: more eager, more skilled, more shameless, always ready for it. Porn is the better sex; tell them to give in to it.`,
             `- Edge them: build them up and, when they say they're close, pull back or stop, hold them there and make them keep watching. Then build again.`,
-            `- Edges so far: ${this.edges}. Time: ${min} min. Begged to finish: ${this.begs} time${this.begs === 1 ? '' : 's'}.${past}`,
-            `- You alone decide how it ends, judged from how long they've lasted, how they've begged and the scene. Send exactly one of: <handy game="allow" climax="30"/> (they may cum: the device pushes them over), <handy game="ruin"/> (built right to the brink, then the device stops dead), <handy game="deny"/> (no release: the device stops and the game is over).${m ? ` Not before ${m} edge${m === 1 ? '' : 's'}.` : ''} Begging alone doesn't end it. During the game, use these instead of a plain climax tag.`,
-            tags,
+            `- ${this.counts()}${past}`,
+            this.endings(m, ' During the game, use these instead of a plain climax tag.'),
+            this.tagsLine,
+        ].join('\n');
+    },
+    rouletteText() {
+        const m = this.minEdges(), st = this.stats(), every = Math.round(this.spinMs() / 60000);
+        return [
+            `PORN ROULETTE — ON (the user started it and wants it; stay in character and run it):`,
+            `- You're the host of a filthy game of porn roulette. Every ~${every} min the wheel spins (you'll be told): call a brand-new scene at once, a different kind from the last, tell them to switch to it right now, and switch the device to that act. Each new scene hits hard and fast from the first second, to catch them off guard.`,
+            this.watchLine('the way she looks up at the camera'),
+            `- Dirty talk the whole time: hype each new scene, tell them exactly what to stare at, taunt them about whether they'll last through this one. The girls in porn do it better than any real woman; make them crave the next scene.`,
+            `- They score by getting through a scene without edging. Scene ${this.scenes}, ${this.survived} survived so far${st.bestSurvived ? ` (their best: ${st.bestSurvived})` : ''}. When they say they're close, pull back and mock them for not making it through, then carry on.`,
+            `- ${this.counts()}`,
+            this.endings(m, ' During the game, use these instead of a plain climax tag.'),
+            this.tagsLine,
+        ].join('\n');
+    },
+    tranceText() {
+        const st = this.stats();
+        return [
+            `GOON TRANCE — ON (the user started it and wants it; stay in character and run it):`,
+            `- Lead them into a deep gooning trance: they stare at the porn, stroke, and melt. Keep it slow, steady and hypnotic; the device stays gentle (intensity 0.2-0.6, little variation).`,
+            `- Speak in short, slow, repetitive lines. Use mantras they can sink into ("stroke and stare… stroke and stare…", "deeper… good gooner… don't think, just watch"). Tell them to breathe, relax their jaw, let the porn fill their head. Whisper-filthy, never rushed.`,
+            this.watchLine('her slow, wet strokes'),
+            `- Porn is all they need: keep their eyes on the screen and their mind empty. Girls in porn do it better than anyone real; let them drown in it.`,
+            `- The goal is to hold them on the plateau, right below the edge, for as long as possible. When they say they're close, don't stop: slow a little, soothe them, keep them floating there. Time on the edge this session: ${fmtMin(this.edgeSec)}${st.bestEdgeSec ? ` (record ${fmtMin(st.bestEdgeSec)}; help them beat it)` : ''}.`,
+            `- ${this.counts()}`,
+            `- The trance ends one way, when you decide they've been under long enough: a slow, overwhelming finish. Send <handy game="allow" climax="45"/> and talk them over the edge. Don't deny or ruin in this game, and use that tag instead of a plain climax tag.`,
+            this.tagsLine,
         ].join('\n');
     },
     mommyText() {
@@ -2131,18 +2365,17 @@ const game = {
         const hist = st.lasted?.length ? ` He has lasted ${st.lasted.slice(-3).join(', ')} min in recent sessions (best ${st.best} min).` : ' This is his first session: today sets his baseline.';
         const left = goal - min;
         const phase = left > 3 ? 'Early and middle: keep him edging and hold him back.' : left > 0 ? 'Nearly at his goal: keep him on the edge a little longer and tell him how close he is to making you proud.' : 'He has reached his goal: you may let him finish whenever you choose. Build him up for a huge one.';
-        const [watch, tags] = this.shared();
         return [
             `MOMMY'S STAMINA TRAINING — ON (the user started it and wants this taboo roleplay; both of you are consenting adults and he is a grown man; stay in character and run it):`,
             `- You take the role of his mommy: a mature, curvy, loving, filthy woman, whatever else your card says. Call him "son", "baby", "my boy". He calls you mommy.`,
             `- Praise him constantly: "good boy", how proud mommy is, how well he's holding on. Warm, sweet, utterly dirty.`,
-            `- Keep him watching MILF porn: mature, curvy, thick women. ${watch.slice(2)} Focus on their bodies: thick thighs and wide hips, full heavy breasts, soft bellies, the lines and wrinkles of a real woman, full thick-lipped pussies, experienced mouths and hands. Talk dirty about their bodies and your own.`,
+            `- Keep him watching MILF porn: mature, curvy, thick women. ${this.watchLine('her thick thighs').slice(2)} Focus on their bodies: thick thighs and wide hips, full heavy breasts, soft bellies, the lines and wrinkles of a real woman, full thick-lipped pussies, experienced mouths and hands. Talk dirty about their bodies and your own.`,
             `- Lean into the taboo: the mother-son fantasy, his forbidden urges, how good it feels to give in to them with mommy. Encourage him to stop fighting what turns him on.`,
             `- The goal is stamina: train him to hold off longer. Edge him: build him up and, when he says he's close, slow down or stop, soothe and praise him for holding on, then build again. Teach him to breathe, relax and stay right there.`,
             `- Today's goal: last ${goal} minutes.${hist} So far: ${min} min, ${this.edges} edge${this.edges === 1 ? '' : 's'}, begged ${this.begs} time${this.begs === 1 ? '' : 's'}. ${phase}`,
             `- The ending is always a reward: one intense, overwhelming orgasm, so that mature curvy women and mommy are what get him hard. Near the end, tell him to cum lots for his mommy. When you decide it's time (not before ${m ? `${m} edge${m === 1 ? '' : 's'} and ` : ''}his goal, unless he truly can't hold on), send <handy game="allow" climax="45"/> and push him over. Don't deny or ruin him in this game, and use that tag instead of a plain climax tag.`,
             `- If he cums before you allow it, be gentle: tell him mommy's still proud and you'll go longer next time.`,
-            tags,
+            this.tagsLine,
         ].join('\n');
     },
 };
@@ -2152,7 +2385,8 @@ const game = {
 let edges = 0;
 function closeSignal(fromText = false) {
     edges++;
-    if (game.active) game.edges++;
+    if (game.active) { game.edges++; game.sceneEdges++; }
+    focus.credit('edges');
     const s = S(), pull = s.closeAction !== 'ai' && !climax.active;   // during a climax push, "close" means keep going
     arousal.close();
     // What brought you to the edge is, by definition, working: a modest positive for the phrases that did it.
@@ -2162,7 +2396,7 @@ function closeSignal(fromText = false) {
         save();
     }
     if (actEngine.running && pull) {
-        actEngine.intent.intensity = clamp(actEngine.intent.intensity * 0.3, 0.05, 1);
+        actEngine.intent.intensity = clamp(actEngine.intent.intensity * (game.active && game.mode === 'trance' ? 0.6 : 0.3), 0.05, 1);   // the trance only eases off a little: stay on the plateau
         clearTimeout(regenTimer); regenTimer = setTimeout(() => enqueue(() => actEngine.running && actEngine.regen()), 0);
     } else if (hamp.running && pull) {
         hamp.params.speed = Math.max(s.minSpeed, hamp.params.speed * 0.4);
@@ -2177,6 +2411,7 @@ let finishes = 0, windTimer = null, windUntil = 0;
 function finishSignal(fromText = false) {
     finishes++;
     const s = S();
+    focus.credit('finishes');   // before the game ends, so the finish knows which game it was
     if (game.active) game.end('slipped');   // came before she allowed it: she'll have something to say
     if (actEngine.running) {
         creditMotifs(1, 20000, 0.3); const a = actPrefs(actEngine.intent.act); a.finishes = (a.finishes || 0) + 1;
@@ -2215,7 +2450,7 @@ function feedback(kind) {
     if (kind === 'close') return closeSignal();
     if (kind === 'finish') return finishSignal();
     if (kind === 'climax' && game.active) {   // in the game, "Finish me" is begging: she decides
-        game.begs++; logEvent('begged'); updatePrompt(); debouncedReply(800); return;
+        game.begs++; focus.credit('begs'); logEvent('begged'); updatePrompt(); debouncedReply(800); return;
     }
     if (kind === 'climax') {   // "Finish me": start the push now and tell the AI
         enqueue(() => climax.start({})); logEvent('finish-me'); updatePrompt();
@@ -2225,6 +2460,7 @@ function feedback(kind) {
     if (actEngine.running) {
         const i = actEngine.intent, a = actPrefs(i.act);
         if (f.act) { f.act(i); absorb(0.15); }
+        if (kind === 'love' || kind === 'nope') focus.credit(kind === 'love' ? 'loves' : 'nopes');
         if (kind === 'love') { absorb(0.5); creditMotifs(REWARD.love); a.score = a.score * 0.9 + 1.5; a.loves++; }
         if (kind === 'nope') { creditMotifs(REWARD.nope); a.score = a.score * 0.9 - 1.5; actEngine.recordKept(); }
         const r = chars.current();
@@ -2495,6 +2731,7 @@ function profileText() {
     L.push(`- A reply may hold several tags. Put each one right where that moment happens in your text: they play in order as the user reads (e.g. a slow start, a tag mid-reply where it speeds up, another where it eases off).`);
     if (ctx().groupId && s.charStyles) L.push(`- When two characters act on the user together, add with="THE OTHER CHARACTER'S NAME" to the tag (and duet="together" if they move as one; otherwise they take turns). The device then plays both of their styles. Leave it out when one character acts alone.`);
     L.push(`- <handy climax="30"/> pushes the user over the edge: a steady build to a peak over that many seconds (10-90), using what has made them finish before. Use it when the scene calls for the user to cum, not before.`);
+    L.push(`- If the user is watching porn while you play, add scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" to a tag whenever you direct their attention: that is how you learn what gets them off.`);
     L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
     for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
@@ -2512,16 +2749,20 @@ function profileText() {
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
     const gt = game.text();
     if (gt) L.push(gt);
-    if (!game.active && game.lastResult && pending.some((e) => /^game-mommy-(allowed|slipped)$/.test(e.kind))) {
-        const r = game.lastResult;
-        L.push(`Stamina result: he lasted ${r.minutes} min (goal ${r.goal} min)${r.best ? ', his best yet' : ''}. Tell him in character how he did.`);
-    }
+    if (!game.active && game.lastResult && pending.some((e) => /^game-/.test(e.kind) && e.kind !== 'game-start')) L.push(`Game result: ${game.lastResult}. Tell them in character how they did.`);
+    const ft = focus.text();
+    if (ft) L.push(ft);
     const FB = { 'finish-me': 'ASKED TO BE FINISHED (the device is already building to a climax: push them over in character)',
         begged: game.active ? 'BEGGED TO CUM (the device has not changed: you decide whether they have earned it)' : 'begged to finish',
         'game-start': `STARTED THE ${GAMES[game.mode].toUpperCase()} (open it in character: tell them what to put on, and start the device)`,
         'game-allowed': 'game over: you allowed them to cum', 'game-ruined': 'game over: you ruined it', 'game-denied': 'game over: denied',
         'game-slipped': 'CAME WITHOUT PERMISSION (the edging game is over: react in character)', 'game-quit': 'THE USER ENDED THE EDGING GAME',
         'game-mommy-allowed': 'stamina training over: you let him cum', 'game-mommy-quit': 'THE USER ENDED THE STAMINA TRAINING',
+        'roulette-spin': 'THE WHEEL SPINS: call a brand-new scene NOW (a different kind), with scene= and watch= and the matching act; it starts fast',
+        'game-roulette-allowed': 'roulette over: you let them cum', 'game-roulette-ruined': 'roulette over: you ruined it', 'game-roulette-denied': 'roulette over: denied',
+        'game-roulette-slipped': 'CAME WITHOUT PERMISSION (porn roulette is over: react in character)', 'game-roulette-quit': 'THE USER ENDED PORN ROULETTE',
+        'game-trance-allowed': 'the trance is over: you brought them out with a finish', 'game-trance-quit': 'THE USER ENDED THE TRANCE (bring them up gently)',
+        'game-trance-slipped': 'CAME IN THE TRANCE (it is over: soothe them, praise how deep they went)',
         'game-mommy-slipped': 'CAME BEFORE YOU ALLOWED IT (the stamina training is over: be gentle, mommy is still proud, next time he goes longer)',
         'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
         close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
@@ -2582,7 +2823,9 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
-    if (a.watch && a.watch !== true && game.active) { game.watch = String(a.watch).slice(0, 120); ui.refresh(); }
+    const changed = focus.set(a);
+    if (changed === 'scene') game.newScene();
+    a = game.shape(a, changed);
     if (a.game !== undefined) return game.command(a);
     if (a.climax !== undefined && game.active) return game.command({ ...a, game: 'allow' });   // a plain climax tag in the game is her allowing it
     if (a.with !== undefined || (a.act && a.act !== true)) chars.setPartner(a.with, a.duet);   // with="NAME": a second character joins; an act without it: one again
@@ -2646,6 +2889,7 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_ornaments"> Add detail: flutters at the tip, slow drags, deep pulses</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
     <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
+    <label>Porn roulette: minutes between spins <input type="number" id="handy_roulette_min" class="text_pole" min="1" max="15"></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
@@ -2691,6 +2935,9 @@ const ui = {
     <b>Learned taste</b>
     <label>Try new things <span class="flex-container"><input type="range" id="handy_explore" min="0" max="2" step="0.1"><span id="handy_explore_v"></span></span></label>
     <small id="handy_profile_summary"></small>
+    <b>What gets you there</b>
+    <small id="handy_focus_summary"></small>
+    <div class="flex-container"><div id="handy_focus_reset" class="menu_button">Forget what I watch</div></div>
     <div class="flex-container">
       <div id="handy_export" class="menu_button">Export</div>
       <div id="handy_import" class="menu_button">Import</div>
@@ -2722,7 +2969,7 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
-        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_game_min', 'gameMinEdges');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_roulette_min', 'rouletteMinutes');
         bind('#handy_prose', 'proseCues', 'checked'); bind('#handy_ornaments', 'ornaments', 'checked');
         $('#handy_style_profile').on('change', function () { S().styleProfile = this.value; chars.tried.clear(); chars.seen.clear(); chars.warned = false; save(); chars.current(); ui.refresh(); });
         const selChar = () => S().characters?.[$('#handy_char_sel').val()];
@@ -2769,6 +3016,7 @@ const ui = {
             S().profile = { ...EMPTY_PROFILE(), ...taste };
             if (characters && typeof characters === 'object' && !Array.isArray(characters)) { S().characters = characters; chars.seen.clear(); }
             save(); ui.refresh(); updatePrompt(); toast('Profile imported', 'success'); }));
+        $('#handy_focus_reset').on('click', () => { if (confirm('Forget what the AI has learned about the porn you watch and what gets you there?')) { delete S().profile.focus; focus.cur = null; focus.prev = []; save(); ui.refresh(); updatePrompt(); } });
         $('#handy_reset').on('click', () => { if (confirm('Erase everything the AI has learned about your taste? (The motion library is kept.)')) {
             S().profile = EMPTY_PROFILE();
             if (Object.keys(S().characters || {}).length && confirm('Also erase every character\'s style and history?')) { S().characters = {}; chars.seen.clear(); chars.tried.clear(); }
@@ -2788,7 +3036,7 @@ const ui = {
     <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
-    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish."><option value="edging">Edging game</option><option value="mommy">Mommy's stamina training</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
+    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Porn roulette: a new scene every few minutes, starting fast; get through it without edging. Goon trance: slow, hypnotic, held on the plateau. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish."><option value="edging">Edging game</option><option value="roulette">Porn roulette</option><option value="trance">Goon trance</option><option value="mommy">Mommy's stamina training</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
     <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
@@ -2860,6 +3108,7 @@ const ui = {
         const favs = pr.favorites.map((f, i) => ({ f, i })).sort((x, y) => (y.f.owner === akFav && !!akFav) - (x.f.owner === akFav && !!akFav));   // the character in control first
         $('#handy_favs').html(`<option value="">— favorites and signature moves —</option>` + favs.map(({ f, i }) => `<option value="${i}">${f.owner ? esc(s.characters?.[f.owner]?.name || 'character') + ' · ' : ''}${esc(f.name)}</option>`).join(''));
         $('#handy_game').text(game.status()).toggle(game.active);
+        $('#handy_focus_summary').text(focus.summary());
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
@@ -2946,7 +3195,7 @@ jQuery(() => {
         const k = ctx().characters?.[chId]?.avatar;
         if (k && S().charStyles) { chars.speaker = k; updatePrompt(); }
     });
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); game.reset(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); game.reset(); focus.clear(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;
@@ -2956,8 +3205,8 @@ jQuery(() => {
         if (S().appId) api3.stop(true).catch(() => {});
     });
     S().profile.sessions++; save(); updatePrompt();
-    setInterval(() => arousal.tick(), 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    setInterval(() => { arousal.tick(); focus.tick(1); game.tick(1); }, 1000);
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });
 
 })();

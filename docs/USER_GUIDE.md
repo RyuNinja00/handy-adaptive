@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.8.6.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.9.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -512,7 +512,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Favorites dropdown** | Replay a saved favorite or signature move (the character in control's come first) |
 | **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
 | **Style line** (bottom, in italics) | The style of the character in control, in plain words |
-| **Game menu + Start** | The character runs a game: the edging game or Mommy's stamina training (see below) |
+| **Game menu + Start** | The character runs a game: the edging game, porn roulette, goon trance or Mommy's stamina training (see below) |
 | **⌄** (top right) | Collapse the panel |
 
 5. You can always take over manually with the panel. The AI picks up from the new state on its next reply. Your feedback since its last reply is passed to it, so the character can react ("You like it slower like this?").
@@ -536,6 +536,27 @@ Choose **Edging game** and press **Start**. The character you're chatting with r
 
 Your game results (allowed, ruined, denied) are remembered and the character knows them in later games.
 
+#### Porn roulette
+
+Choose **Porn roulette** and press **Start**. She hosts it:
+
+- **The wheel spins every few minutes** (3 by default; change *Porn roulette: minutes between spins* in the settings). Each spin, she calls a brand-new scene and tells you to switch to it right now. The Handy switches to the matching act.
+- **Each new scene starts hard and fast** to catch you off guard.
+- **You score by getting through a scene without edging.** The panel shows the scene number and how many you've survived. If you press **🔥 I'm close** during a scene, that scene doesn't count, and she teases you for it.
+- **She decides the ending**, the same as the edging game: allowed, ruined or denied. **⚡ Finish me** counts as begging.
+
+Your best score is remembered, and she tells you how you did at the end.
+
+#### Goon trance
+
+Choose **Goon trance** and press **Start**. She leads you into a slow, hypnotic gooning trance:
+
+- **Slow, repetitive mantras** ("stroke and stare…") and whisper-filthy talk, with your eyes on the porn she picks.
+- **The Handy stays slow and steady.** Intensity is held at 60% or below, with little variation.
+- **The plateau:** when you press **🔥 I'm close**, it only eases off a little. She keeps you floating right below the edge instead of stopping.
+- **Time on the edge is the score.** It's time with the arousal estimate at 75% or more. The panel shows it next to your record.
+- **The ending:** she brings you out with a slow, overwhelming 45-second finish. There's no denying or ruining in the trance.
+
 #### Mommy's stamina training
 
 Choose **Mommy's stamina training** and press **Start**. The character takes the role of your mommy (both of you are adults) and trains you to last longer:
@@ -549,6 +570,17 @@ Choose **Mommy's stamina training** and press **Start**. The character takes the
 - **Cumming early:** press **🥂 Finished**. That still counts as a stamina result, and she's gentle about it.
 
 How long you lasted and your best time are remembered. She tells you how you did, and the next goal adjusts.
+
+#### What gets you there (learning what you watch)
+
+Every game has her pick a **scene** and a **focus** for you ("a POV blowjob scene, watch her eyes on the camera"). The extension learns from what's on screen the same way it learns motion:
+
+- **What it records:** for each focus and scene, how long you watched it with the Handy moving, your ❤s and 👎s, your edges (and how many seconds it took you to get there), how often you begged, and your finishes. A finish is credited mostly (at least 60%) to what was on screen at that moment. Whatever you watched in the 90 seconds before shares the rest.
+- **Themes:** it also reads the broad themes in her words, such as eye contact, mouths and lips, curves and thighs, breasts, mature women, POV and close-ups, sounds, going deep and riding. That way what it learns carries over to scenes you haven't seen yet.
+- **What she's told:** your **finishers** (what was on screen when you came), what gets you to the **edge fastest**, your **slow burners** (loved, but they keep you simmering), what does **little for you**, your strongest and weakest themes, how your finishes usually happen (the act, how many edges first, after how long), and a few things you **haven't tried** yet.
+- **She uses it strategically,** in a different way for each game. In the edging game she edges you with your fastest triggers and saves your finishers for when she allows it, or uses one just before she ruins or denies you. In the trance she keeps you on slow burners. In mommy's training she builds your stamina with slow burners, tests you with fast triggers near your goal, and saves your top finisher for the end.
+
+It also works outside the games whenever she tells you what to watch. In the settings under **Learned taste**, **What gets you there** shows a summary, and **Forget what I watch** erases it.
 
 In Marinara Engine, games can't make her reply on their own, so send a message after pressing **Start** to get her going.
 

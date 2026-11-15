@@ -914,12 +914,67 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('the prompt follows the clock toward the goal', /reached his goal/.test(last(m)) && /\/ goal 10 min/.test(MG.status()));
     m.message('<handy game="allow"/>'); await m.advance(3000);
     const ms = MG.stats('mommy');
-    check('allowing it ends with a long intense build and records how long he lasted', !MG.active && m.H.climax.active && m.H.climax.ms === 45000 && ms.lasted.length === 1 && ms.lasted[0] >= 11 && ms.best === ms.lasted[0] && /Stamina result: he lasted/.test(last(m)));
+    check('allowing it ends with a long intense build and records how long he lasted', !MG.active && m.H.climax.active && m.H.climax.ms === 45000 && ms.lasted.length === 1 && ms.lasted[0] >= 11 && ms.best === ms.lasted[0] && /Game result: he lasted/.test(last(m)));
     MG.start('mommy');
     check('the next goal is a little longer than he lasted', MG.goal === Math.round(Math.max(ms.lasted[0] * 1.1, ms.lasted[0] + 1)), `goal ${MG.goal} after ${ms.lasted[0]} min`);
     m.H.feedback('finish'); await m.advance(1000);
     check('cumming early ends it gently and still counts toward stamina', !MG.active && ms.slipped === 1 && ms.lasted.length === 2 && /CAME BEFORE YOU ALLOWED IT/.test(last(m)));
     check('edging stats are kept apart from mommy stats', !MG.stats('edging').played);
+
+    // focus learning: what's on screen is credited with exposure, edges, loves, nopes and finishes
+    const f = await boot({ seed: 280 });
+    const FS = () => f.H.profile().focus, P = () => f.st.prompts.filter(Boolean).pop() || '';
+    f.message('<handy act="blowjob" intensity="0.6" scene="POV blowjob" watch="her eyes on the camera"/>'); await f.advance(40000);
+    f.H.feedback('close'); await f.advance(40000); f.H.feedback('close'); await f.advance(35000); f.H.feedback('close'); await f.advance(5000);
+    const A = FS().items['w:her eyes on the camera'];
+    check('a scene and focus are tracked: time watched, edges, time to the edge, tags read from the words', A && A.sec >= 115 && A.edges === 3 && A.toEdgeN === 3 && Math.abs(A.toEdge / A.toEdgeN - 38) < 6 && FS().items['t:eye contact'] && FS().items['s:pov blowjob'], A && `${Math.round(A.sec)} s, ${A.edges} edges, ~${Math.round(A.toEdge / A.toEdgeN)} s to the edge`);
+    f.message('<handy act="riding" intensity="0.4" scene="milf riding" watch="her thick thighs"/>'); await f.advance(30000);
+    f.H.feedback('love'); await f.advance(60000); f.H.feedback('love'); await f.advance(60000);
+    f.message('<handy act="handjob" intensity="0.5" scene="handjob" watch="the sounds she makes"/>'); await f.advance(30000);
+    f.H.feedback('nope'); await f.advance(25000); f.H.feedback('nope'); await f.advance(25000);
+    f.message('<handy act="blowjob" intensity="0.8" watch="her eyes on the camera" scene="POV blowjob"/>'); await f.advance(50000);
+    f.H.feedback('finish'); await f.advance(1000);
+    const p = P();
+    check('the AI is told what made them finish', /FINISHERS[^\n]*"her eyes on the camera"/.test(p) && /finishes usually come during blowjob/.test(p), (p.match(/FINISHERS[^\n]*/) || [''])[0].slice(0, 160));
+    check('…what gets them to the edge fastest', /FASTEST TO THE EDGE[^\n]*"her eyes on the camera" in a POV blowjob scene/.test(p));
+    check('…what keeps them simmering', /SLOW BURNERS[^\n]*"her thick thighs"/.test(p));
+    check('…and what to avoid', /DOES LITTLE FOR THEM[^\n]*"the sounds she makes"/.test(p));
+    check('…which themes carry over, with a strategy and things not yet tried', /THEMES[^\n]*strongest[^\n]*eye contact/.test(p) && /weakest[^\n]*sounds & voice/.test(p) && /STRATEGY: /.test(p) && /Not tried yet: /.test(p));
+    const fin = FS().finishes.at(-1), shareA = FS().items['w:her eyes on the camera'].finishes, shareC = FS().items['w:the sounds she makes'].finishes;
+    check('a finish is shared by time with what was on screen in the 90 s before', fin.act === 'blowjob' && shareA >= 0.5 && shareA <= 1 && shareC > 0 && shareC < 0.5, `current ${shareA.toFixed(2)}, before ${shareC.toFixed(2)}`);
+    f.H.game.start('trance'); await f.advance(1000);
+    check('the strategy follows the game being played', /STRATEGY: Stay with slow burners/.test(P()));
+    f.H.game.end('quit');
+    const f2 = await boot({ seed: 281 });
+    f2.H.run({ act: 'handjob', intensity: 0.6 }); await f2.advance(5000); f2.H.feedback('close'); await f2.advance(1000);
+    check('nothing is learned about porn when nothing is on screen', !Object.keys(f2.H.profile().focus?.items || {}).length && !/WHAT GETS THE USER OFF/.test(f2.st.prompts.filter(Boolean).pop() || ''));
+
+    // porn roulette: spins on a timer, new scenes start fast, scenes survived without edging are counted
+    const r = await boot({ seed: 290, settings: { rouletteMinutes: 1 } });
+    const RG = r.H.game; RG.start('roulette'); await r.advance(1000);
+    r.message('<handy act="blowjob" scene="sloppy blowjob" watch="her spit dripping"/>'); await r.advance(3000);
+    check('roulette: a new scene starts fast and is counted', r.H.actEngine.intent.intensity >= 0.7 && RG.scenes === 1 && /PORN ROULETTE — ON/.test(last(r)));
+    const spin0 = r.st.replies; await r.advance(60000);
+    check('roulette: the wheel spins on its timer and asks her for a new scene', r.st.replies > spin0 && /THE WHEEL SPINS/.test(last(r)));
+    r.message('<handy act="riding" scene="reverse cowgirl" watch="her ass bouncing"/>'); await r.advance(20000);
+    r.H.feedback('close'); await r.advance(5000);
+    r.message('<handy act="handjob" scene="oiled handjob" watch="her slick hands"/>'); await r.advance(5000);
+    check('roulette: getting through a scene without edging counts, edging in one does not', RG.scenes === 3 && RG.survived === 1 && /scene 3 · survived 1/.test(RG.status()));
+    r.message('<handy game="allow"/>'); await r.advance(2000);
+    check('roulette: the result is reported and the best is kept', !RG.active && r.H.climax.active && RG.stats('roulette').bestSurvived === 2 && /got through 2 of 3 scenes/.test(last(r)));
+
+    // goon trance: slow and capped, a gentle ease-off, time on the edge is the score
+    const g = await boot({ seed: 300 });
+    const TG = g.H.game; TG.start('trance'); await g.advance(1000);
+    g.message('<handy act="handjob" intensity="0.95" watch="her slow wet strokes"/>'); await g.advance(5000);
+    check('trance: intensity is held to a slow plateau', g.H.actEngine.intent.intensity <= 0.6 && /GOON TRANCE — ON/.test(last(g)));
+    const before = g.H.actEngine.intent.intensity; g.H.feedback('close'); await g.advance(1000);
+    check('trance: "I\'m close" only eases off a little', g.H.actEngine.intent.intensity >= before * 0.55, `${before.toFixed(2)} → ${g.H.actEngine.intent.intensity.toFixed(2)}`);
+    await g.advance(30000);
+    g.message('<handy game="deny"/>'); await g.advance(1000);
+    check('trance: time on the edge is counted, and deny is not part of it', TG.active && TG.edgeSec >= 25 && /on the edge 0:[2-9]\d/.test(TG.status()));
+    g.message('<handy game="allow"/>'); await g.advance(2000);
+    check('trance: it ends with a long finish and a record', !TG.active && g.H.climax.ms === 45000 && TG.stats('trance').bestEdgeSec >= 25 && /of it on the edge/.test(last(g)));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

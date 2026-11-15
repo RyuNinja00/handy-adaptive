@@ -91,14 +91,15 @@ function shuffled(items) {
   }
   return result;
 }
-async function searchImage(query) {
+async function searchImageExact(query) {
   const key = query.toLowerCase();
   let saved = cache.get(key);
   if (!saved || saved.expires <= Date.now()) {
     const searchUrl = 'https://www.pornpics.com/?q=' + encodeURIComponent(query);
     const page = await fetchLimited(searchUrl, { siteOnly: true });
     if (!/html/i.test(page.type)) throw new Error('Search did not return HTML');
-    const images = candidates(page.bytes.toString('utf8'), page.url);
+    const html = page.bytes.toString('utf8');
+    const images = /no search results|nothing found|no results found/i.test(html) ? [] : candidates(html, page.url);
     if (!images.length) throw new Error('No image candidates found (site markup may have changed)');
     saved = { images, searchUrl, expires: Date.now() + CACHE_MS };
     cache.set(key, saved);
@@ -133,6 +134,39 @@ async function searchImage(query) {
   throw new Error('No downloadable image found');
 }
 
+// Preserve descriptive terms first, then relax the query gradually.
+// Never broaden a rejected query: safeQuery() validates the original before this runs.
+function searchVariants(query) {
+  const words = query.split(/\s+/).filter(Boolean);
+  const stop = new Set(['a', 'an', 'the', 'with', 'wearing', 'showing', 'photo', 'picture', 'image', 'of', 'in', 'on', 'and', 'for', 'from', 'view', 'closeup']);
+  const meaningful = words.filter(w => !stop.has(w.toLowerCase()));
+  const variants = [query];
+  if (meaningful.length && meaningful.length < words.length) variants.push(meaningful.join(' '));
+  if (meaningful.length > 3) variants.push(meaningful.slice(-3).join(' '));
+  if (meaningful.length > 2) variants.push(meaningful.slice(-2).join(' '));
+  if (meaningful.length > 1) variants.push(meaningful.slice(0, 2).join(' '));
+  if (meaningful.length > 1) variants.push(meaningful[meaningful.length - 1]);
+  return [...new Set(variants.map(x => x.trim()).filter(Boolean))].slice(0, 6);
+}
+async function searchImage(query) {
+  const attempts = [];
+  for (const variant of searchVariants(query)) {
+    try {
+      const result = await searchImageExact(variant);
+      if (variant !== query) console.log('[image bridge] fallback search:', query, '=>', variant);
+      return { ...result, matchedQuery: variant };
+    } catch (error) {
+      attempts.push(variant + ': ' + error.message);
+      // Only broaden searches when the search itself has no results (or returns 404),
+      // or when all image candidates fail. Do not conceal access/network failures.
+      if (!/Remote server HTTP 404|No image candidates found|No downloadable image found/i.test(error.message)) {
+        throw new Error('Search "' + variant + '" failed: ' + error.message);
+      }
+    }
+  }
+  throw new Error('No image found after fallback searches: ' + attempts.join(' | '));
+}
+
 function cors(res, origin) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
@@ -157,7 +191,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const query = safeQuery(url.searchParams.get('q'));
     const image = await searchImage(query);
-    res.writeHead(200, { 'Content-Type': image.type, 'X-Image-Source': image.source, 'X-Search-URL': image.searchUrl });
+    res.writeHead(200, { 'Content-Type': image.type, 'X-Image-Source': image.source, 'X-Search-URL': image.searchUrl, 'X-Matched-Query': encodeURIComponent(image.matchedQuery) });
     res.end(image.bytes);
   } catch (e) {
     console.error('[image bridge]', e.message);

@@ -61,6 +61,6 @@
 .handy-arousal-track { flex: 1; height: 6px; border-radius: 3px; background: var(--black30a, #0004); overflow: hidden; }
 #handy_arousal_fill { height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, #e0703088, #e0559a); transition: width .8s linear; }
 
-.handy-game-btn { flex: 1; text-align: center; }
+.handy-game-btn { flex: 0 0 auto; text-align: center; white-space: nowrap; }
 .handy-game-btn.on { background: #e0559a44; border-color: #e0559a; }
 .handy-game { color: #e0559a; margin-top: 2px; }

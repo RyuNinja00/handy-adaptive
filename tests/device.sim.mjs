@@ -900,6 +900,26 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     const h5 = await boot({ seed: 264 });
     h5.message('<handy game="allow"/>'); await h5.advance(2000);
     check('a game tag outside a game does nothing', !h5.H.climax.active && !h5.H.active() && !/EDGING GAME/.test(last(h5)));
+
+    // mommy's stamina training: a goal a little past what he usually lasts, one ending, results remembered
+    const m = await boot({ seed: 270, settings: { gameMinEdges: 1 } });
+    const MG = m.H.game;
+    MG.start('mommy'); await m.advance(1000);
+    check('mommy mode starts with a 10 min baseline goal and her rules', MG.active && MG.mode === 'mommy' && MG.goal === 10 && /MOMMY'S STAMINA TRAINING — ON/.test(last(m)) && /consenting adults/.test(last(m)) && /last 10 minutes/.test(last(m)) && /STARTED THE MOMMY'S STAMINA TRAINING/.test(last(m)));
+    m.message('<handy act="blowjob" intensity="0.5" watch="her full heavy breasts"/>'); await m.advance(5000);
+    m.H.feedback('close'); await m.advance(3000);
+    m.message('<handy game="deny"/>'); await m.advance(2000);
+    check('deny and ruin are not part of her game', MG.active && m.H.active());
+    await m.advance(11 * 60000);
+    check('the prompt follows the clock toward the goal', /reached his goal/.test(last(m)) && /\/ goal 10 min/.test(MG.status()));
+    m.message('<handy game="allow"/>'); await m.advance(3000);
+    const ms = MG.stats('mommy');
+    check('allowing it ends with a long intense build and records how long he lasted', !MG.active && m.H.climax.active && m.H.climax.ms === 45000 && ms.lasted.length === 1 && ms.lasted[0] >= 11 && ms.best === ms.lasted[0] && /Stamina result: he lasted/.test(last(m)));
+    MG.start('mommy');
+    check('the next goal is a little longer than he lasted', MG.goal === Math.round(Math.max(ms.lasted[0] * 1.1, ms.lasted[0] + 1)), `goal ${MG.goal} after ${ms.lasted[0]} min`);
+    m.H.feedback('finish'); await m.advance(1000);
+    check('cumming early ends it gently and still counts toward stamina', !MG.active && ms.slipped === 1 && ms.lasted.length === 2 && /CAME BEFORE YOU ALLOWED IT/.test(last(m)));
+    check('edging stats are kept apart from mommy stats', !MG.stats('edging').played);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

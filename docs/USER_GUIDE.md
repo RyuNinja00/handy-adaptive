@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.8.5.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.8.6.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -512,26 +512,45 @@ python3 trainer.py analyze ../training --vlm-url ""
 | **Favorites dropdown** | Replay a saved favorite or signature move (the character in control's come first) |
 | **📏 Ruler** | Calibrate (or re-check) your tip and base, starting from last time's positions |
 | **Style line** (bottom, in italics) | The style of the character in control, in plain words |
-| **Start edging game** | The character runs an edging game (see below) |
+| **Game menu + Start** | The character runs a game: the edging game or Mommy's stamina training (see below) |
 | **⌄** (top right) | Collapse the panel |
 
 5. You can always take over manually with the panel. The AI picks up from the new state on its next reply. Your feedback since its last reply is passed to it, so the character can react ("You like it slower like this?").
 
 
-### The edging game
+### Games
 
-Press **Start edging game** on the panel. The character you're chatting with runs a gooning session in her own voice:
+Pick a game from the menu near the bottom of the panel and press **Start**. Press **End** to quit at any time. **STOP**, your safeword and a typed "stop" work as always. *Games: edges before the character may end it* in the settings sets the minimum number of edges for both games (3 by default).
+
+#### Edging game
+
+Choose **Edging game** and press **Start**. The character you're chatting with runs a gooning session in her own voice:
 
 - **Dirty talk first.** Every reply is explicit and spoken straight to you.
 - **She picks the porn.** She tells you what kind of scene to put on, and the Handy plays the same act from your library so what you feel matches what you see. She also tells you what to focus on (her mouth, the eye contact, the sounds…). That focus appears on the panel under the button.
 - **Porn does it better.** She plays up how the girls in porn outdo real women.
 - **Edge after edge.** Press **🔥 I'm close** (or type it) each time. She pulls back, holds you there, then builds again. Each edge is counted.
 - **⚡ Finish me becomes begging.** Nothing changes on the device; she's told you begged and decides whether you've earned it.
-- **She decides how it ends:** she **allows** it (the device pushes you over), **ruins** it (it builds to the brink and stops dead), or **denies** you (the device stops and the game is over). She won't end it before your minimum number of edges (*Edging game: edges before the character may end it* in the settings, 3 by default).
+- **She decides how it ends:** she **allows** it (the device pushes you over), **ruins** it (it builds to the brink and stops dead), or **denies** you (the device stops and the game is over). She won't end it before your minimum number of edges.
 - If you cum before she allows it, press **🥂 Finished** anyway: the game ends and she reacts.
-- **End edging game** stops the game at any time. **STOP**, your safeword and a typed "stop" work as always.
 
-Your game results (allowed, ruined, denied) are remembered and the character knows them in later games. In Marinara Engine, send a message after pressing the button to get her started.
+Your game results (allowed, ruined, denied) are remembered and the character knows them in later games.
+
+#### Mommy's stamina training
+
+Choose **Mommy's stamina training** and press **Start**. The character takes the role of your mommy (both of you are adults) and trains you to last longer:
+
+- **Praise:** she calls you her son and her good boy, and praises you for holding on.
+- **MILF porn:** she keeps you watching mature, curvy women. She picks the scenes and what to focus on, and talks dirty about their bodies and her own. The Handy plays the same act.
+- **The taboo:** she leans into the mommy fantasy and encourages you to give in to it.
+- **Stamina goal:** your first session sets a 10-minute goal. After that, each goal is a little past what you've usually lasted lately: 10% longer than the middle of your last three sessions, and always at least a minute more. The panel shows the time and the goal.
+- **Edging toward the goal:** press **🔥 I'm close** each time. She slows down, praises you and builds again. **⚡ Finish me** counts as begging.
+- **The ending is always a reward.** Once you've reached the goal, she tells you to cum lots for her and pushes you over with a long, intense 45-second build. She doesn't deny or ruin in this game.
+- **Cumming early:** press **🥂 Finished**. That still counts as a stamina result, and she's gentle about it.
+
+How long you lasted and your best time are remembered. She tells you how you did, and the next goal adjusts.
+
+In Marinara Engine, games can't make her reply on their own, so send a message after pressing **Start** to get her going.
 
 ---
 

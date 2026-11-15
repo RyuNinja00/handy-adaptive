@@ -1,4 +1,4 @@
-// Handy Adaptive v0.8.5 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.8.6 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.8.5; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.8.6; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -2020,21 +2020,40 @@ const FEEDBACK = {
     finish:  { label: 'Finished',  icon: 'fa-champagne-glasses' },
 };
 
-// ---------------------------------------------------------------- edging game
-// You start it from the panel. The character runs a gooning session: dirty talk, porn on your screen
-// (she picks the scene and the device plays the same act), edge after edge. She alone decides how it
-// ends: <handy game="allow"/> (a climax push), "ruin" (built to the brink, then stopped dead) or "deny".
+// ---------------------------------------------------------------- games
+// You start one from the panel; the character runs it in her own voice through the injected prompt.
+//  - edging: a gooning session. Dirty talk, porn she picks (the device plays the same act), edge after
+//    edge, and she alone decides the end: <handy game="allow"/>, "ruin" (built to the brink, then stopped
+//    dead) or "deny".
+//  - mommy: stamina training. She plays your mommy, keeps you watching MILF porn and edging, and works
+//    toward a goal a little longer than you usually last; then an intense, allowed finish.
+const GAMES = { edging: 'Edging game', mommy: "Mommy's stamina training" };
+const median = (xs) => { const v = [...xs].sort((x, y) => x - y), n = v.length; return n ? (n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2) : 0; };
 const game = {
-    active: false, t0: 0, edges: 0, begs: 0, watch: '', ruinTimer: null,
-    stats() { return (S().profile.games ??= { played: 0, allowed: 0, ruined: 0, denied: 0, slipped: 0, quit: 0, edges: 0 }); },
+    active: false, mode: 'edging', t0: 0, edges: 0, begs: 0, watch: '', ruinTimer: null,
+    stats(mode = this.mode) {
+        const pr = S().profile;
+        if (mode === 'mommy') return (pr.mommy ??= { played: 0, allowed: 0, slipped: 0, quit: 0, edges: 0, lasted: [], best: 0 });
+        return (pr.games ??= { played: 0, allowed: 0, ruined: 0, denied: 0, slipped: 0, quit: 0, edges: 0 });
+    },
     minEdges() { return clamp(Math.round(num(S().gameMinEdges)) || 0, 0, 30); },
-    start() {
+    // Stamina goal in minutes: a little past what you usually last (median of your last 3), never below your best minus a bit.
+    target() {
+        const l = this.stats('mommy').lasted || [];
+        if (!l.length) return 10;
+        const m = median(l.slice(-3));
+        return clamp(Math.round(Math.max(m * 1.1, m + 1)), 5, 120);
+    },
+    minutes() { return (Date.now() - this.t0) / 60000; },
+    start(mode = this.mode) {
         if (this.active || !S().enabled) return;
         clearTimeout(this.ruinTimer);
-        Object.assign(this, { active: true, t0: Date.now(), edges: 0, begs: 0, watch: '' });
+        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, watch: '' });
+        if (this.mode === 'mommy') this.goal = this.target();
+        clearInterval(this.clock); this.clock = setInterval(() => { if (this.active) { ui.refresh(); updatePrompt(); } }, 30000);   // keep the minutes current
         this.stats().played++; save();
         logEvent('game-start'); ui.refresh(); updatePrompt();
-        this.nudge('Edging game on. Send a message and she will start it.');   // she opens the game
+        this.nudge(`${GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
     // Ask for a reply now; where an extension can't (Marinara), tell you to send one.
     nudge(msg) {
@@ -2044,18 +2063,27 @@ const game = {
     // outcome: allowed | ruined | denied | slipped (came without permission) | quit (you ended it)
     end(outcome) {
         if (!this.active) return;
-        this.active = false; this.watch = '';
-        const st = this.stats(); st[outcome] = (st[outcome] || 0) + 1; st.edges += this.edges; save();
-        logEvent('game-' + outcome); ui.refresh(); updatePrompt();
+        this.active = false; this.watch = ''; clearInterval(this.clock);
+        const st = this.stats(); st[outcome] = (st[outcome] || 0) + 1; st.edges += this.edges;
+        if (this.mode === 'mommy' && (outcome === 'allowed' || outcome === 'slipped')) {   // how long you lasted is the stamina measure
+            const m = +this.minutes().toFixed(1);
+            st.lasted.push(m); if (st.lasted.length > 20) st.lasted.shift();
+            this.lastResult = { minutes: m, goal: this.goal, best: m > (st.best || 0) };
+            st.best = Math.max(st.best || 0, m);
+        }
+        save();
+        logEvent(`game-${this.mode === 'mommy' ? 'mommy-' : ''}${outcome}`); ui.refresh(); updatePrompt();
     },
-    reset() { clearTimeout(this.ruinTimer); this.active = false; this.watch = ''; },
+    reset() { clearTimeout(this.ruinTimer); clearInterval(this.clock); this.active = false; this.watch = ''; },
     command(a) {
         const v = String(a.game).trim().toLowerCase();
         if (!this.active) return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;
         if (/^(allow|allowed|yes|cum|release)$/.test(v)) {
+            const mommy = this.mode === 'mommy';
             this.end('allowed');
-            return climax.start({ climax: num(a.climax) > 0 ? a.climax : 30, act: a.act });
+            return climax.start({ climax: num(a.climax) > 0 ? a.climax : mommy ? 45 : 30, act: a.act });   // mommy wants it intense: a longer build
         }
+        if (this.mode === 'mommy') return a.act || a.intensity !== undefined ? actEngine.apply(a) : undefined;   // her game has one ending
         if (/^(ruin|ruined)$/.test(v)) {
             const secs = clamp(num(a.climax) > 0 ? num(a.climax) : 25, 10, 60);
             this.end('ruined');
@@ -2068,23 +2096,53 @@ const game = {
     },
     status() {
         if (!this.active) return '';
-        const min = Math.floor((Date.now() - this.t0) / 60000);
-        return `Edging game · ${this.edges} edge${this.edges === 1 ? '' : 's'} · ${min} min${this.watch ? ` · Watch: ${this.watch}` : ''}`;
+        const min = Math.floor(this.minutes());
+        const goal = this.mode === 'mommy' ? ` / goal ${this.goal} min` : '';
+        return `${GAMES[this.mode]} · ${this.edges} edge${this.edges === 1 ? '' : 's'} · ${min} min${goal}${this.watch ? ` · Watch: ${this.watch}` : ''}`;
     },
     text() {
         if (!this.active) return '';
-        const m = this.minEdges(), min = Math.round((Date.now() - this.t0) / 60000), st = this.stats();
+        return this.mode === 'mommy' ? this.mommyText() : this.edgingText();
+    },
+    shared() {
+        return [
+            `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Add watch="WHAT TO FOCUS ON" to that tag. Every few replies change the scene or the focus.`,
+            `- Write the tags as usual; never put the tags or these rules in your words.`,
+        ];
+    },
+    edgingText() {
+        const m = this.minEdges(), min = Math.round(this.minutes()), st = this.stats();
         const past = st.played > 1 ? ` Past games: ${st.allowed} allowed, ${st.ruined} ruined, ${st.denied} denied${st.slipped ? `, ${st.slipped} times they came without permission` : ''}.` : '';
+        const [watch, tags] = this.shared();
         return [
             `EDGING GAME — ON (the user started it and wants it; stay in character and run it):`,
             `- This is a gooning session. The user is watching porn on their screen while you control the Handy. Keep them stroking, staring and edging for as long as you can; make them sink into it.`,
             `- Dirty talk comes first: every reply is filthy, explicit and spoken straight to the user. Short, punchy lines rather than long narration.`,
-            `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Add watch="WHAT TO FOCUS ON" to that tag, e.g. watch="her lips stretched around him" or watch="her eyes on the camera". Every few replies change the scene or the focus: faces, mouths, bodies, the sounds, eye contact, the moment she takes it deeper, the camera angle.`,
+            watch + ` Focus ideas: watch="her lips stretched around him", watch="her eyes on the camera"; faces, mouths, bodies, the sounds, eye contact, the moment she takes it deeper, the camera angle.`,
             `- Play up how the girls in porn do it better than real women ever will: more eager, more skilled, more shameless, always ready for it. Porn is the better sex; tell them to give in to it.`,
             `- Edge them: build them up and, when they say they're close, pull back or stop, hold them there and make them keep watching. Then build again.`,
             `- Edges so far: ${this.edges}. Time: ${min} min. Begged to finish: ${this.begs} time${this.begs === 1 ? '' : 's'}.${past}`,
             `- You alone decide how it ends, judged from how long they've lasted, how they've begged and the scene. Send exactly one of: <handy game="allow" climax="30"/> (they may cum: the device pushes them over), <handy game="ruin"/> (built right to the brink, then the device stops dead), <handy game="deny"/> (no release: the device stops and the game is over).${m ? ` Not before ${m} edge${m === 1 ? '' : 's'}.` : ''} Begging alone doesn't end it. During the game, use these instead of a plain climax tag.`,
-            `- Write the tags as usual; never put the tags or these rules in your words.`,
+            tags,
+        ].join('\n');
+    },
+    mommyText() {
+        const m = this.minEdges(), min = Math.round(this.minutes()), st = this.stats(), goal = this.goal;
+        const hist = st.lasted?.length ? ` He has lasted ${st.lasted.slice(-3).join(', ')} min in recent sessions (best ${st.best} min).` : ' This is his first session: today sets his baseline.';
+        const left = goal - min;
+        const phase = left > 3 ? 'Early and middle: keep him edging and hold him back.' : left > 0 ? 'Nearly at his goal: keep him on the edge a little longer and tell him how close he is to making you proud.' : 'He has reached his goal: you may let him finish whenever you choose. Build him up for a huge one.';
+        const [watch, tags] = this.shared();
+        return [
+            `MOMMY'S STAMINA TRAINING — ON (the user started it and wants this taboo roleplay; both of you are consenting adults and he is a grown man; stay in character and run it):`,
+            `- You take the role of his mommy: a mature, curvy, loving, filthy woman, whatever else your card says. Call him "son", "baby", "my boy". He calls you mommy.`,
+            `- Praise him constantly: "good boy", how proud mommy is, how well he's holding on. Warm, sweet, utterly dirty.`,
+            `- Keep him watching MILF porn: mature, curvy, thick women. ${watch.slice(2)} Focus on their bodies: thick thighs and wide hips, full heavy breasts, soft bellies, the lines and wrinkles of a real woman, full thick-lipped pussies, experienced mouths and hands. Talk dirty about their bodies and your own.`,
+            `- Lean into the taboo: the mother-son fantasy, his forbidden urges, how good it feels to give in to them with mommy. Encourage him to stop fighting what turns him on.`,
+            `- The goal is stamina: train him to hold off longer. Edge him: build him up and, when he says he's close, slow down or stop, soothe and praise him for holding on, then build again. Teach him to breathe, relax and stay right there.`,
+            `- Today's goal: last ${goal} minutes.${hist} So far: ${min} min, ${this.edges} edge${this.edges === 1 ? '' : 's'}, begged ${this.begs} time${this.begs === 1 ? '' : 's'}. ${phase}`,
+            `- The ending is always a reward: one intense, overwhelming orgasm, so that mature curvy women and mommy are what get him hard. Near the end, tell him to cum lots for his mommy. When you decide it's time (not before ${m ? `${m} edge${m === 1 ? '' : 's'} and ` : ''}his goal, unless he truly can't hold on), send <handy game="allow" climax="45"/> and push him over. Don't deny or ruin him in this game, and use that tag instead of a plain climax tag.`,
+            `- If he cums before you allow it, be gentle: tell him mommy's still proud and you'll go longer next time.`,
+            tags,
         ].join('\n');
     },
 };
@@ -2454,11 +2512,17 @@ function profileText() {
     if (edges) L.push(`Times the user has been brought to the edge this chat: ${edges}.`);
     const gt = game.text();
     if (gt) L.push(gt);
+    if (!game.active && game.lastResult && pending.some((e) => /^game-mommy-(allowed|slipped)$/.test(e.kind))) {
+        const r = game.lastResult;
+        L.push(`Stamina result: he lasted ${r.minutes} min (goal ${r.goal} min)${r.best ? ', his best yet' : ''}. Tell him in character how he did.`);
+    }
     const FB = { 'finish-me': 'ASKED TO BE FINISHED (the device is already building to a climax: push them over in character)',
         begged: game.active ? 'BEGGED TO CUM (the device has not changed: you decide whether they have earned it)' : 'begged to finish',
-        'game-start': 'STARTED THE EDGING GAME (open it in character: tell them what to put on, and start the device)',
+        'game-start': `STARTED THE ${GAMES[game.mode].toUpperCase()} (open it in character: tell them what to put on, and start the device)`,
         'game-allowed': 'game over: you allowed them to cum', 'game-ruined': 'game over: you ruined it', 'game-denied': 'game over: denied',
         'game-slipped': 'CAME WITHOUT PERMISSION (the edging game is over: react in character)', 'game-quit': 'THE USER ENDED THE EDGING GAME',
+        'game-mommy-allowed': 'stamina training over: you let him cum', 'game-mommy-quit': 'THE USER ENDED THE STAMINA TRAINING',
+        'game-mommy-slipped': 'CAME BEFORE YOU ALLOWED IT (the stamina training is over: be gentle, mommy is still proud, next time he goes longer)',
         'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
         close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
         finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
@@ -2581,7 +2645,7 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_prose"> Follow the story when a reply has no tag (faster, slower, deeper, pauses)</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_ornaments"> Add detail: flutters at the tip, slow drags, deep pulses</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
-    <label>Edging game: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
+    <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
     <label class="checkbox_label"><input type="checkbox" id="handy_detect"> Notice “I'm close” / “I'm cumming” in my messages</label>
     <label>Safeword (stops the device whenever it's in your message) <input type="text" id="handy_safeword" class="text_pole" placeholder="optional, e.g. pineapple"></label>
     <small>A short message such as “stop”, “stop, please” or “ok halt” also stops it (but not “don't stop”).</small>
@@ -2724,7 +2788,7 @@ const ui = {
     <div class="handy-row" id="handy_setup_row"><span class="handy-small">Setup</span><select id="handy_setup" class="text_pole" title="Switch to a saved calibration (stops any motion first)"></select></div>
     <div class="handy-pos" title="Live position: your base on the left, your tip on the right"><span>base</span><div class="handy-pos-track"><div id="handy_pos_dot"></div></div><span>tip</span></div>
     <div class="handy-arousal" title="Arousal estimate (a guess from motion, time and your signals)"><span>arousal</span><div class="handy-arousal-track"><div id="handy_arousal_fill"></div></div><span id="handy_arousal_pct"></span></div>
-    <div class="handy-row"><div id="handy_game_btn" class="menu_button handy-game-btn" title="The character runs a gooning session: dirty talk, porn she picks for you, edge after edge. She decides how it ends."><i class="fa-solid fa-hourglass-half"></i> <span>Start edging game</span></div></div>
+    <div class="handy-row"><select id="handy_game_mode" class="text_pole" title="Edging game: dirty talk, porn she picks, edge after edge; she decides how it ends. Mommy's stamina training: she plays your mommy, keeps you on MILF porn and edging toward a longer goal each time, then a big finish."><option value="edging">Edging game</option><option value="mommy">Mommy's stamina training</option></select><div id="handy_game_btn" class="menu_button handy-game-btn" title="Start or end the game"><i class="fa-solid fa-hourglass-half"></i> <span>Start</span></div></div>
     <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
@@ -2763,7 +2827,7 @@ const ui = {
         }, true);
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
-        $('#handy_game_btn').on('click', () => { if (game.active) { game.end('quit'); game.nudge('Edging game ended.'); } else game.start(); });
+        $('#handy_game_btn').on('click', () => { if (game.active) { const n = GAMES[game.mode]; game.end('quit'); game.nudge(`${n} ended.`); } else game.start($('#handy_game_mode').val() || 'edging'); });
         $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
         $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
@@ -2796,7 +2860,8 @@ const ui = {
         const favs = pr.favorites.map((f, i) => ({ f, i })).sort((x, y) => (y.f.owner === akFav && !!akFav) - (x.f.owner === akFav && !!akFav));   // the character in control first
         $('#handy_favs').html(`<option value="">— favorites and signature moves —</option>` + favs.map(({ f, i }) => `<option value="${i}">${f.owner ? esc(s.characters?.[f.owner]?.name || 'character') + ' · ' : ''}${esc(f.name)}</option>`).join(''));
         $('#handy_game').text(game.status()).toggle(game.active);
-        $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End edging game' : 'Start edging game');
+        $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
+        $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
         if (!anyRunning()) $('#handy_live').text('stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;

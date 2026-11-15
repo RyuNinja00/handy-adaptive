@@ -337,7 +337,7 @@ async function testInlineImage(query = null) {
     preview.dataset.handyImagePoc = 'true';
     preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
     const img = document.createElement('img');
-    img.src = TEST_IMAGE_URL;
+    if (!query) img.src = TEST_IMAGE_URL;
     img.alt = 'Handy Adaptive test image';
     img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
     img.onload = () => { status.text(query ? 'Matching image loaded from local bridge.' : 'Test placeholder loaded in chat.'); };

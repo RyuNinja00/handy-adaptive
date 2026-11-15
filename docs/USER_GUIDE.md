@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.11.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.11.1.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -520,7 +520,7 @@ python3 trainer.py analyze ../training --vlm-url ""
 
 ### Games
 
-Pick a game from the menu near the bottom of the panel and press **Start**. Press **End** to quit at any time. **STOP**, your safeword and a typed "stop" work as always. *Games: edges before the character may end it* in the settings sets the minimum number of edges for both games (3 by default).
+Pick a game from the menu near the bottom of the panel and press **Start**. Press **End** to quit at any time. While a game runs, the idle stop waits at least 20 minutes, since you're watching rather than typing. Timed surprises only happen while the Handy is moving: they never restart it after you've stopped it. **STOP**, your safeword and a typed "stop" work as always. *Games: edges before the character may end it* in the settings sets the minimum number of edges for both games (3 by default).
 
 #### Edging game
 

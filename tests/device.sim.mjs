@@ -1103,7 +1103,7 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('secret: a huge load fills her panties, and she wears them next time', !!pg.H.profile().secrets?.filled && pg.H.profile().pantiesFilled === 'black lace thong');
     PG.start('panties'); await pg.advance(2000);
     check('next panty game: she wears the filled pair, and it calls back to last time', /wearing the pair he filled last time \(black lace thong\)/.test(last(pg)) && /This is game #2 of Panty game; last time: finished/.test(last(pg)));
-    await pg.advance(12 * 60000);
+    pg.message('<handy act="blowjob" intensity="0.5" panties="red satin g-string"/>'); await pg.advance(12 * 60000);
     check('secrets: her own pair and the office happen in a later game', !!pg.H.profile().secrets?.['her-pair'] && !!pg.H.profile().secrets?.office);
     PG.end('quit');
 
@@ -1141,6 +1141,34 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     mb.H.game.start('mommy'); mb.H.run({ act: 'handjob', intensity: 0.5 }); await mb.advance(3 * 60000);
     check('secret: a new stamina record', !!mb.H.profile().secrets?.['beat-best'] && /NEW RECORD/.test(last(mb)));
     check('there are 32 secrets', mb.H.secrets.total() === 32);
+
+    // ---- review fixes: timed surprises never restart a stopped device; secrets stay in their game; idle stop waits longer in a game
+    const sf = await boot({ seed: 380 });
+    sf.H.game.start('fucktoy'); sf.H.play.use('mouth'); await sf.advance(3000);
+    sf.H.stop('stop button'); await sf.advance(13 * 60000);
+    check('a timed surprise never restarts a device you stopped', !sf.H.active() && !sf.H.profile().secrets?.['free-use']);
+    sf.H.game.end('quit');
+    const r0b = sf.st.replies; sf.H.game.start('fucktoy'); await sf.advance(2000);
+    for (const h of sf.H.play.holes()) { sf.H.play.use(h); await sf.advance(3000); }
+    const r1b = sf.st.replies; sf.H.play.use('mouth'); await sf.advance(3000);
+    check('after the complete-set secret, each use still gets her reaction', sf.H.play.spitroast() && sf.st.replies > r1b, `${r1b} → ${sf.st.replies}`);
+    sf.H.game.end('quit');
+    sf.H.game.start('edging'); sf.message('<handy act="blowjob" intensity="0.6" panties="a" />'); 
+    check('secrets only fire in their own game', !sf.H.secrets.fire('jealous') && !sf.H.secrets.fire('broken-toy'));
+    await sf.advance(11 * 60000);
+    check('idle stop waits at least 20 minutes during a game', sf.H.active());
+    await sf.advance(10 * 60000);
+    check('…and still stops after that', !sf.H.active());
+    sf.H.game.end('quit');
+    const ro = await boot({ seed: 381, settings: { rouletteMinutes: 1 } });
+    ro.H.game.start('roulette'); await ro.advance(2000);
+    const rr = ro.st.replies; await ro.advance(70000);
+    check('the roulette wheel does not spin while the device is stopped', ro.st.replies === rr && !/THE WHEEL SPINS/.test(last(ro)));
+    ro.H.game.end('quit');
+    check('an ending without its own line is still explained to her', /THE USER ENDED PORN ROULETTE|ended porn roulette/i.test(last(ro)));
+    const go = await boot({ seed: 382 });
+    go.H.game.start('fucktoy'); await go.advance(1000); go.H.game.end('quit'); await go.advance(1000);
+    check('fucktoy ending is explained in words', /THE USER ENDED FUCKTOY/.test(last(go)));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

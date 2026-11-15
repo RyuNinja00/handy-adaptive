@@ -1,4 +1,4 @@
-/* Handy Adaptive v0.11.0 for Marinara Engine: style.css + marinara/compat.css */
+/* Handy Adaptive v0.11.1 for Marinara Engine: style.css + marinara/compat.css */
 #handy_panel {
     position: fixed; right: 12px; bottom: 90px; z-index: 3000; width: 250px;
     background: var(--SmartThemeBlurTintColor, #222c); backdrop-filter: blur(8px);

@@ -1,4 +1,4 @@
-// Handy Adaptive v0.11.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.11.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -862,7 +862,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.11.0; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.11.1; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -1211,7 +1211,7 @@ const actEngine = {
     pump() {
         if (!this.running || this.mode !== 'hdsp') return;
         const now = Date.now();
-        if (S().idleStopSec > 0 && now - lastActivity > S().idleStopSec * 1000) return stopAll('idle timeout');
+        if (idleOver(now)) return stopAll('idle timeout');
         implicitLearn();
         const tail = this.buf[this.buf.length - 1];
         if (tail && tail.at - now < 8000) {
@@ -1318,7 +1318,7 @@ const actEngine = {
         this.hssp.refill = setTimeout(() => enqueue(() => this.running && this.mode === 'hssp' && this.regenHssp()), 110000);
         clearInterval(this.timer);
         this.timer = setInterval(() => {
-            if (S().idleStopSec > 0 && Date.now() - lastActivity > S().idleStopSec * 1000) return stopAll('idle timeout');
+            if (idleOver(Date.now())) return stopAll('idle timeout');
             implicitLearn(); ui.live(this.currentPos());
         }, 500);
     },
@@ -1421,7 +1421,7 @@ const actEngine = {
     tickHsp() {
         if (!this.running || this.mode !== 'hsp') return;
         const now = Date.now();
-        if (S().idleStopSec > 0 && now - lastActivity > S().idleStopSec * 1000) return stopAll('idle timeout');
+        if (idleOver(now)) return stopAll('idle timeout');
         implicitLearn();
         const tail = this.buf[this.buf.length - 1];
         if (tail && tail.at - now < 8000) {
@@ -1538,7 +1538,7 @@ const hamp = {
     async tick() {
         const s = S();
         if (!this.running || api.busy) return;
-        if (s.idleStopSec > 0 && Date.now() - lastActivity > s.idleStopSec * 1000) return stopAll('idle timeout');
+        if (idleOver(Date.now())) return stopAll('idle timeout');
         const r = PATTERNS[this.pattern]((Date.now() - this.startedAt) / 1000, { ...this.params, period: Math.max(2, this.params.period) });
         const [lo, hi] = strokeRange();
         const tg = { speed: clamp(r.speed, Math.min(s.minSpeed, maxPct()), maxPct()), min: clamp(r.min, lo, hi), max: clamp(r.max, lo, hi) };
@@ -1555,6 +1555,12 @@ const hamp = {
 };
 
 let lastActivity = Date.now();
+// Idle stop. During a game you're watching rather than typing, so it waits at least 20 minutes.
+function idleOver(now) {
+    const sec = num(S().idleStopSec);
+    if (!(sec > 0)) return false;
+    return now - lastActivity > (game.active ? Math.max(sec, 1200) : sec) * 1000;
+}
 const anyRunning = () => actEngine.running || hamp.running;
 const anyActive = () => anyRunning() || actEngine.starting > 0 || hamp.starting > 0 || calib.active;   // moving, or about to
 function stopAll(reason) {
@@ -2102,7 +2108,7 @@ const focus = {
         if (!this.cur || !anyRunning()) return;
         for (const [k, l, x] of this.keys(this.cur)) { const it = this.item(k, l, x); it.sec += dt; it.last = Date.now(); }
         this.store().sec += dt;
-        if ((this.unsaved += dt) >= 15) { this.unsaved = 0; save(); }
+        if ((this.unsaved += dt) >= 15) { this.unsaved = 0; this.prune(); save(); }
     },
     // kind: edges | finishes | loves | nopes | begs. The focus on screen gets full credit; for a finish, what
     // was on screen in the last 90 s shares it by time, and for anything else the one just before (if it
@@ -2146,6 +2152,14 @@ const focus = {
         }
         save();
     },
+    // Keep what's learned to a sensible size: past 600 entries, the least useful (and oldest) go.
+    prune(max = 600) {
+        const items = this.store().items, keys = Object.keys(items);
+        if (keys.length <= max) return;
+        const worth = (it) => 5 * it.finishes + 2 * it.edges + it.loves + it.nopes + it.sec / 120;
+        keys.sort((a, b) => worth(items[a]) - worth(items[b]) || items[a].last - items[b].last);
+        for (const k of keys.slice(0, keys.length - Math.floor(max * 0.9))) delete items[k];
+    },
     heat(it) { return (2 * it.edges + 5 * it.finishes + 3 * (it.big || 0) + it.loves + 0.5 * it.begs - 2 * it.nopes) / (it.sec / 60 + 2); },
     // Every pair of panties named in a game goes in your drawer.
     drawer() { return (S().profile.drawer ??= {}); },
@@ -2153,7 +2167,7 @@ const focus = {
         const d = this.drawer(), k = norm(v), had = Object.keys(d).length;
         if (!d[k]) d[k] = { label: v, at: Date.now() };
         this.lastPanties = v;
-        if (had < 10 && Object.keys(d).length >= 10) secrets.fire('drawer');
+        if (Object.keys(d).length >= 10 && (had < 10 || !secrets.found().drawer)) secrets.fire('drawer');
     },
     // How big was it? Rated after a finish: what was on screen gets extra credit for a big one.
     rateLoad(size) {
@@ -2273,7 +2287,7 @@ const game = {
     start(mode = this.mode) {
         if (this.active || !S().enabled) return;
         this.stopTimers();
-        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0 });
+        Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false });
         if (this.mode === 'mommy') this.goal = this.target();
         play.onStart(this.mode);
         this.stats().played++; save();
@@ -2283,7 +2297,7 @@ const game = {
         this.nudge(`${GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
     spin() {
-        if (!this.active || this.mode !== 'roulette' || climax.active) return;
+        if (!this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
         if (this.scenes >= 2 && play.rand() < 0.25 && !secrets.session.has('double-spin')) {
             const others = Object.keys(LIB().acts).filter((a) => a !== actEngine.intent.act && a !== 'teasing');
             const b = others[Math.floor(play.rand() * others.length)];
@@ -2303,6 +2317,15 @@ const game = {
         }
     },
     tick(dt) { if (this.active && this.mode === 'trance' && anyRunning() && arousal.level >= 0.75) this.edgeSec += dt; play.tick(dt); },
+    // Her reaction to a panel button, after a short pause (several presses make one reply). Where an
+    // extension can't start a reply (Marinara), you're told once per game to send a message.
+    reply(ms) {
+        clearTimeout(replyTimer);
+        replyTimer = setTimeout(async () => {
+            try { await ctx().executeSlashCommandsWithOptions('/trigger'); }
+            catch { if (!this.toldToSend) { this.toldToSend = true; toast('Send a message to hear her react (this chat app can\'t start her reply on its own).', 'info'); } }
+        }, ms);
+    },
     // Ask for a reply now; where an extension can't (Marinara), tell you to send one.
     nudge(msg) {
         clearTimeout(replyTimer);
@@ -2392,7 +2415,7 @@ const game = {
         if (!this.active) return '';
         return ({ mommy: () => this.mommyText(), roulette: () => this.rouletteText(), trance: () => this.tranceText(), fucktoy: () => this.fucktoyText(),
             daddy: () => this.daddyText(), rivalry: () => this.rivalryText(), party: () => this.partyText(), cuckqueen: () => this.cuckqueenText(),
-            panties: () => this.pantiesText() }[this.mode]?.() ?? this.edgingText()).replace(this.tagsLine, `${this.levelLine() ? this.levelLine() + '\n' : ''}${this.tagsLine}`);
+            panties: () => this.pantiesText() }[this.mode]?.() ?? this.edgingText()).replace(this.tagsLine, () => `${this.levelLine() ? this.levelLine() + '\n' : ''}${this.tagsLine}`);
     },
     watchLine(examples) {
         return `- You choose what they watch: pick an act from the list above, tell them to put on a scene of exactly that, and play the same act on the device so what they feel matches what they see. Put scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" on that tag (e.g. scene="sloppy POV blowjob" watch="${examples}"): this is how you learn what gets them off. Every few replies change the scene or the focus.`;
@@ -2593,16 +2616,17 @@ const secrets = {
     found() { return (S().profile.secrets ??= {}); },
     total() { return Object.keys(SECRETS).length; },
     // Fire a secret once per game. extra fills %X in its text (a name, or " (…)" details).
-    fire(id, extra = '') {
+    // quiet: no reply of its own (at the start of a game, the opening reply carries it).
+    fire(id, extra = '', quiet = false) {
         const sx = SECRETS[id];
-        if (!sx || this.session.has(id)) return false;
+        if (!sx || this.session.has(id) || sx.game !== game.mode) return false;   // each belongs to its game (game.mode stays set just after a game ends)
         this.session.add(id);
         const f = this.found(), first = !f[id];
         f[id] = { at: f[id]?.at || Date.now(), n: (f[id]?.n || 0) + 1 }; save();
         logEvent('secret:' + id); pending.at(-1).extra = extra;
         toast(`🔓 ${first ? 'Secret found' : 'Secret'}: ${sx.name} (${Object.keys(f).length}/${this.total()} found)`, 'success');
         ui.refresh(); updatePrompt();
-        game.nudge(`🔓 ${sx.name}. Send a message to see what she does.`);
+        if (!quiet) game.nudge(`🔓 ${sx.name}. Send a message to see what she does.`);
         return true;
     },
     say(e) { const sx = SECRETS[e.kind.slice(7)]; return sx ? `SURPRISE: ${sx.text.replace('%X', e.extra || '')} (a hidden twist the user did not know existed: reveal it in character and make it a thrill; never call it a secret or a game feature)` : e.kind; },
@@ -2631,6 +2655,8 @@ const play = {
     timers: [],
     rand: Math.random,   // (tests pin it)
     later(ms, fn) { const t = setTimeout(() => { if (game.active) fn(); }, ms); this.timers.push(t); },
+    // a timed surprise happens only while the device is moving: it never restarts what you stopped
+    whileMoving(ms, fn) { this.later(ms, () => { if (anyRunning()) fn(); }); },
     clear() { for (const t of this.timers) clearTimeout(t); this.timers = []; },
     // Each game's own state, reset at the start.
     onStart(mode) {
@@ -2640,13 +2666,13 @@ const play = {
             scores: {}, behind: {}, speaker: null, sabotaged: false, sceneLoves: 0, lastEdgeAt: 0, winner: null });
         const pr = S().profile;
         if (mode === 'fucktoy') {
-            this.later(randInt(6, 12) * 60000, () => this.freeUse());
-            if (this.st('fucktoy').played >= 2) this.later(4000, () => secrets.fire('ranking', this.ranking()));
+            this.whileMoving(randInt(6, 12) * 60000, () => this.freeUse());
+            if (this.st('fucktoy').played >= 2) secrets.fire('ranking', this.ranking(), true);
         }
         if (mode === 'daddy') {
             const h = new Date().getHours();
-            if (h < 4) this.later(4000, () => secrets.fire('midnight'));
-            if (pr.daddyReward) { pr.daddyReward = false; save(); this.later(5000, () => secrets.fire('reward')); }
+            if (h < 4) secrets.fire('midnight', '', true);
+            if (pr.daddyReward) { pr.daddyReward = false; save(); secrets.fire('reward', '', true); }
         }
         if (mode === 'rivalry') {
             const champ = Object.entries(this.st('rivalry').wins || {}).find(([, w]) => w >= 3);
@@ -2654,23 +2680,23 @@ const play = {
         }
         if (mode === 'edging') {
             const r = this.st('edging').recent || [];
-            if (r.length >= 2 && r.slice(-2).every((o) => o === 'ruined' || o === 'denied')) this.later(4000, () => secrets.fire('mercy'));
+            if (r.length >= 2 && r.slice(-2).every((o) => o === 'ruined' || o === 'denied')) secrets.fire('mercy', '', true);
         }
-        if (mode === 'mommy' && new Date().getHours() >= 22) this.later(4000, () => secrets.fire('bedtime'));
+        if (mode === 'mommy' && new Date().getHours() >= 22) secrets.fire('bedtime', '', true);
         if (mode === 'cuckqueen') game.her = 0;
         if (mode === 'panties') {
-            this.later(randInt(5, 12) * 60000, () => {
+            this.whileMoving(randInt(5, 12) * 60000, () => {
                 if (!secrets.fire('her-pair')) return;
                 const hj = this.holeAct('hands') || actEngine.intent.act;
                 enqueue(() => actEngine.running && actEngine.apply({ act: hj, intensity: 0.35, variation: 0.1 }));
                 this.later(45000, () => enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.55 })));
             });
-            if (this.st('panties').played >= 1) this.later(randInt(6, 10) * 60000, () => secrets.fire('office'));
+            if (this.st('panties').played >= 1) this.whileMoving(randInt(6, 10) * 60000, () => secrets.fire('office'));
         }
         if (mode === 'party') {
-            this.later(randInt(4, 10) * 60000, () => { const u = focus.insights().untried; secrets.fire('remote', u.length ? ` (something with ${u[0]})` : ''); });
+            this.whileMoving(randInt(4, 10) * 60000, () => { const u = focus.insights().untried; secrets.fire('remote', u.length ? ` (something with ${u[0]})` : ''); });
             const I = focus.insights();
-            if (this.st('party').played >= 1 && I.edgers.length) this.later(5000, () => secrets.fire('rewind', ` (${focus.name(I.edgers[0])})`));
+            if (this.st('party').played >= 1 && I.edgers.length) secrets.fire('rewind', ` (${focus.name(I.edgers[0])})`, true);
         }
     },
     st(mode) { return game.stats(mode); },
@@ -2681,7 +2707,7 @@ const play = {
     },
     // ---- Fucktoy: you choose what you use
     use(h) {
-        if (!game.active || game.mode !== 'fucktoy') return;
+        if (!game.active || game.mode !== 'fucktoy' || calib.active) return;
         if (Date.now() < game.freeUntil) return toast("She's in charge for a moment: free use goes both ways.", 'warning');
         const spit = h === 'spitroast';
         const act = spit ? this.holeAct('mouth') : this.holeAct(h);
@@ -2694,17 +2720,18 @@ const play = {
         const st = this.st('fucktoy'); (st.uses ??= {})[h] = (st.uses[h] || 0) + 1; save();
         game.streak = game.lastHole === h ? game.streak + 1 : 1; game.lastHole = h;
         logEvent('use:' + h);
-        if (game.streak >= 5 && secrets.fire('broken-toy')) {
+        let fired = false;
+        if (game.streak >= 5 && (fired = secrets.fire('broken-toy'))) {
             enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.95, variation: 1 }));
             this.later(20000, () => enqueue(() => actEngine.running && actEngine.apply({ intensity: 0.7, variation: 0.4 })));
-        } else if (this.holes().every((x) => game.uses[x]) && this.holes().length >= 3) secrets.fire('full-set');
-        else debouncedReply(2500);
+        } else if (this.holes().length >= 3 && this.holes().every((x) => game.uses[x])) fired = secrets.fire('full-set');
+        if (!fired) game.reply(2500);
         ui.refresh(); updatePrompt();
     },
     freeUse() {
         const I = focus.insights(), top = I.finishers[0], act = (top?.act && LIB().acts[top.act]) ? top.act : climax.bestAct();
         game.freeUntil = Date.now() + 60000;
-        enqueue(() => actEngine.apply({ act, intensity: 0.8 }));
+        enqueue(() => actEngine.running && actEngine.apply({ act, intensity: 0.8 }));
         secrets.fire('free-use', ` (${act}${top ? `, with ${focus.name(top)} on screen` : ''})`);
     },
     // ---- Daddy's girl: praise makes her bolder; she must ask before making you cum
@@ -2718,7 +2745,7 @@ const play = {
             if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity: Math.min(cap, actEngine.intent.intensity + 0.07) }));
             logEvent('good-girl');
             if (game.good >= 10 && actEngine.running && secrets.fire('perfect-girl')) saveSignature("Daddy's Perfect Girl");
-            else debouncedReply(2500);
+            else game.reply(2500);
         }
         if (cmd === 'yes' && game.asking) {
             game.asking = false; game.lastYes = Date.now();
@@ -2728,7 +2755,7 @@ const play = {
             game.asking = false; game.waits++;
             if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity: Math.max(0.15, actEngine.intent.intensity * 0.6) }));
             logEvent('daddy-wait');
-            if (game.waits >= 3 && secrets.fire('brat')) { game.bratUntil = Date.now() + 120000; game.bratLast = Date.now(); } else debouncedReply(1500);
+            if (game.waits >= 3 && secrets.fire('brat')) { game.bratUntil = Date.now() + 120000; game.bratLast = Date.now(); } else game.reply(1500);
         }
         ui.refresh(); updatePrompt();
     },
@@ -2759,7 +2786,7 @@ const play = {
         let who = game.speaker || 'Her';
         const sc = game.scores, names = Object.keys(sc);
         const leader = names.sort((x, y) => sc[y] - sc[x])[0], trailing = names.filter((n) => n !== who).sort((x, y) => sc[x] - sc[y])[0];
-        if (!game.sabotaged && trailing && who === leader && this.rand() < 0.25) { game.sabotaged = true; who = trailing; secrets.fire('sabotage', who); }
+        if (!game.sabotaged && trailing && who === leader && sc[who] > sc[trailing] && this.rand() < 0.25) { game.sabotaged = true; who = trailing; secrets.fire('sabotage', who); }
         for (const n of Object.keys(sc)) game.behind[n] = Math.max(game.behind[n] || 0, Math.max(...Object.values(sc)) - sc[n]);
         sc[who] = (sc[who] || 0) + 1;
         const vals = Object.entries(sc);
@@ -2893,7 +2920,7 @@ function feedback(kind) {
     if (kind === 'finish') return finishSignal();
     if (kind === 'climax' && game.active && game.mode === 'daddy') { game.asking = true; return play.daddy('yes'); }   // daddy says so
     if (kind === 'climax' && game.active && BEGGING.has(game.mode)) {   // in these games, "Finish me" is begging: she decides
-        game.begs++; focus.credit('begs'); logEvent('begged'); updatePrompt(); debouncedReply(800); return;
+        game.begs++; focus.credit('begs'); logEvent('begged'); updatePrompt(); game.reply(800); return;
     }
     if (kind === 'climax') {   // "Finish me": start the push now and tell the AI
         enqueue(() => climax.start({})); logEvent('finish-me'); updatePrompt();
@@ -3215,9 +3242,18 @@ function profileText() {
         'climax-missed': 'THE CLIMAX PUSH ENDED WITHOUT A FINISH (the device has eased off: decide in character whether to tease, build again or change approach)',
         close: "I'M CLOSE", stop: 'STOP (the device has already stopped; do not restart it unless the user asks)',
         finished: S().finishAction === 'ai' ? 'FINISHED (climaxed; the device is still going: decide in character what happens now)' : 'FINISHED (climaxed; the device is winding down: be gentle, aftercare; do not restart unless the user asks)' };
-    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (e.kind.startsWith('secret:') ? secrets.say(e) : e.kind.startsWith('use:') ? `HE IS USING YOUR ${(HOLES[e.kind.slice(4)]?.label || e.kind.slice(4)).toUpperCase()} (the device has switched: obey and degrade)` : (FB[e.kind] || e.kind) + (e.kind === 'rival-win' && e.extra ? `: ${e.extra} won the rivalry and gets to make him cum` : '')) + (e.act && !e.kind.startsWith('secret:') ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : climax.active ? ' The device is pushing them over: keep going.' : ' The device has already eased off a little.') : ''}`);
+    if (pending.length) L.push(`LIVE FEEDBACK since your last message (acknowledge it in character and adapt): ${pending.map((e) => (e.kind.startsWith('secret:') ? secrets.say(e) : e.kind.startsWith('use:') ? `HE IS USING YOUR ${(HOLES[e.kind.slice(4)]?.label || e.kind.slice(4)).toUpperCase()} (the device has switched: obey and degrade)` : (FB[e.kind] || gameOverText(e.kind)) + (e.kind === 'rival-win' && e.extra ? `: ${e.extra} won the rivalry and gets to make him cum` : '')) + (e.act && !e.kind.startsWith('secret:') ? ` during ${e.act}` : '')).join(', ')}.${pending.some((e) => e.kind === 'close') ? (S().closeAction === 'ai' ? ' The device has NOT eased off: your tag decides.' : climax.active ? ' The device is pushing them over: keep going.' : ' The device has already eased off a little.') : ''}`);
     L.push(']');
     return L.join('\n');
+}
+// "game-fucktoy-quit" and the like, for the endings without a line of their own
+function gameOverText(kind) {
+    const m = /^game-(?:([a-z]+)-)?(allowed|ruined|denied|slipped|finished|quit)$/.exec(kind);
+    if (!m) return kind;
+    const name = GAMES[m[1] || 'edging'] || 'the game';
+    return { allowed: `${name} is over: they are cumming`, ruined: `${name} is over: ruined`, denied: `${name} is over: denied`,
+        slipped: `CAME WITHOUT PERMISSION (${name} is over: react in character)`, finished: `${name} is over: HE CAME (react in character)`,
+        quit: `THE USER ENDED ${name.toUpperCase()} (wrap it up in character)` }[m[2]];
 }
 function updatePrompt() {
     const c = ctx(), s = S();

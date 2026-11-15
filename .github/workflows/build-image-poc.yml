@@ -1,7 +1,7 @@
 name: Build Marinara image POC ZIP
 on:
   push:
-    branches: [feature/marinara-image-poc]
+    branches: [feature/marinara-image-poc, fix/marinara-shorthand-pics]
   workflow_dispatch:
 permissions:
   contents: write

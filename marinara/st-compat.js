@@ -286,10 +286,19 @@ const imagePreviewSeen = new Set();
 let lastImagePreviewAt = 0;
 const IMAGE_PREVIEW_COOLDOWN = 45000;
 const pictureQuery = (content) => {
-    for (const match of String(content).matchAll(/<handy\b([^>]*?)\/?>(?:\s*<\/handy>)?/gi)) {
-        const attrs = Object.fromEntries([...match[1].matchAll(/(\w+)\s*=\s*["']([^"']*)["']/g)].map((m) => [m[1].toLowerCase(), m[2]]));
-        if (attrs.pics) {
-            const cleaned = attrs.pics.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+    // Models sometimes emit <pics="query"/> instead of <handy pics="query"/>.
+    // Accept both while keeping the same query filtering for the preview.
+    const source = String(content || '');
+    const patterns = [
+        /<handy\b([^>]*?)\/?>(?:\s*<\/handy>)?/gi,
+        /<pics\s*=\s*(["'])(.*?)\1\s*\/?\s*>/gi,
+    ];
+    for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+            let raw = '';
+            if (pattern === patterns[1]) raw = match[2];
+            else raw = [...match[1].matchAll(/\bpics\s*=\s*(["'])(.*?)\1/gi)][0]?.[2] || '';
+            const cleaned = raw.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
             if (cleaned && !/\b(teen|underage|minor|child|kid|schoolgirl)\b/i.test(cleaned)) return cleaned;
         }
     }
@@ -344,7 +353,7 @@ settingsWin.find('#handy-st-auto-images').prop('checked', !!extensionSettings[MO
     saveSettingsDebounced();
 });
 function scheduleImagePreview(messageId, content) {
-    if (!extensionSettings[MODULE].imagePreviewPoc || !extensionSettings[MODULE].picLinks) return;
+    if (!extensionSettings[MODULE].imagePreviewPoc) return;
     const query = pictureQuery(content);
     if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
     imagePreviewSeen.add(messageId);

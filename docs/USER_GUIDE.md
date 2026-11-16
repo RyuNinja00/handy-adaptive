@@ -647,10 +647,22 @@ In Marinara, she can show you pictures she makes, drawn by an image model you've
 3. In Handy's ⚙ settings, under **Pictures she sends**:
    - **Let her send pictures**: on by default.
    - **Image connection**: the default is the image model chosen in the chat's own settings, or Marinara's default.
-   - **For keeping a woman the same**: pick the editing connection from step 2. If you leave it on *Same as above*, the reference picture is sent to your main model, which may ignore it.
+   - **For keeping a woman the same**: pick the editing connection from step 2. If you leave it on *Same as above*, the reference picture is sent to your main model, which may ignore it. Or pick **Venice directly** (see below).
    - **Picture style**: for example *photorealistic amateur smartphone photo* or *anime illustration*.
    - **At least this many seconds between pictures**: 60 by default, so pictures don't pile up (each one costs a generation).
    - **Test picture** draws a harmless test image to check the connection.
+
+**Using Venice**
+
+Marinara has Venice.ai as an image service, but it doesn't send reference pictures to Venice, so a woman you ❤ wouldn't keep her look. **Venice directly** fixes that: the extension sends her ❤ picture to Venice's own editing API itself.
+
+1. In Marinara, add an image connection: **Connections → New → Image Generation**, service **Venice.ai**, your Venice API key, model `lustify-v8` (or another of Venice's adult models). Marinara turns Venice's blur off on its own. Pick it as **Image connection** in Handy's settings.
+2. Under **For keeping a woman the same**, pick **Venice directly**.
+3. Paste your **Venice API key** (from venice.ai/settings/api). It's saved in this extension's settings in Marinara and is not part of **Export**.
+4. **Venice edit model**: `qwen-edit-uncensored` by default. Venice's other edit models have stricter content rules.
+5. Press **Test Venice**: it turns a simple drawing into a photo of an apple, which checks the key, the model and that your browser may call Venice.
+
+Only her newest ❤ picture is sent, with *safe mode* off so Venice doesn't blur it. Venice's editing has no negative prompt, so the avoid-list (anything young-looking and so on) is added to the prompt. If Venice fails (no credit, a refusal, unreachable), she still sends the picture: it's drawn by your **Image connection** from her look alone, and the panel says why.
 
 **How it works in a game**
 

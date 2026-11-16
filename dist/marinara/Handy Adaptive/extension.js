@@ -1,4 +1,4 @@
-// Handy Adaptive v0.14.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.14.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -28,8 +28,9 @@ const $ = jQuery;
 //   CHAT_CHANGED                 → when a reply is requested for a different chat
 //   saveSettingsDebounced()      → Marinara's private extension storage
 //   toastr, #extensions_settings2, the icon font → small stand-ins
-//   handyImages (Marinara only)  → pictures drawn by Marinara's own image connections,
-//                                  saved to the chat's Gallery and attached under her message
+//   handyImages (Marinara only)  → pictures drawn by Marinara's own image connections (or, for a
+//                                  woman he ❤, by Venice's editing API directly), saved to the
+//                                  chat's Gallery and attached under her message
 //
 // jQuery and the managed timers ($, jQuery, setTimeout, setInterval, ...) are
 // declared by the build just above this file, so nothing leaks onto the page
@@ -326,13 +327,71 @@ async function resolveImageConnection(wantId, chatId) {
     }
     return list.find((x) => x.agentDefault) || list[0];
 }
+const blobToDataUrl = (blob) => new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => bad(fr.error); fr.readAsDataURL(blob); });
 async function toDataUrl(src) {
     if (/^data:image\//.test(src)) return src;
     const r = await nativeFetch.call(window, src, { headers: adminHeaders(), cache: 'force-cache' });
     if (!r.ok) throw new Error(`could not read ${src} (HTTP ${r.status})`);
-    const blob = await r.blob();
-    return await new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => bad(fr.error); fr.readAsDataURL(blob); });
+    return blobToDataUrl(await r.blob());
 }
+
+// Venice directly, for pictures drawn FROM a picture he ❤. Marinara's Venice image service sends no reference
+// pictures, so this calls Venice's own /image/multi-edit with the key set in the extension's settings. The
+// newest ❤ picture is the base image; the prompt says what changes. safe_mode is off (Venice blurs adult
+// pictures otherwise). Only pictures this extension drew and he ❤ are ever sent: never a photo of a real person.
+const VENICE_EDIT = 'venice';
+const venice = {
+    base: () => String(extensionSettings[MODULE].veniceBase || 'https://api.venice.ai/api/v1').trim().replace(/\/+$/, ''),
+    key: () => String(extensionSettings[MODULE].veniceKey || '').trim(),
+    model: () => String(extensionSettings[MODULE].veniceEditModel || '').trim() || 'qwen-edit-uncensored',
+    aspect(w, h) {
+        const r = w / h;
+        return [['1:1', 1], ['2:3', 2 / 3], ['3:4', 3 / 4], ['9:16', 9 / 16], ['3:2', 3 / 2], ['4:3', 4 / 3], ['16:9', 16 / 9]]
+            .reduce((a, b) => (Math.abs(b[1] - r) < Math.abs(a[1] - r) ? b : a))[0];
+    },
+    why(status, msg) {
+        const m = msg ? `: ${msg}` : '';
+        return ({
+            400: `Venice rejected the request${m}`,
+            401: 'Venice rejected the API key (check it in the settings)',
+            402: 'your Venice balance is empty: add credit at venice.ai',
+            403: 'Venice refused this key from here (is the key IP-restricted?)',
+            422: `Venice's edit model refused this picture (its content policy)${m}`,
+            429: 'Venice rate limit reached: try again in a moment',
+            503: 'Venice\'s edit model is busy: try again in a moment',
+        })[status] || `Venice answered HTTP ${status}${m}`;
+    },
+    // image: a data URL. → { dataUrl, connection, usedReferences }
+    async edit({ prompt, image, width = 832, height = 1216 }) {
+        const key = this.key();
+        if (!key) throw new Error('no Venice API key in the settings (Pictures → Venice API key)');
+        const body = { modelId: this.model(), prompt: String(prompt).slice(0, 4000), images: [String(image).replace(/^data:[^,]*,/, '')],
+            aspect_ratio: this.aspect(width, height), safe_mode: false };
+        let r;
+        try {
+            r = await nativeFetch.call(window, `${this.base()}/image/multi-edit`, { method: 'POST', cache: 'no-store',
+                headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'image/*, application/json' }, body: JSON.stringify(body) });
+        } catch (e) { throw new Error(`couldn't reach Venice from this page (${e.message}): the network or the browser blocked it`); }
+        if (!r.ok) {
+            let m = ''; try { const j = await r.json(); m = [j.error, j.details && JSON.stringify(j.details)].filter(Boolean).join(' ').slice(0, 200); } catch { /* not json */ }
+            throw new Error(this.why(r.status, m));
+        }
+        if (String(r.headers.get('x-venice-is-content-violation')) === 'true') throw new Error('Venice refused this edit (its content policy)');
+        const blob = await r.blob();
+        if (!/^image\//.test(blob.type)) throw new Error('Venice returned no picture');
+        return { dataUrl: await blobToDataUrl(blob), connection: `Venice (${this.model()})`, usedReferences: 1 };
+    },
+    // A cheap check of the key, the model and that this page may call Venice: a drawn shape becomes a photo.
+    async test() {
+        const cv = Object.assign(document.createElement('canvas'), { width: 512, height: 512 });
+        const g = cv.getContext('2d');
+        g.fillStyle = '#f2efe8'; g.fillRect(0, 0, 512, 512);
+        g.fillStyle = '#c0392b'; g.beginPath(); g.arc(256, 280, 130, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#6b4226'; g.fillRect(250, 120, 12, 50);
+        return this.edit({ prompt: 'Turn this simple drawing into a realistic photo of a red apple on a wooden table, soft daylight.', image: cv.toDataURL('image/png'), width: 512, height: 512 });
+    },
+};
+const REF_LINE = /^Keep the woman from the reference pictures?[^.]*\.[^.]*as described\.\s*/;
 // Live previews under a message, until Marinara renders the saved attachment itself.
 const previews = {
     list: new Map(),   // url -> element
@@ -366,10 +425,24 @@ const imageHost = {
     available: () => true,
     connections: imageConnections,
     toDataUrl,
-    // → { dataUrl, connection }. references: picture URLs or data URLs of the same woman (pictures he liked).
+    veniceTest: () => venice.test(),
+    // → { dataUrl, connection, usedReferences, warning? }. references: picture URLs or data URLs of the same
+    // woman (pictures he liked), oldest first.
     async generate({ prompt, negativePrompt = '', references = [], width = 832, height = 1216, chatId = scene.chatId }) {
         const s = extensionSettings[MODULE];
-        const useEdit = references.length > 0 && s.imageEditConnection;
+        if (references.length > 0 && s.imageEditConnection === VENICE_EDIT) {
+            try {
+                const image = await toDataUrl(references[references.length - 1]);
+                const text = [prompt, negativePrompt ? `Do not show: ${negativePrompt}.` : ''].filter(Boolean).join(' ');   // multi-edit has no negative prompt
+                return await venice.edit({ prompt: text, image, width, height });
+            } catch (e) {
+                // she still gets a picture: drawn by the usual connection, from her look alone
+                console.warn('[Handy] Venice edit failed, drawing without the reference', e);
+                const out = await this.generate({ prompt: String(prompt).replace(REF_LINE, ''), negativePrompt, references: [], width, height, chatId });
+                return { ...out, warning: `Venice editing failed (${e.message}), so this one was drawn without her ❤ picture.` };
+            }
+        }
+        const useEdit = references.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
         const conn = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId);
         const refs = [];
         for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
@@ -1032,7 +1105,10 @@ const DEFAULTS = {
     picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
     imageGen: true,             // Marinara: she may send pictures she has drawn by Marinara's image connection
     imageConnection: '',        // Marinara image connection id ('' = the chat's image model, else Marinara's default)
-    imageEditConnection: '',    // connection for pictures that keep a woman you ❤ the same ('' = the one above)
+    imageEditConnection: '',    // connection for pictures that keep a woman you ❤ the same ('' = the one above, 'venice' = Venice directly)
+    veniceKey: '',              // Venice API key, only for 'venice' above (Marinara's Venice service sends no reference pictures)
+    veniceEditModel: 'qwen-edit-uncensored',
+    veniceBase: 'https://api.venice.ai/api/v1',
     imageStyle: 'photorealistic amateur smartphone photo, natural light, sharp focus',
     imageGapSec: 60,            // at least this long between pictures
     storyStageMinutes: 8,       // story mode: minutes per stage (or 2 edges, whichever comes first)
@@ -2271,9 +2347,10 @@ const images = {
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
             let url = out.dataUrl, galleryId = null;
             if (job.chatId) { try { ({ url, galleryId } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { toast(`Picture drawn, but not saved: ${e.message}`, 'warning'); } }
-            const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: job.refs.length > 0, at: Date.now() };
+            const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
             this.status = '';
+            if (out.warning) { this.status = `🖼 ${out.warning}`; toast(out.warning, 'warning'); }
         } catch (e) {
             this.status = `🖼 picture failed: ${e.message}`;
             this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);
@@ -2324,6 +2401,15 @@ const images = {
             $('#handy_img_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`);
         } catch (e) { $('#handy_img_status').text(`Failed: ${e.message}`); }
     },
+    veniceBox() { $('#handy_venice_box').toggle(S().imageEditConnection === 'venice'); },
+    async testVenice() {
+        const host = this.host(); if (!host?.veniceTest) return;
+        $('#handy_venice_status').text('Asking Venice for a test edit…');
+        try {
+            const out = await host.veniceTest();
+            $('#handy_venice_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test edit">`);
+        } catch (e) { $('#handy_venice_status').text(`Failed: ${e.message}`); }
+    },
     async fillConnections() {
         const host = this.host();
         $('#handy_img_box').toggle(!!host); $('#handy_img_none').toggle(!host);
@@ -2332,7 +2418,9 @@ const images = {
         try { list = await host.connections(); } catch (e) { $('#handy_img_status').text(`Couldn't list image connections: ${e.message}`); }
         const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}</option>`;
         $('#handy_img_conn').html(`<option value="">This chat's image model (or Marinara's default)</option>` + list.map((c) => opt(c, S().imageConnection)).join(''));
-        $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join(''));
+        $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join('')
+            + `<option value="venice" ${S().imageEditConnection === 'venice' ? 'selected' : ''}>Venice directly (uncensored editing, needs a Venice API key)</option>`);
+        this.veniceBox();
         if (!list.length) $('#handy_img_status').text('No image connection in Marinara yet: add one under Connections → Image Generation.');
     },
 };
@@ -4029,7 +4117,13 @@ const ui = {
     <div id="handy_img_box">
       <label class="checkbox_label"><input type="checkbox" id="handy_img_on"> Let her send pictures, drawn by Marinara's image generation</label>
       <label>Image connection <select id="handy_img_conn" class="text_pole"></select></label>
-      <label title="Used once you ❤ a picture: later pictures of that woman are drawn from it. Pick an image-editing model here (for SpicyAPI's MiniMax H3, its edit model).">For keeping a woman the same (from pictures you ❤) <select id="handy_img_edit" class="text_pole"></select></label>
+      <label title="Used once you ❤ a picture: later pictures of that woman are drawn from it. Pick an image-editing model here (for SpicyAPI's MiniMax H3, its edit model), or Venice directly.">For keeping a woman the same (from pictures you ❤) <select id="handy_img_edit" class="text_pole"></select></label>
+      <div id="handy_venice_box">
+        <label title="Saved in this extension's settings in Marinara. Marinara's own Venice image service can't send the picture you ❤, so the extension calls Venice itself for these.">Venice API key <input type="password" id="handy_venice_key" class="text_pole" autocomplete="off" placeholder="from venice.ai/settings/api"></label>
+        <label>Venice edit model <input type="text" id="handy_venice_model" class="text_pole" placeholder="qwen-edit-uncensored"></label>
+        <div class="flex-container"><div id="handy_venice_test" class="menu_button">Test Venice</div></div>
+        <div id="handy_venice_status" class="handy-small">Only pictures she drew and you ❤ are ever sent to Venice. If Venice fails, the picture is drawn by the image connection above instead, from her look alone.</div>
+      </div>
       <label>Picture style <input type="text" id="handy_img_style" class="text_pole" placeholder="photorealistic amateur smartphone photo, natural light"></label>
       <label>At least this many seconds between pictures <input type="number" id="handy_img_gap" class="text_pole" min="0" max="3600"></label>
       <div class="flex-container"><div id="handy_img_test" class="menu_button">Test picture</div><div id="handy_img_reload" class="menu_button" title="Reload the list of image connections">↻</div></div>
@@ -4135,6 +4229,9 @@ const ui = {
         bind('#handy_img_on', 'imageGen', 'checked'); bind('#handy_img_conn', 'imageConnection'); bind('#handy_img_edit', 'imageEditConnection'); bind('#handy_img_style', 'imageStyle'); bind('#handy_img_gap', 'imageGapSec');
         $('#handy_img_on').on('change', () => { ui.refresh(); updatePrompt(); });
         $('#handy_img_test').on('click', () => images.test());
+        bind('#handy_venice_key', 'veniceKey'); bind('#handy_venice_model', 'veniceEditModel');
+        $('#handy_img_edit').on('change', () => images.veniceBox());
+        $('#handy_venice_test').on('click', () => images.testVenice());
         $('#handy_img_reload').on('click', () => images.fillConnections());
         images.fillConnections(); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_story_min', 'storyStageMinutes');
         bind('#handy_voice_on', 'voiceOn', 'checked'); bind('#handy_voice_sync', 'voiceSync', 'checked'); bind('#handy_voice_name', 'voiceName'); bind('#handy_voice_rate', 'voiceRate'); bind('#handy_voice_pitch', 'voicePitch');

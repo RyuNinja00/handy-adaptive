@@ -71,3 +71,11 @@
 
 .handy-videos { margin-top: 4px; line-height: 1.5; }
 .handy-videos a { text-decoration: underline; }
+.handy-pictures { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.handy-pic { position: relative; width: 62px; height: 84px; border-radius: 6px; overflow: hidden; border: 2px solid transparent; }
+.handy-pic.rated-love { border-color: #ec4b97; }
+.handy-pic.rated-nope { opacity: .45; }
+.handy-pic img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; display: block; }
+.handy-pic-rate { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: #000a; font-size: 13px; }
+.handy-pic-rate span { cursor: pointer; padding: 1px 4px; }
+.handy-img-test { display: block; max-width: 160px; margin-top: 4px; border-radius: 6px; }

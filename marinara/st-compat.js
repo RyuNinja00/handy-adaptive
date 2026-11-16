@@ -13,6 +13,8 @@
 //   CHAT_CHANGED                 → when a reply is requested for a different chat
 //   saveSettingsDebounced()      → Marinara's private extension storage
 //   toastr, #extensions_settings2, the icon font → small stand-ins
+//   handyImages (Marinara only)  → pictures drawn by Marinara's own image connections,
+//                                  saved to the chat's Gallery and attached under her message
 //
 // jQuery and the managed timers ($, jQuery, setTimeout, setInterval, ...) are
 // declared by the build just above this file, so nothing leaks onto the page
@@ -90,6 +92,7 @@ const SillyTavern = {
         groupId: scene.groupId, name1: scene.name1, name2: scene.name2,
         setExtensionPrompt(key, value) { if (key === MODULE) { promptText = String(value || ''); schedulePromptSync(); } },
         executeSlashCommandsWithOptions: async () => { throw new Error('starting a reply from an extension is not available in Marinara'); },
+        handyImages: imageHost,
     }),
 };
 
@@ -224,11 +227,10 @@ async function afterReply(res, chatId, before) {
         const old = handled.has(m.id) ? handled.get(m.id) : before.get(m.id);
         if (old === m.content) continue;
         handled.set(m.id, m.content);
-        scheduleImagePreview(m.id, m.content);
         const text = old && m.content.startsWith(old) ? m.content.slice(old.length) : m.content;   // Continue: only the new part
         const ch = scene.characters.find((c) => c.id === m.characterId);
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
-            original_avatar: ch?.avatar, send_date: Date.now(), extra: {} });
+            original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id } } });
         eventSource.emit(eventTypes.MESSAGE_RECEIVED, idx);
     }
     while (handled.size > 500) handled.delete(handled.keys().next().value);
@@ -241,7 +243,7 @@ async function hookedFetch(input, init) {
     if (!chatId || body.impersonate || body.turnGameBots) return nativeFetch.apply(window, arguments);
     let before = new Map();
     try {
-        if (chatId !== scene.chatId) { imagePreviewSeen.clear(); lastImagePreviewAt = 0; document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove()); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
+        if (chatId !== scene.chatId) { previews.clear(); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
         if (typeof body.userMessage === 'string' && body.userMessage.trim()) {
             const idx = mirror({ name: scene.name1, is_user: true, is_system: false, mes: body.userMessage, send_date: Date.now(), extra: {} });
             eventSource.emit(eventTypes.MESSAGE_SENT, idx);
@@ -279,96 +281,118 @@ const settingsWin = $(`
   <div class="handy-st-compat">
     <div id="handy-st-ai" class="handy-st-small"></div>
     <div class="menu_button" id="handy-st-hide-tags">Hide device tags in chat</div>
-    <div class="menu_button" id="handy-st-test-image" role="button" tabindex="0">🖼 Test inline image (POC)</div>
-    <label class="handy-st-small"><input type="checkbox" id="handy-st-auto-images"> Show image previews for AI picture requests (including games)</label>
-    <div id="handy-st-image-status" class="handy-st-small" aria-live="polite"></div>
   </div>
   <div id="extensions_settings2"></div>
 </div>`).appendTo(document.body);
 settingsWin.find('.handy-st-close').on('click', () => settingsWin.prop('hidden', true));
 settingsWin.find('#handy-st-hide-tags').on('click', () => ensureHideRegex({ quiet: false }));
 
- // Image POC: browser-only preview. Does not mutate persisted messages or device state.
-const TEST_IMAGE_URL = 'https://placehold.co/640x360/png?text=Handy+Adaptive+Image+Test';
-const imagePreviewSeen = new Set();
-let lastImagePreviewAt = 0;
-const IMAGE_PREVIEW_COOLDOWN = 45000;
-const pictureQuery = (content) => {
-    // Models sometimes emit <pics="query"/> instead of <handy pics="query"/>.
-    // Accept both while keeping the same query filtering for the preview.
-    const source = String(content || '');
-    const patterns = [
-        /<handy\b([^>]*?)\/?>(?:\s*<\/handy>)?/gi,
-        /<pics\s*=\s*(["'])(.*?)\1\s*\/?\s*>/gi,
-    ];
-    for (const pattern of patterns) {
-        for (const match of source.matchAll(pattern)) {
-            let raw = '';
-            if (pattern === patterns[1]) raw = match[2];
-            else raw = [...match[1].matchAll(/\bpics\s*=\s*(["'])(.*?)\1/gi)][0]?.[2] || '';
-            const cleaned = raw.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
-            if (cleaned && !/\b(teen|underage|minor|child|kid|schoolgirl)\b/i.test(cleaned)) return cleaned;
-        }
+// ---------------------------------------------------------------- generated pictures (Marinara's image connections)
+// index.js asks for a picture; it is drawn by one of the image connections set up in Marinara (Connections →
+// Image Generation), using Marinara's avatar-generation endpoint, the only one that takes a full prompt and
+// reference images. The picture is saved to the chat's Gallery and attached under the AI message that asked
+// for it, so it stays after a reload. Until Marinara next reloads the messages, a preview is shown in place.
+const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
+async function imageConnections() {
+    return asList(await mapi('GET', '/connections')).filter((c) => c && c.provider === 'image_generation')
+        .map((c) => ({ id: c.id, name: c.name || c.model || 'Image connection', model: c.model || '', agentDefault: String(c.defaultForAgents) === 'true' }));
+}
+async function resolveImageConnection(wantId, chatId) {
+    const list = await imageConnections();
+    if (!list.length) throw new Error('no image connection in Marinara yet: add one under Connections (Image Generation)');
+    if (wantId) { const c = list.find((x) => x.id === wantId); if (c) return c; }
+    if (chatId) {   // the image model chosen in this chat's settings
+        try {
+            const chat = await mapi('GET', `/chats/${enc(chatId)}`);
+            const meta = parseMaybe(chat.metadata, {}) || {};
+            const c = list.find((x) => x.id === String(meta.imageGenConnectionId || '').trim());
+            if (c) return c;
+        } catch { /* fall through */ }
     }
-    return null;
+    return list.find((x) => x.agentDefault) || list[0];
+}
+async function toDataUrl(src) {
+    if (/^data:image\//.test(src)) return src;
+    const r = await nativeFetch.call(window, src, { headers: adminHeaders(), cache: 'force-cache' });
+    if (!r.ok) throw new Error(`could not read ${src} (HTTP ${r.status})`);
+    const blob = await r.blob();
+    return await new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => bad(fr.error); fr.readAsDataURL(blob); });
+}
+// Live previews under a message, until Marinara renders the saved attachment itself.
+const previews = {
+    list: new Map(),   // url -> element
+    show(messageId, url, title) {
+        const el = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+        if (!el || this.list.has(url)) return;
+        const fig = document.createElement('figure');
+        fig.className = 'handy-pic-preview'; fig.dataset.handyPic = url;
+        const img = document.createElement('img'); img.src = url; img.alt = title || 'picture';
+        img.addEventListener('click', () => window.open(url, '_blank', 'noopener'));
+        fig.append(img);
+        el.append(fig);
+        this.list.set(url, fig);
+        this.watch();
+    },
+    timer: null,
+    watch() {
+        if (this.timer) return;
+        this.timer = setInterval(() => {
+            for (const [url, fig] of this.list) {
+                const host = fig.parentElement;
+                const native = host && [...host.querySelectorAll('img')].some((i) => i !== fig.firstChild && (i.getAttribute('src') || '').includes(url.split('/').pop()));
+                if (!host || !fig.isConnected || native) { fig.remove(); this.list.delete(url); }
+            }
+            if (!this.list.size) { clearInterval(this.timer); this.timer = null; }
+        }, 1500);
+    },
+    clear() { for (const fig of this.list.values()) fig.remove(); this.list.clear(); },
 };
-
-function testInlineImage(query = null) {
-    const status = settingsWin.find('#handy-st-image-status');
-    const candidates = [
-        '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
-        '.chat-message', '.message', '[role="article"]',
-    ];
-    let target = null;
-    for (const selector of candidates) {
-        const matches = [...document.querySelectorAll(selector)].filter((el) =>
-            !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
-            el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
-        if (matches.length) { target = matches[matches.length - 1]; break; }
-    }
-    if (!target) {
-        status.text('No recognizable chat message found. Open a conversation with at least one message, then retry.');
-        compatToast('Image POC: no chat message container found', 'warning');
-        return;
-    }
-    if (!query) document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove());
-    const preview = document.createElement('figure');
-    preview.dataset.handyImagePoc = 'true';
-    preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
-    const img = document.createElement('img');
-    img.src = TEST_IMAGE_URL;
-    img.alt = 'Handy Adaptive test image';
-    img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
-    img.onload = () => { status.text('Image loaded in chat DOM. Refresh to confirm this preview is temporary.'); };
-    img.onerror = () => { status.text('Image request failed: check browser network/CSP restrictions.'); };
-    const caption = document.createElement('figcaption');
-    caption.textContent = query ? `Picture request: ${query} (placeholder preview; not a matching image)` : 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
-    if (query) {
-        const link = document.createElement('a');
-        link.href = `https://www.pornpics.com/?q=${encodeURIComponent(query)}`;
-        link.target = '_blank'; link.rel = 'noopener noreferrer';
-        link.textContent = 'Open matching picture search';
-        caption.append(' · ', link);
-    }
-    caption.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
-    preview.append(img, caption);
-    target.append(preview);
-    status.text('Preview inserted. Waiting for image to load…');
-}
-settingsWin.find('#handy-st-test-image').on('click', () => testInlineImage());
-settingsWin.find('#handy-st-auto-images').prop('checked', !!extensionSettings[MODULE].imagePreviewPoc).on('change', function () {
-    extensionSettings[MODULE].imagePreviewPoc = this.checked;
-    saveSettingsDebounced();
-});
-function scheduleImagePreview(messageId, content) {
-    if (!extensionSettings[MODULE].imagePreviewPoc) return;
-    const query = pictureQuery(content);
-    if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
-    imagePreviewSeen.add(messageId);
-    lastImagePreviewAt = Date.now();
-    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) testInlineImage(query); }, 700);
-}
-
+const imageHost = {
+    available: () => true,
+    connections: imageConnections,
+    toDataUrl,
+    // → { dataUrl, connection }. references: picture URLs or data URLs of the same woman (pictures he liked).
+    async generate({ prompt, negativePrompt = '', references = [], width = 832, height = 1216, chatId = scene.chatId }) {
+        const s = extensionSettings[MODULE];
+        const useEdit = references.length > 0 && s.imageEditConnection;
+        const conn = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId);
+        const refs = [];
+        for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
+        const name = 'handy-picture';
+        const out = await mapi('POST', '/characters/avatar-generation', {
+            connectionId: conn.id, name, appearance: String(prompt).slice(0, 2000), purpose: 'avatar',
+            width: Math.round(width), height: Math.round(height),
+            ...(refs.length ? { referenceImages: refs } : {}),
+            promptOverrides: [{ id: `avatar:${name}`, prompt: String(prompt), negativePrompt: String(negativePrompt || '') }],
+        });
+        if (!out || typeof out.image !== 'string' || !out.image.startsWith('data:image/')) throw new Error('the image connection returned no picture');
+        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length };
+    },
+    // Save to the chat's Gallery and attach under the message. → { url, galleryId }
+    async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
+        const mime = /^data:([^;,]+)/.exec(dataUrl)?.[1] || 'image/png';
+        const blob = await (await nativeFetch.call(window, dataUrl)).blob();
+        const fd = new FormData();
+        fd.append('prompt', String(prompt).slice(0, 4000));
+        fd.append('provider', 'image_generation'); fd.append('model', 'Handy Adaptive');
+        fd.append('file', blob, `handy-picture.${IMG_EXT[mime] || 'png'}`);
+        const r = await nativeFetch.call(window, `/api/gallery/${enc(chatId)}/upload`, { method: 'POST', body: fd, headers: { 'x-marinara-csrf': '1', ...adminHeaders() }, cache: 'no-store' });
+        if (!r.ok) { let m = ''; try { m = (await r.json()).error || ''; } catch { /* not json */ } throw new Error(`saving to the Gallery failed (HTTP ${r.status}${m ? `: ${m}` : ''})`); }
+        const saved = await r.json();
+        if (messageId) {
+            try {
+                const msgs = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=30`);
+                const msg = (Array.isArray(msgs) ? msgs : []).find((x) => x.id === messageId);
+                const extra = parseMaybe(msg?.extra, {}) || {};
+                const attachments = [...(Array.isArray(extra.attachments) ? extra.attachments : []),
+                    { type: 'image', url: saved.url, prompt: String(prompt).slice(0, 2000), galleryId: saved.id, name: title || 'picture', filename: title || 'picture' }];
+                await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra`, { attachments });
+                previews.show(messageId, saved.url, title);
+            } catch (e) { console.warn('[Handy] picture saved to the Gallery, but not attached to the message', e); }
+        }
+        return { url: saved.url, galleryId: saved.id };
+    },
+};
 
 function refreshCompatStatus() {
     const s = extensionSettings[MODULE];
@@ -408,7 +432,7 @@ marinara.onCleanup(async () => {
         await ensureLorebook();
         await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
     } catch { /* best effort */ }
-    $('[data-handy-image-poc]').remove();
+    previews.clear(); clearInterval(previews.timer);
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;

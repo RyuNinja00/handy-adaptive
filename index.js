@@ -46,6 +46,11 @@ const DEFAULTS = {
     videoLinks: true,           // the AI may suggest a video search: a link to the site's own search results
     videoSite: 'pornhub',       // pornhub | xhamster | xvideos
     picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
+    imageGen: true,             // Marinara: she may send pictures she has drawn by Marinara's image connection
+    imageConnection: '',        // Marinara image connection id ('' = the chat's image model, else Marinara's default)
+    imageEditConnection: '',    // connection for pictures that keep a woman you ❤ the same ('' = the one above)
+    imageStyle: 'photorealistic amateur smartphone photo, natural light, sharp focus',
+    imageGapSec: 60,            // at least this long between pictures
     storyStageMinutes: 8,       // story mode: minutes per stage (or 2 edges, whichever comes first)
     voiceOn: false,             // read her replies aloud (the browser's own voices)
     voiceSync: true,            // …with a deep stroke on the words that matter
@@ -88,6 +93,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // Today's date where you are (not UTC: an evening session must not be filed under tomorrow).
 const today = (t = Date.now()) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const esc = (t) => $('<div>').text(String(t)).html();
+const escA = (t) => esc(t).replace(/"/g, '&quot;').replace(/'/g, '&#39;');   // for attribute values
 const maxPct = () => clamp(Number.isFinite(+S().maxSpeed) ? +S().maxSpeed : 80, 5, 100);   // a typed 250 is still 100 %
 const maxVel = () => 60 + (maxPct() / 100) * 540;   // %/s: 80% cap ≈ 490 %/s
 
@@ -1217,6 +1223,136 @@ const videos = {
     },
 };
 
+// ---------------------------------------------------------------- generated pictures (Marinara)
+// A tag's img="WHAT THE PICTURE SHOWS" asks for a picture of a woman of the cast (her="NAME"). It is drawn by
+// Marinara's image connection and appears under her message. Each woman keeps a fixed look (look="…", given
+// the first time), so she stays the same person. ❤ a picture on the panel and it becomes her reference: later
+// pictures of her are drawn FROM it (an image-editing model keeps her face and body), for the rest of the
+// session and, for a cast member, in later games too. Pictures are only ever of invented adult women.
+const IMG_NEG = 'child, minor, teenager, childlike body, young-looking face, school uniform, text, watermark, logo, extra limbs, deformed hands';
+const IMG_REAL = /\b(my|his|your|our)\s+(real\s+)?(wife|girlfriend|gf|ex|fianc\w*|coworkers?|colleagues?|boss|neighbou?rs?|friends?|classmates?|sister|mom|mother|cousin|aunt|step\w*)\b/i;
+function cleanImgText(t, max = 500) {
+    return String(t || '').replace(/[<>"]/g, ' ').toLowerCase().replace(SEARCH_BLOCK, ' ').replace(/\s+([,.;])/g, '$1').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+const images = {
+    host() { const h = ctx().handyImages; return h && h.available?.() ? h : null; },
+    on() { return !!(S().imageGen && this.host()); },
+    session: { subjects: {}, shots: [] },   // this game session's women and pictures
+    busy: null, last: 0, notes: [], status: '',
+    reset() { this.session = { subjects: {}, shots: [] }; this.notes = []; this.status = ''; ui.refresh(); },
+    gap() { return clamp(num(S().imageGapSec) || 0, 0, 3600) * 1000; },
+    waitSec() { return Math.max(0, Math.ceil((this.last + this.gap() - Date.now()) / 1000)); },
+    subject(name) {
+        const k = cast.key(name); if (!k) return null;
+        return (this.session.subjects[k] ??= { k, name: String(name).trim().slice(0, 40), look: '', refs: [], loved: 0, nope: 0 });
+    },
+    // From a reply's tags: at most one picture per reply.
+    fromTags(attrs, msg) {
+        if (!this.on()) return;
+        const a = attrs.find((x) => x.img && x.img !== true);
+        if (!a) return;
+        const name = [a.her, a.girl].find((x) => x && x !== true) || (cast.cur && cast.all()[cast.cur]?.name) || '';
+        if (!name) return this.note('A picture needs her="NAME" (a woman of the cast): none was drawn.');
+        if (this.busy) return this.note('You asked for a picture while the last one was still being drawn: wait for it before asking again.');
+        if (this.waitSec() > 0) return this.note(`Pictures are spaced out: the next one is possible in about ${this.waitSec()} s.`);
+        const what = cleanImgText(a.img);
+        if (!what || IMG_REAL.test(String(a.img)) || IMG_REAL.test(String(a.look || a.about || ''))) return this.note('That picture was not drawn: pictures are only of invented adult women of the cast, never people he knows.');
+        const sub = this.subject(name), c = cast.all()[sub.k];
+        const lookIn = [a.look, a.about].find((x) => x && x !== true);
+        if (lookIn && !sub.look) sub.look = cleanImgText(lookIn, 300);
+        if (!sub.look && c?.look) sub.look = c.look;
+        if (!sub.look && c?.about) sub.look = cleanImgText(c.about, 300);
+        if (c && sub.look && !c.look) { c.look = sub.look; save(); }
+        const refs = sub.refs.length ? sub.refs.slice(-3) : c?.photo ? [c.photo] : [];
+        const panties = a.panties && a.panties !== true ? cleanImgText(a.panties, 80) : '';
+        const ref = msg?.extra?.marinara || {};
+        return this.draw({ sub, what, panties, refs, chatId: ref.chatId, messageId: ref.messageId });
+    },
+    prompt({ sub, what, panties, refs }) {
+        const look = sub.look || 'a beautiful woman';
+        return [
+            refs.length ? `Keep the woman from the reference picture${refs.length > 1 ? 's' : ''} exactly the same: same face, hair, eyes, skin, body shape and proportions. Only the pose, outfit, framing and setting change as described.` : '',
+            `${S().imageStyle || DEFAULTS.imageStyle}.`,
+            `${sub.name}, an adult woman (25 or older): ${look}.`,
+            `The picture: ${what}.`,
+            panties ? `She is wearing ${panties} panties.` : '',
+            'A single adult woman, consenting, clearly of adult age.',
+        ].filter(Boolean).join(' ');
+    },
+    async draw(job) {
+        const host = this.host(); if (!host) return;
+        this.busy = job.sub.name; this.last = Date.now(); this.status = `🖼 drawing ${job.sub.name}…`; ui.refresh();
+        try {
+            const prompt = this.prompt(job);
+            const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
+            let url = out.dataUrl, galleryId = null;
+            if (job.chatId) { try { ({ url, galleryId } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { toast(`Picture drawn, but not saved: ${e.message}`, 'warning'); } }
+            const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: job.refs.length > 0, at: Date.now() };
+            this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
+            this.status = '';
+        } catch (e) {
+            this.status = `🖼 picture failed: ${e.message}`;
+            this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);
+            console.warn('[Handy] picture failed', e);
+        } finally { this.busy = null; this.last = Date.now(); ui.refresh(); updatePrompt(); }
+    },
+    rate(id, kind) {
+        const sh = this.session.shots.find((x) => x.id === id); if (!sh) return;
+        const sub = this.session.subjects[sh.k], c = cast.all()[sh.k], pr = S().profile.pictures ??= { loved: [], nope: [] };
+        if (sh.rated === kind) return;
+        sh.rated = kind;
+        if (kind === 'love') {
+            if (sub) { sub.refs = [...sub.refs.filter((u) => u !== sh.url), sh.url].slice(-3); sub.loved++; }
+            if (c && !/^data:/.test(sh.url)) c.photo = sh.url;   // she looks like this in later games too
+            pr.loved = [`${sh.name}: ${sh.what}`.slice(0, 140), ...pr.loved].slice(0, 8);
+            this.note(`HE ❤ THE PICTURE of ${sh.name} (${sh.what}). Her look is now locked to that picture: every picture of her is drawn from it. Show him more of her like that, a step further each time.`);
+        } else {
+            if (sub) sub.nope++;
+            pr.nope = [`${sh.name}: ${sh.what}`.slice(0, 140), ...pr.nope].slice(0, 8);
+            this.note(`HE 👎 THE PICTURE of ${sh.name} (${sh.what}). Try something different next time (pose, framing, outfit).`);
+        }
+        save(); ui.refresh(); updatePrompt();
+    },
+    note(t) { this.notes.push(t); if (this.notes.length > 4) this.notes.shift(); updatePrompt(); },
+    GAME_LINES: {
+        panties: 'In the Panty game, show the pair you are describing on her: img= with the cut, fabric and color and how it fits her ass, hips and thighs (close-ups, bent over, from behind, slipping them down), plus panties="CUT, FABRIC, COLOR". Keep to one woman this session unless he asks for another; each picture goes a little further.',
+        cuckqueen: 'When you pick the other woman for him, SHOW her: her="NAME", look= and img= of her posing for him. Then keep sending pictures of the same woman as the game goes, each a step further (undressing, teasing him, offering herself). She is the one, not you.',
+        rivalry: 'Show the rival: a picture of her when she appears, then her taunting him as the score changes.',
+        party: 'Now and then show him a still of the woman you are both watching, as you describe her.',
+        fucktoy: 'Show him the woman he is using, posed the way he is using her.',
+    },
+    text() {
+        if (!this.on()) return '';
+        const ss = Object.values(this.session.subjects), pr = S().profile.pictures || { loved: [], nope: [] };
+        const avail = this.busy ? `a picture of ${this.busy} is being drawn right now (don't ask for another yet)` : this.waitSec() ? `the next picture is possible in about ${this.waitSec()} s` : 'you may send a picture now';
+        const L = [`- PICTURES: you can show him a picture you make. On a tag add img="WHAT THE PICTURE SHOWS" (pose, framing, what she is wearing or not, the setting, her expression) and her="NAME" (a woman of the cast). It is drawn and appears under your message after a short while; talk as if you are sending it to him. The first time a woman is pictured, also add look="HER FIXED LOOK" (age 25+, face, hair, eyes, skin tone, body, one distinguishing detail): it is kept, and every later picture of her uses it, so she stays the same woman. At most one picture per reply, only when it heightens the moment; ${avail}. Pictures are only of the invented adult women of the cast: never yourself, never real people or anyone he mentions knowing.`];
+        if (game.active && this.GAME_LINES[game.mode]) L.push(`- ${this.GAME_LINES[game.mode]}`);
+        if (ss.length) L.push(`- Pictured this session: ${ss.map((x) => `${x.name}${x.refs.length ? ' (look locked to a picture he ❤)' : ''}${x.loved ? `, ❤${x.loved}` : ''}${x.nope ? `, 👎${x.nope}` : ''}`).join('; ')}. Keep showing the same women unless the game calls for someone new.`);
+        if (pr.loved?.length) L.push(`- Pictures he has loved before: ${pr.loved.slice(0, 5).join('; ')}.${pr.nope?.length ? ` Not for him: ${pr.nope.slice(0, 3).join('; ')}.` : ''}`);
+        if (this.notes.length) L.push(`- PICTURE NEWS: ${this.notes.join(' ')}`);
+        return L.join('\n');
+    },
+    async test() {
+        const host = this.host(); if (!host) return toast('Generated pictures need Marinara Engine.', 'warning');
+        $('#handy_img_status').text('Drawing a test picture…');
+        try {
+            const out = await host.generate({ prompt: `${S().imageStyle || DEFAULTS.imageStyle}. A black lace thong laid flat on white bedsheets, product photo.`, negativePrompt: IMG_NEG, width: 832, height: 832 });
+            $('#handy_img_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`);
+        } catch (e) { $('#handy_img_status').text(`Failed: ${e.message}`); }
+    },
+    async fillConnections() {
+        const host = this.host();
+        $('#handy_img_box').toggle(!!host); $('#handy_img_none').toggle(!host);
+        if (!host) return;
+        let list = [];
+        try { list = await host.connections(); } catch (e) { $('#handy_img_status').text(`Couldn't list image connections: ${e.message}`); }
+        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}</option>`;
+        $('#handy_img_conn').html(`<option value="">This chat's image model (or Marinara's default)</option>` + list.map((c) => opt(c, S().imageConnection)).join(''));
+        $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join(''));
+        if (!list.length) $('#handy_img_status').text('No image connection in Marinara yet: add one under Connections → Image Generation.');
+    },
+};
+
 // ---------------------------------------------------------------- focus learning
 // What you are watching while you play is learned like the motion is. Tags may carry scene="WHAT KIND OF
 // SCENE" and watch="WHAT TO FOCUS ON"; every second with the device moving, every edge, ❤, 👎, beg and
@@ -1480,6 +1616,7 @@ const game = {
         if (this.active || !S().enabled) return;
         if (S().injectProfile === false) return toast('Games need the AI instructions: turn on "Send acts, learned taste + controls to the AI" in the settings first.', 'warning');
         this.stopTimers();
+        images.reset();   // a new game session: new pictures (cast members keep a look you ❤)
         Object.assign(this, { active: true, mode: GAMES[mode] ? mode : 'edging', t0: Date.now(), edges: 0, begs: 0, scenes: 0, survived: 0, sceneEdges: 0, edgeSec: 0, toldToSend: false, replies: 0, story: null });
         if (this.mode === 'story') {   // a hidden chain of games, chosen from your taste
             this.story = { stages: story.plan(), i: 0, t0: Date.now(), edges: 0 };
@@ -2069,6 +2206,7 @@ const cast = {
         const first = !all[k];
         const c = (all[k] ??= { name: String(name).trim().slice(0, 40), about: '', drawer: [], games: [], met: Date.now() });
         if (a.about && a.about !== true) c.about = String(a.about).trim().slice(0, 200);
+        if (a.look && a.look !== true && !c.look) c.look = cleanImgText(a.look, 300);
         if (a.woman && a.woman !== true && !c.about) c.about = String(a.woman).trim().slice(0, 120);
         if (a.panties && a.panties !== true) { const p = String(a.panties).trim().slice(0, 60); c.drawer = [p, ...c.drawer.filter((x) => x !== p)].slice(0, 8); }
         if (game.active && !c.games.includes(game.mode)) c.games.push(game.mode);
@@ -2089,7 +2227,7 @@ const cast = {
         const r = this.rank().slice(0, 6);
         const intro = `- THE CAST: invented women who come back across games (never real people). Bring one on with her="NAME" on a tag, and the first time add about="BODY, ROLE, PERSONALITY" (e.g. about="curvy redhead from accounting, shy until she isn't"). Reuse them: put the same woman in different games, in the pairs he liked on her. Add a new one now and then.`;
         if (!r.length) return intro;
-        const line = (x) => `${x.c.name}${x.c.about ? ` (${x.c.about})` : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
+        const line = (x) => `${x.c.name}${x.c.about ? ` (${x.c.about})` : ''}${x.c.photo ? ' [has a picture he ❤]' : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
         return `${intro} So far, his favorites first: ${r.map(line).join('; ')}.`;
     },
 };
@@ -2719,6 +2857,8 @@ function profileText() {
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     const vt = videos.text();
     if (vt) L.push(vt);
+    const it = images.text();
+    if (it) L.push(it);
     if (loves.length) L.push(`Recently loved: ${loves.map((e) => `${e.act} @ intensity ${e.intensity}`).join(', ')}.`);
     const ck = chars.promptKey(), cr = ck ? chars.get(ck) : null;
     const general = pr.favorites.filter((f) => !f.owner), sig = ck ? pr.favorites.filter((f) => f.owner === ck) : [];
@@ -2790,6 +2930,7 @@ function handleMessage(id) {
     if (game.active) game.replies++;
     if (S().enabled) { triggers.heard(msg.mes); voice.speak(msg.mes); }
     pending = [];
+    images.notes = [];
     clearBeats();   // a new reply replaces whatever was still waiting from the last one
     if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
         // No tag: follow what the reply describes, each change when you'd read it.
@@ -2815,6 +2956,7 @@ function handleMessage(id) {
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
         }
+        images.fromTags(tags.map((t) => parseAttrs(t[1])), msg);
         const vids = tags.flatMap((t) => videos.make(parseAttrs(t[1])));
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
@@ -2827,7 +2969,7 @@ const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 's
 function runCommand(a) {
     if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
-    if (a.her || a.girl || a.about) cast.meet(a);
+    if (a.her || a.girl || a.about || a.look) cast.meet(a);
     if (a.trigger && a.trigger !== true) triggers.add(a.trigger, game.active ? game.mode : null);
     if (a.confess && a.confess !== true) confess.ask(a.confess);
     const changed = focus.set(a);
@@ -2899,6 +3041,17 @@ const ui = {
     <label class="checkbox_label"><input type="checkbox" id="handy_arousal"> Estimate my arousal and tell the AI</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_videos_on"> Let the AI suggest video searches (links to the site's own search results)</label>
     <label class="checkbox_label"><input type="checkbox" id="handy_pics_on"> Let the AI suggest picture searches (links to PornPics search results)</label>
+    <b>Pictures she sends (Marinara)</b>
+    <div id="handy_img_box">
+      <label class="checkbox_label"><input type="checkbox" id="handy_img_on"> Let her send pictures, drawn by Marinara's image generation</label>
+      <label>Image connection <select id="handy_img_conn" class="text_pole"></select></label>
+      <label title="Used once you ❤ a picture: later pictures of that woman are drawn from it. Pick an image-editing model here (for SpicyAPI's MiniMax H3, its edit model).">For keeping a woman the same (from pictures you ❤) <select id="handy_img_edit" class="text_pole"></select></label>
+      <label>Picture style <input type="text" id="handy_img_style" class="text_pole" placeholder="photorealistic amateur smartphone photo, natural light"></label>
+      <label>At least this many seconds between pictures <input type="number" id="handy_img_gap" class="text_pole" min="0" max="3600"></label>
+      <div class="flex-container"><div id="handy_img_test" class="menu_button">Test picture</div><div id="handy_img_reload" class="menu_button" title="Reload the list of image connections">↻</div></div>
+      <div id="handy_img_status" class="handy-small"></div>
+    </div>
+    <div id="handy_img_none" class="handy-small">Pictures she draws need Marinara Engine (its image connections). In SillyTavern, picture search links are used instead.</div>
     <label>Site for video searches <select id="handy_video_site" class="text_pole"><option value="pornhub">Pornhub</option><option value="xhamster">xHamster</option><option value="xvideos">XVideos</option></select></label>
     <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
     <label>Story mode: minutes per stage (or 2 edges) <input type="number" id="handy_story_min" class="text_pole" min="3" max="30"></label>
@@ -2994,7 +3147,12 @@ const ui = {
         bind('#handy_close', 'closeAction'); bind('#handy_safeword', 'safeword'); bind('#handy_appid', 'appId');
         bind('#handy_finish', 'finishAction'); bind('#handy_detect', 'detectClimax', 'checked'); bind('#handy_session_check', 'sessionCheck', 'checked');
         bind('#handy_charstyles', 'charStyles', 'checked');
-        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_pics_on', 'picLinks', 'checked'); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_story_min', 'storyStageMinutes');
+        bind('#handy_wpm', 'readWpm'); bind('#handy_arousal', 'arousalMeter', 'checked'); bind('#handy_videos_on', 'videoLinks', 'checked'); bind('#handy_pics_on', 'picLinks', 'checked');
+        bind('#handy_img_on', 'imageGen', 'checked'); bind('#handy_img_conn', 'imageConnection'); bind('#handy_img_edit', 'imageEditConnection'); bind('#handy_img_style', 'imageStyle'); bind('#handy_img_gap', 'imageGapSec');
+        $('#handy_img_on').on('change', () => { ui.refresh(); updatePrompt(); });
+        $('#handy_img_test').on('click', () => images.test());
+        $('#handy_img_reload').on('click', () => images.fillConnections());
+        images.fillConnections(); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_story_min', 'storyStageMinutes');
         bind('#handy_voice_on', 'voiceOn', 'checked'); bind('#handy_voice_sync', 'voiceSync', 'checked'); bind('#handy_voice_name', 'voiceName'); bind('#handy_voice_rate', 'voiceRate'); bind('#handy_voice_pitch', 'voicePitch');
         $('#handy_voice_on').on('change', function () { if (!this.checked) voice.stop(); });
         $('#handy_voice_test').on('click', () => { const was = S().voiceOn; S().voiceOn = true; voice.speak('Good boy. Keep your eyes on her.'); S().voiceOn = was; if (!voice.ok()) toast('This browser has no speech voices.', 'warning'); });
@@ -3071,6 +3229,8 @@ const ui = {
     <div id="handy_game" class="handy-small handy-game"></div>
     <div id="handy_game_actions" class="handy-game-actions"></div>
     <div id="handy_videos" class="handy-small handy-videos"></div>
+    <div id="handy_pictures" class="handy-pictures"></div>
+    <div id="handy_pic_status" class="handy-small"></div>
     <div id="handy_load" class="handy-game-actions" title="How big was it? Teaches the AI what makes you cum hardest"><span class="handy-small">How big?</span><div class="menu_button" data-load="small">💧 Small</div><div class="menu_button" data-load="good">💦 Good</div><div class="menu_button" data-load="huge">🌊 Huge</div></div>
     <div id="handy_now" class="handy-small"></div>
     <div id="handy_who" class="handy-small handy-who"></div>
@@ -3108,6 +3268,8 @@ const ui = {
             e.preventDefault(); e.stopImmediatePropagation(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
         }, true);
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
+        $('#handy_panel').on('click', '[data-pic-rate]', function (e) { e.stopPropagation(); images.rate(this.closest('[data-pic]').dataset.pic, this.dataset.picRate); });
+        $('#handy_panel').on('click', '[data-pic] img', function () { const u = this.getAttribute('src'); if (u && !u.startsWith('data:')) window.open(u, '_blank', 'noopener'); });
         $('#handy_stop').on('click', () => stopAll('stop button'));
         $('#handy_panel').on('click', '[data-use]', function () { play.use(this.dataset.use); });
         $('#handy_panel').on('click', '[data-load]', function () { focus.rateLoad(this.dataset.load); });
@@ -3160,6 +3322,11 @@ const ui = {
         $('#handy_game_actions').toggle(!!ga);
         const vl = S().videoLinks ? videos.list.slice(-3).reverse() : [];
         $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${v.icon} ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
+        const shots = images.on() ? images.session.shots.slice(-4).reverse() : [];
+        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}"><div class="handy-pic-rate"><span data-pic-rate="love" title="❤ Keep her looking like this">❤</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
+        if ($('#handy_pictures').data('h') !== ph) $('#handy_pictures').html(ph).data('h', ph);
+        $('#handy_pictures').toggle(shots.length > 0);
+        $('#handy_pic_status').text(images.on() ? images.status : '').toggle(!!(images.on() && images.status));
         $('#handy_load').toggle(!!focus.lastFinish && Date.now() - focus.lastFinish.t < 300000);
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
@@ -3250,7 +3417,7 @@ jQuery(() => {
     });
     // A game that hasn't had a reply yet goes with you to the new chat: in Marinara the extension only learns
 // which chat you're in when you send a message, so "open a chat, press Start, say hi" must keep the game.
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; images.reset(); edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
     window.addEventListener('beforeunload', () => {
         if (!anyActive()) return;
@@ -3261,5 +3428,5 @@ jQuery(() => {
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => { arousal.tick(); focus.tick(1); game.tick(1); }, 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, images, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

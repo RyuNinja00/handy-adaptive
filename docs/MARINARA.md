@@ -10,7 +10,7 @@ Marinara runs extensions in a locked sandbox by default. That sandbox blocks int
 
 Full page access means the code runs with the same access as Marinara's own page. All of the source is in this repository, and Marinara shows you the exact code before you approve it. The extension only talks to:
 - the Handy API (`handyfeeling.com`), and
-- your own Marinara server: its chat, character, lorebook, regex and extension-storage endpoints, described below.
+- your own Marinara server: its chat, character, lorebook, regex, extension-storage, image-generation and Gallery endpoints, described below.
 
 ## Step 1. Allow imported extensions (once)
 
@@ -85,17 +85,11 @@ Also:
 - Video and picture search links appear on the panel only, not under her message.
 - Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
-## Inline image proof of concept (experimental)
+## Pictures she sends
 
-The Marinara settings window now includes **🖼 Test inline image (POC)**.
+In Marinara the games can show you pictures drawn by your own Marinara image connection. They're saved in the chat's **Gallery** and attached under her message. See **Pictures she sends** in Part 12 of the [User Guide](USER_GUIDE.md) for setup (including a second, image-editing connection that keeps a woman you ❤ looking the same).
 
-1. Build the Marinara extension from this branch with `node scripts/build-marinara.mjs`, then import `dist/handy-adaptive-marinara.zip` in Marinara.
-2. Approve the updated Full page access fingerprint and open a chat containing at least one message.
-3. Open Handy Adaptive's ⚙ settings and click **Test inline image (POC)**.
-4. The extension attempts to append a non-explicit placeholder image to the last recognizable message container. Check the status text below the button and the browser console/network tab if it fails.
-5. Refresh the page: **the preview is expected to disappear**. This tests only DOM insertion and image loading, not message persistence.
-
-This intentionally does **not** download or scrape third-party images, modify saved chat messages, schedule AI image requests, or affect device commands. The chat-message selector is heuristic and may need adjustment for your Marinara version. The placeholder image is served by placehold.co and requires network access.
+The extension draws them through Marinara's own endpoints: `POST /api/characters/avatar-generation` (the endpoint that takes a full prompt and reference pictures), `POST /api/gallery/<chat>/upload` and `PATCH /api/chats/<chat>/messages/<message>/extra`. Your API keys stay in Marinara. The picture appears under the message straight away, and Marinara shows its own copy of the attachment the next time it loads the messages.
 
 ## Updating
 

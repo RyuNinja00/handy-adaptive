@@ -636,6 +636,39 @@ When a scene would help, she can suggest a video search or a picture search. A l
 - **Query filter:** before any link is made, words that point at minors (ages, "teen", "young", school, family words) or at non-consensual material (hidden cams, upskirts, drunk, sleeping, forced and the like) are removed from the query. If nothing is left, no link is made. The sites' own moderation is good but not perfect, so this is an extra layer.
 - **In Marinara**, the links appear only on the panel.
 
+#### Pictures she sends (Marinara only)
+
+In Marinara, she can show you pictures she makes, drawn by an image model you've set up in Marinara. They appear under her message (and in the chat's **Gallery**) and as small thumbnails on the panel.
+
+**Set it up once**
+
+1. In Marinara, add an image model under **Connections → Image Generation** (for example SpicyAPI with `minimax/h3-image/text-to-image`). Test it there.
+2. **To keep a woman looking the same from a picture you like**, add a second image connection using the same provider's **image-editing** model (for SpicyAPI's MiniMax H3, its *edit* model). Editing models draw a new picture *from* a reference picture.
+3. In Handy's ⚙ settings, under **Pictures she sends**:
+   - **Let her send pictures**: on by default.
+   - **Image connection**: the default is the image model chosen in the chat's own settings, or Marinara's default.
+   - **For keeping a woman the same**: pick the editing connection from step 2. If you leave it on *Same as above*, the reference picture is sent to your main model, which may ignore it.
+   - **Picture style**: for example *photorealistic amateur smartphone photo* or *anime illustration*.
+   - **At least this many seconds between pictures**: 60 by default, so pictures don't pile up (each one costs a generation).
+   - **Test picture** draws a harmless test image to check the connection.
+
+**How it works in a game**
+
+- The AI decides when a picture would heighten the moment and asks for one (at most one per reply). It takes a few seconds to arrive.
+- Every picture is of a woman from **the cast** (invented, adult). The first time she's pictured, the AI writes down her fixed look (face, hair, eyes, skin, body), and every later picture uses it, so she stays the same woman.
+- **❤ on a thumbnail** locks her look to that picture: from then on, pictures of her are drawn *from* it with your editing connection. She keeps that look for the rest of the session and, as a cast member, in later games too. The AI is told you loved it and shows you more of her, a step further each time.
+- **👎** tells the AI to try something different.
+- Click a thumbnail to open it full size.
+- Starting a new game starts a fresh set of pictures. Women you ❤ keep their look.
+
+**Per game**
+
+- **Panty game:** pictures of the pair she's describing, on one woman for the session: the cut, fabric and color, and how it fits.
+- **Cuckqueen:** when she picks the other woman for you, she shows you her first, then keeps sending pictures of that same woman as the game goes on.
+- **Two-girl rivalry:** the rival, then the rival taunting you as the score changes. **Watch party** and **Fucktoy** use pictures now and then.
+
+**Limits that always apply:** pictures are only of invented adult women of the cast, never the character herself, never real people, and never anyone you mention knowing (such a request isn't drawn). They can't be made from a photo you supply. Words that point at minors or non-consent are removed from every picture request, and the image model is told to avoid anything young-looking. A failed picture shows on the panel, and the game carries on.
+
 #### Story mode
 
 Choose **Story mode (a surprise)** and press **Start**. She plans a night of three games in a row, picked from what you've enjoyed, and doesn't tell you the order. Each stage moves on after a set time (*Story mode: minutes per stage*, 8 by default) or after 2 edges, whichever comes first, and your arousal and edges carry over. Nobody finishes before the finale. The finale is where she uses your strongest trigger phrase and the scene behind your biggest loads. The panel shows *Story · stage 2/3*.
@@ -975,6 +1008,8 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 | `climax` | seconds (10–90, default 30) | Build steadily to a peak and push you over |
 | `with` | a character's name | That character joins in; the device plays both styles. Leave out for one character. |
 | `duet` | `turns` (default) or `together` | With `with`: alternate between the two, or move as one |
+| `img` | a short description | Marinara: draw a picture of the cast woman named in `her` and attach it under the message |
+| `look` | a short description | Her fixed look (face, hair, eyes, skin, body), given the first time she's pictured |
 | `stop` | — | Stop. Cancels what earlier tags in the reply started; a tag placed after it in the text still plays when you reach it. `act="stop"` or `act="none"` is treated the same way. |
 
 Legacy pattern mode: `<handy pattern="steady|wave|build|pulse|tease|edge|deep" speed="0-100" min="0-100" max="0-100" period="sec" depth="0-40"/>`. Under Buffered streaming a pattern tag is played by the act engine instead (speed becomes intensity, the range becomes depth).

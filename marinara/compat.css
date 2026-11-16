@@ -95,3 +95,6 @@
 .handy-toast.error { border-left-color: #e53935; }
 .handy-toast.warning { border-left-color: #fb8c00; }
 .handy-toast.success { border-left-color: #43a047; }
+
+.handy-pic-preview { margin: 8px 12px; }
+.handy-pic-preview img { display: block; max-width: min(420px, 100%); max-height: 520px; border-radius: 8px; cursor: zoom-in; }

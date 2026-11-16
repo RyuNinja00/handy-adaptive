@@ -26,7 +26,16 @@ const bundle = fs.readFileSync(path.join(pkg, 'extension.js'), 'utf8');
 const css = fs.readFileSync(path.join(pkg, 'extension.css'), 'utf8');
 const EXT = { id: 'ext1', name: 'Handy Adaptive', contentHash: 'sha256:test' };
 
-const state = { storage: {}, lorebooks: [], entries: [], regex: [], chats: {}, handy: [], generations: [], csrfFailures: 0, next: null, ids: 0 };
+const state = { storage: {}, lorebooks: [], entries: [], regex: [], chats: {}, handy: [], generations: [], csrfFailures: 0, next: null, ids: 0,
+    pictures: [], uploads: [], imageFail: false, venice: [], veniceFail: 0 };
+// Venice's POST /image/multi-edit: unknown fields are rejected, the answer is the picture itself
+const VENICE_FIELDS = new Set(['modelId', 'prompt', 'images', 'aspect_ratio', 'resolution', 'quality', 'output_format', 'safe_mode', 'enhance_prompt', 'disable_prompt_optimization_thinking', 'transparent_background', 'anon_user_id']);
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const connectionsDb = [
+    { id: 'llm1', provider: 'openai', name: 'Chat model', model: 'x' },
+    { id: 'img1', provider: 'image_generation', name: 'SpicyAPI', model: 'minimax/h3-image/text-to-image', defaultForAgents: 'false' },
+    { id: 'img2', provider: 'image_generation', name: 'SpicyAPI edit', model: 'minimax/h3-image/edit', defaultForAgents: 'false' },
+];
 // A Handy that moves: v2 HDSP sleeve position over real time (same model as tests/sim/bench.mjs)
 const dev = { mode: null, seg: null, rest: 0, cmds: [] };
 const devPos = (t = Date.now()) => { const g = dev.seg; if (!g) return dev.rest; if (t >= g.t1) return g.p1; return g.p0 + (g.p1 - g.p0) * ((t - g.t0) / (g.t1 - g.t0)); };
@@ -48,7 +57,7 @@ function handyCmd(p, body) {
 }
 const newId = (p) => `${p}${++state.ids}`;
 const chatsMeta = {
-    chat1: { id: 'chat1', name: 'Vex', mode: 'roleplay', characterIds: '["c1"]', personaId: 'p1' },   // stored as text, like Marinara's DB
+    chat1: { id: 'chat1', name: 'Vex', mode: 'roleplay', characterIds: '["c1"]', personaId: 'p1', metadata: JSON.stringify({ imageGenConnectionId: 'img1' }) },   // stored as text, like Marinara's DB
     chat2: { id: 'chat2', name: 'Group', mode: 'roleplay', characterIds: ['c1', 'c2'], personaId: null },
 };
 const charsDb = {
@@ -134,7 +143,37 @@ const server = http.createServer(async (req, res) => {
         const out = handyCmd(sub, body);
         return json(out.error ? 400 : 200, out);
     }
+    if (p === '/venice/image/multi-edit' && m === 'POST') {
+        state.venice.push({ auth: req.headers.authorization, body });
+        if (req.headers.authorization !== 'Bearer VKEY') return json(401, { error: 'Authentication failed' });
+        const unknown = Object.keys(body || {}).filter((k) => !VENICE_FIELDS.has(k));
+        if (unknown.length) return json(400, { error: 'Invalid request', details: { _errors: [`Unrecognized key(s) in object: ${unknown.join(', ')}`] } });
+        if (!body.prompt || !Array.isArray(body.images) || !body.images.length) return json(400, { error: 'Invalid request', details: {} });
+        if (state.veniceFail) return json(state.veniceFail, { error: 'Insufficient balance' });
+        res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(Buffer.from(PNG, 'base64'));
+    }
     let mm;
+    // Marinara's image connections, avatar-generation, chat Gallery and message extras
+    if (p === '/api/connections' && m === 'GET') return json(200, connectionsDb);
+    if (p === '/api/characters/avatar-generation' && m === 'POST') {
+        state.pictures.push(body);
+        if (!connectionsDb.some((c) => c.id === body.connectionId && c.provider === 'image_generation')) return json(400, { error: 'Image generation connection not found' });
+        if (!body.appearance) return json(400, { error: 'appearance description is required' });
+        if (state.imageFail) return json(500, { error: 'SpicyAPI image generation failed: content error' });
+        await new Promise((r) => setTimeout(r, 120));
+        return json(200, { image: `data:image/png;base64,${PNG}`, prompt: body.promptOverrides?.[0]?.prompt });
+    }
+    if ((mm = p.match(/^\/api\/gallery\/([^/]+)\/upload$/)) && m === 'POST') {
+        const id = newId('g');
+        state.uploads.push({ chatId: mm[1], hasFile: /name="file"; filename="handy-picture\.png"/.test(raw), hasPrompt: /name="prompt"/.test(raw), type: req.headers['content-type'] });
+        return json(200, { id, chatId: mm[1], url: `/api/gallery/file/${mm[1]}/${id}.png` });
+    }
+    if (p.startsWith('/api/gallery/file/') && m === 'GET') { res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(Buffer.from(PNG, 'base64')); }
+    if ((mm = p.match(/^\/api\/chats\/([^/]+)\/messages\/([^/]+)\/extra$/)) && m === 'PATCH') {
+        const msg = (state.chats[mm[1]] || []).find((x) => x.id === mm[2]);
+        if (!msg) return json(404, { error: 'Message not found' });
+        msg.extra = { ...(msg.extra || {}), ...body }; return json(200, msg);
+    }
     if ((mm = p.match(/^\/api\/chats\/([^/]+)$/)) && m === 'GET') return chatsMeta[mm[1]] ? json(200, chatsMeta[mm[1]]) : json(404, { error: 'Chat not found' });
     if ((mm = p.match(/^\/api\/characters\/personas\/([^/]+)$/))) return json(200, { id: mm[1], name: 'Ryan' });
     if ((mm = p.match(/^\/api\/characters\/([^/]+)$/))) return charsDb[mm[1]] ? json(200, charsDb[mm[1]]) : json(404, {});
@@ -178,14 +217,20 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 // a returning user: key set, calibrated, session question off for the scripted part
-state.storage.settings = { connectionKey: 'KEY123', apiBase: `${base}/handy/v2`, calibration: { base: 10, tip: 90, at: 'x' }, sessionCheck: false, readWpm: 0 };
+state.storage.settings = { connectionKey: 'KEY123', apiBase: `${base}/handy/v2`, veniceBase: `${base}/venice`, calibration: { base: 10, tip: 90, at: 'x' }, sessionCheck: false, readWpm: 0 };
 
 const browser = await chromium.launch();
 const pg = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage();
 const pageErrors = [];
 pg.on('pageerror', (e) => pageErrors.push(String(e)));
 // Chromium logs failed requests as console errors; the deleted-lorebook check causes an expected 404.
-pg.on('console', (msg) => { if (msg.type() === 'error' && !/Failed to load resource: .*404/.test(msg.text())) pageErrors.push(msg.text()); });
+pg.on('console', (msg) => {   // …and the picture-failure check causes one expected 500
+    if (msg.type() !== 'error' || /Failed to load resource: .*404/.test(msg.text())) return;
+    if (/Failed to load resource: .*500/.test(msg.text()) && state.expected500 > 0) { state.expected500--; return; }
+    if (/Failed to load resource: .*40[12]/.test(msg.text()) && state.expectedVenice > 0) { state.expectedVenice--; return; }
+    if (/127\.0\.0\.1:38765|ERR_CONNECTION_REFUSED/.test(msg.text()) && state.expectBridgeDown) return;   // no image bridge running here
+    pageErrors.push(msg.text());
+});
 const waitFor = async (fn, what, ms = 6000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) { if (await fn()) return; await new Promise((r) => setTimeout(r, 50)); }
@@ -225,8 +270,8 @@ try {
         assert.deepEqual([e.constant, e.position, e.depth, e.role], [true, 2, 1, 'system']);
     });
     await step('adds a display-only regex that hides <handy> tags', async () => {
-        await waitFor(() => state.regex.length === 1, 'regex');
-        const r = state.regex[0];
+        await waitFor(() => state.regex.length === 2, 'regex');
+        const r = state.regex.find((x) => x.name === 'Handy Adaptive: hide device tags');
         assert.equal(r.applyMode, 'display'); assert.deepEqual(r.placement, ['ai_output']);
         assert.equal('Hi <handy act="x"/> there </handy>'.replace(new RegExp(r.findRegex, r.flags), ''), 'Hi  there ');
     });
@@ -589,6 +634,162 @@ try {
         await pg.click('#handy_calib_cancel');                    // (a real click: fails if anything covers it)
         await waitFor(async () => !(await pg.isVisible('#handy_calib')), 'calibration closed');
         await pg.screenshot({ path: path.join(root, 'tests', 'marinara_settings.png') });
+    });
+    await step('pictures: she sends pictures drawn by Marinara\'s image connection, saved and attached to her message', async () => {
+        const G = (f, a) => pg.evaluate(f, a);
+        const turn = async (content) => {
+            state.next = { mode: 'new', content };
+            await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', userMessage: 'mm' }));
+            await new Promise((r) => setTimeout(r, 700));
+        };
+        const lastEntry = () => state.generations.at(-1).entry?.content || '';
+        const pics = () => state.pictures.length;
+        const openSettings = async () => { if (!(await pg.isVisible('#handy-st-settings'))) await pg.click('#handy_settings_btn'); };
+        await openSettings();
+        await waitFor(async () => (await pg.$$eval('#handy_img_conn option', (o) => o.length)) === 3, 'image connections listed');
+        assert.deepEqual(await pg.$$eval('#handy_img_edit option', (o) => o.map((x) => x.value)), ['', 'img1', 'img2', 'venice'], 'only image connections (and Venice directly) are offered');
+        assert.equal(await pg.isVisible('#handy_img_none'), false);
+        await pg.click('#handy_img_test');
+        await waitFor(async () => /Works \(SpicyAPI\)/.test(await pg.textContent('#handy_img_status')), 'test picture').catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_img_status')); });
+        assert.equal(state.pictures.at(-1).connectionId, 'img1', 'the chat\'s image model is used');
+        await pg.click('#handy-st-settings .handy-st-close');
+
+        if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');
+        await pg.selectOption('#handy_game_mode', 'panties'); await pg.click('#handy_game_btn');
+        await turn('Hi. <handy act="handjob" intensity="0.4"/>');
+        assert.match(lastEntry(), /PICTURES: you can show him a picture/);
+        assert.match(lastEntry(), /In the Panty game, show the pair/);
+        // a message element, so the live preview has somewhere to go
+        let n = pics();
+        await turn('Look at her. <handy act="handjob" her="Dana" look="auburn bob, green eyes, freckles, curvy, 30s" img="bent over a desk, from behind, teen schoolgirl skirt pulled up" panties="red lace thong"/>');
+        await waitFor(() => state.uploads.length >= 1 && pics() === n + 1, 'picture drawn and saved');
+        const first = state.pictures.at(-1), fp = first.promptOverrides[0];
+        assert.equal(first.connectionId, 'img1'); assert.equal(first.referenceImages, undefined);
+        assert.match(fp.prompt, /Dana, an adult woman \(25 or older\): auburn bob, green eyes, freckles, curvy, 30s/);
+        assert.match(fp.prompt, /red lace thong panties/);
+        assert.doesNotMatch(fp.prompt, /teen|schoolgirl/, 'minor-coded words removed');
+        assert.match(fp.negativePrompt, /child, minor/);
+        assert.equal(fp.id, 'avatar:handy-picture', 'the prompt override reaches Marinara as-is');
+        const up = state.uploads.at(-1); assert.ok(up.hasFile && up.hasPrompt && /multipart\/form-data/.test(up.type));
+        await waitFor(() => state.chats.chat1.at(-1).extra?.attachments?.length === 1, 'attached to her message');
+        const att = state.chats.chat1.at(-1).extra.attachments[0];
+        assert.equal(att.type, 'image'); assert.match(att.url, /^\/api\/gallery\/file\/chat1\//);
+        await waitFor(async () => (await pg.$$('#handy_pictures .handy-pic')).length === 1, 'thumbnail on the panel');
+        assert.equal(await G(() => window.handyAdaptive.cast.all().dana.look), 'auburn bob, green eyes, freckles, curvy, 30s', 'her look is kept on the cast');
+
+        // spaced out: a request inside the gap is not drawn, and she's told why
+        n = pics();
+        await turn('Another. <handy act="handjob" her="Dana" img="on the bed"/>');
+        assert.equal(pics(), n, 'gap respected');
+        await turn('Hm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /possible in about \d+ s/);
+
+        // ❤ locks her look; later pictures come FROM it, through the edit connection
+        await openSettings();
+        await pg.fill('#handy_img_gap', '0'); await pg.dispatchEvent('#handy_img_gap', 'change');
+        await pg.selectOption('#handy_img_edit', 'img2');
+        await pg.click('#handy-st-settings .handy-st-close');
+        await pg.click('#handy_pictures .handy-pic [data-pic-rate="love"]');
+        await waitFor(async () => (await pg.$$('#handy_pictures .rated-love')).length === 1, 'loved');
+        await pg.locator('#handy_panel').screenshot({ path: path.join(root, 'tests', 'marinara_pictures.png') });
+        await turn('Mm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /HE ❤ THE PICTURE of Dana/);
+        assert.match(lastEntry(), /Dana \(look locked to a picture he ❤\), ❤1/);
+        n = pics();
+        await turn('More of her. <handy act="handjob" her="Dana" img="sitting on the edge of the bed, slipping the thong down"/>');
+        await waitFor(() => pics() === n + 1, 'second picture');
+        const second = state.pictures.at(-1);
+        assert.equal(second.connectionId, 'img2', 'edit connection used for a woman he ❤');
+        assert.equal(second.referenceImages?.length, 1); assert.match(second.referenceImages[0], /^data:image\/png;base64,/);
+        assert.match(second.promptOverrides[0].prompt, /Keep the woman from the reference picture exactly the same/);
+        assert.match(second.promptOverrides[0].prompt, /auburn bob/, 'her fixed look reused without being repeated');
+
+        // Venice directly: the ❤ picture goes to Venice's own editing API (Marinara's Venice service sends none)
+        await openSettings();
+        assert.equal(await pg.isVisible('#handy_venice_box'), false, 'Venice fields hidden until chosen');
+        await pg.selectOption('#handy_img_edit', 'venice');
+        assert.equal(await pg.isVisible('#handy_venice_box'), true);
+        await pg.click('#handy_venice_test');
+        await waitFor(async () => /Failed: no Venice API key/.test(await pg.textContent('#handy_venice_status')), 'missing key reported');
+        await pg.fill('#handy_venice_key', 'nope'); state.expectedVenice = 1;
+        await pg.click('#handy_venice_test');
+        await waitFor(async () => /Failed: Venice rejected the API key/.test(await pg.textContent('#handy_venice_status')), 'bad key reported');
+        await pg.fill('#handy_venice_key', 'VKEY');
+        await pg.click('#handy_venice_test');
+        await waitFor(async () => /Works \(Venice \(qwen-edit-uncensored\)\)/.test(await pg.textContent('#handy_venice_status')), 'Venice test edit')
+            .catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_venice_status')); });
+        assert.equal(state.venice.at(-1).body.aspect_ratio, '1:1');
+        assert.equal(await pg.getAttribute('#handy_venice_key', 'type'), 'password', 'the key is masked');
+        await pg.click('#handy-st-settings .handy-st-close');
+        await waitFor(() => state.storage.settings?.veniceKey === 'VKEY' && state.storage.settings?.imageEditConnection === 'venice', 'Venice settings saved');
+        n = pics(); let v = state.venice.length, u = state.uploads.length;
+        await turn('Look. <handy act="handjob" her="Dana" img="kneeling on the bed, looking back over her shoulder"/>');
+        await waitFor(() => state.venice.length === v + 1 && state.uploads.length === u + 1, 'Venice edit drawn and saved');
+        assert.equal(pics(), n, 'Marinara is not asked for this one');
+        const ve = state.venice.at(-1);
+        assert.equal(ve.auth, 'Bearer VKEY');
+        assert.equal(ve.body.modelId, 'qwen-edit-uncensored'); assert.equal(ve.body.safe_mode, false); assert.equal(ve.body.aspect_ratio, '2:3');
+        assert.deepEqual(ve.body.images, [PNG], 'her ❤ picture is the base image, sent as plain base64');
+        assert.match(ve.body.prompt, /Keep the woman from the reference picture exactly the same/);
+        assert.match(ve.body.prompt, /Do not show: child, minor/, 'the negative prompt is folded in (multi-edit has none)');
+        await waitFor(() => state.chats.chat1.at(-1).extra?.attachments?.length === 1, 'Venice picture attached to her message');
+        // Venice failing: she still gets a picture, from the usual connection and her look alone
+        state.veniceFail = 402; state.expectedVenice = 1; n = pics(); v = state.venice.length;
+        await turn('<handy act="handjob" her="Dana" img="in the bath"/>');
+        await waitFor(() => state.venice.length === v + 1 && pics() === n + 1, 'fallback picture');
+        const fb = state.pictures.at(-1);
+        assert.equal(fb.connectionId, 'img1'); assert.equal(fb.referenceImages, undefined);
+        assert.doesNotMatch(fb.promptOverrides[0].prompt, /reference picture/, 'no talk of a reference it does not have');
+        assert.match(fb.promptOverrides[0].prompt, /auburn bob/);
+        await waitFor(async () => /Venice editing failed \(your Venice balance is empty/.test(await pg.textContent('#handy_pic_status')), 'fallback explained');
+        state.veniceFail = 0;
+        await openSettings(); await pg.selectOption('#handy_img_edit', 'img2'); await pg.click('#handy-st-settings .handy-st-close');
+
+        // never real people
+        n = pics();
+        await turn('<handy act="handjob" her="Kate" look="looks just like my coworker" img="in the office"/>');
+        assert.equal(pics(), n);
+        await turn('Hm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /only of invented adult women/);
+
+        // a failure is reported, not fatal
+        state.imageFail = true; state.expected500 = 1; n = pics();
+        await turn('<handy act="handjob" her="Dana" img="in the shower"/>');
+        await waitFor(() => pics() === n + 1, 'failed attempt');
+        await waitFor(async () => /picture failed/.test(await pg.textContent('#handy_pic_status')), 'failure shown');
+        state.imageFail = false;
+
+        // a new game session starts fresh, but a cast woman he ❤ comes back looking the same
+        await pg.click('#handy_game_btn');
+        await pg.selectOption('#handy_game_mode', 'cuckqueen'); await pg.click('#handy_game_btn');
+        await waitFor(async () => (await pg.$$('#handy_pictures .handy-pic')).length === 0, 'session reset');
+        n = pics();
+        await turn('She is for you. <handy act="handjob" her="Dana" img="posing in lingerie for him"/>');
+        await waitFor(() => pics() === n + 1, 'cuckqueen picture');
+        assert.equal(state.pictures.at(-1).referenceImages?.length, 1, 'her ❤ picture carries over');
+        assert.match(lastEntry(), /When you pick the other woman for him, SHOW her/);
+        // turned off: no instructions, no pictures
+        await openSettings(); await pg.uncheck('#handy_img_on'); await pg.click('#handy-st-settings .handy-st-close');
+        n = pics();
+        await turn('<handy act="handjob" her="Dana" img="again"/>');
+        assert.equal(pics(), n); assert.doesNotMatch(lastEntry(), /PICTURES:/);
+        await pg.click('#handy_game_btn');
+        await openSettings(); await pg.check('#handy_img_on');   // the next step expects the settings window open
+
+        // the opt-in PornPics bridge (PR #13) still runs next to the drawn pictures, with the full search filter
+        state.expectBridgeDown = true;
+        await pg.check('#handy-st-auto-images');
+        n = pics();
+        const bridgeQueries = [];
+        pg.on('request', (r) => { if (r.url().startsWith('http://127.0.0.1:38765/image')) bridgeQueries.push(new URL(r.url()).searchParams.get('q')); });
+        await pg.evaluate(() => { const d = document.createElement('div'); d.dataset.messageId = 'bridge-msg'; d.style.cssText = 'width:400px;height:40px'; d.textContent = 'her message'; document.getElementById('app').append(d); });
+        state.next = { mode: 'new', content: 'Look at this. <pics="sleeping drunk redhead in stockings"/>' };
+        await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', userMessage: 'show me' }));
+        await waitFor(() => bridgeQueries.length === 1, 'bridge asked', 4000);
+        assert.equal(bridgeQueries[0], 'redhead in stockings', 'minor and non-consent words removed before searching');
+        await waitFor(async () => /Could not retrieve image/.test(await pg.textContent('figure[data-handy-image-poc]').catch(() => '')), 'bridge failure shown');
+        assert.equal(pics(), n, 'a PornPics search never goes to the image model');
+        await pg.uncheck('#handy-st-auto-images');
     });
     await step('turning AI instructions off empties the lorebook entry', async () => {
         await pg.uncheck('#handy_inject');

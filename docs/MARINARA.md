@@ -87,7 +87,7 @@ Also:
 
 ## Pictures she sends
 
-In Marinara the games can show you pictures drawn by your own Marinara image connection. They're saved in the chat's **Gallery** and attached under her message. See **Pictures she sends** in Part 12 of the [User Guide](USER_GUIDE.md) for setup (including a second, image-editing connection that keeps a woman you ❤ looking the same).
+In Marinara the games can show you pictures drawn by your own Marinara image connection. They're saved in the chat's **Gallery** and attached under her message. See **Pictures she sends** in Part 12 of the [User Guide](USER_GUIDE.md) for setup (including a second, image-editing connection that keeps a woman you ❤ looking the same, or **Venice directly**, which sends her ❤ picture to Venice's own editing API because Marinara's Venice service sends none).
 
 The extension draws them through Marinara's own endpoints: `POST /api/characters/avatar-generation` (the endpoint that takes a full prompt and reference pictures), `POST /api/gallery/<chat>/upload` and `PATCH /api/chats/<chat>/messages/<message>/extra`. Your API keys stay in Marinara. The picture appears under the message straight away, and Marinara shows its own copy of the attachment the next time it loads the messages.
 

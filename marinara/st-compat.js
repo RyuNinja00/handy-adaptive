@@ -280,7 +280,8 @@ const settingsWin = $(`
     <div id="handy-st-ai" class="handy-st-small"></div>
     <div class="menu_button" id="handy-st-hide-tags">Hide device tags in chat</div>
     <div class="menu_button" id="handy-st-test-image" role="button" tabindex="0">🖼 Test inline image (POC)</div>
-    <label class="handy-st-small"><input type="checkbox" id="handy-st-auto-images"> Show image previews for AI picture requests (including games)</label>
+    <label class="handy-st-small"><input type="checkbox" id="handy-st-auto-images"> Show real images for AI picture requests (including games)</label>
+    <div class="handy-st-small">Requires local image bridge: <code>node image-bridge/server.mjs</code> (port 38765).</div>
     <div id="handy-st-image-status" class="handy-st-small" aria-live="polite"></div>
   </div>
   <div id="extensions_settings2"></div>
@@ -313,7 +314,7 @@ const pictureQuery = (content) => {
     return null;
 };
 
-function testInlineImage(query = null) {
+async function testInlineImage(query = null) {
     const status = settingsWin.find('#handy-st-image-status');
     const candidates = [
         '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
@@ -336,13 +337,13 @@ function testInlineImage(query = null) {
     preview.dataset.handyImagePoc = 'true';
     preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
     const img = document.createElement('img');
-    img.src = TEST_IMAGE_URL;
+    if (!query) img.src = TEST_IMAGE_URL;
     img.alt = 'Handy Adaptive test image';
     img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
-    img.onload = () => { status.text('Image loaded in chat DOM. Refresh to confirm this preview is temporary.'); };
+    img.onload = () => { status.text(query ? 'Matching image loaded from local bridge.' : 'Test placeholder loaded in chat.'); };
     img.onerror = () => { status.text('Image request failed: check browser network/CSP restrictions.'); };
     const caption = document.createElement('figcaption');
-    caption.textContent = query ? `Picture request: ${query} (placeholder preview; not a matching image)` : 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
+    caption.textContent = query ? `Picture search: ${query}` : 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
     if (query) {
         const link = document.createElement('a');
         link.href = `https://www.pornpics.com/?q=${encodeURIComponent(query)}`;
@@ -353,7 +354,29 @@ function testInlineImage(query = null) {
     caption.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
     preview.append(img, caption);
     target.append(preview);
-    status.text('Preview inserted. Waiting for image to load…');
+    status.text(query ? 'Searching for matching image through local bridge…' : 'Preview inserted. Waiting for image to load…');
+    if (query) {
+        try {
+            const response = await nativeFetch('http://127.0.0.1:38765/image?q=' + encodeURIComponent(query), { signal: AbortSignal.timeout(25000) });
+            if (!response.ok) throw new Error((await response.text()).slice(0, 200));
+            const blob = await response.blob();
+            if (!blob.type.startsWith('image/')) throw new Error('Bridge returned non-image data');
+            const objectUrl = URL.createObjectURL(blob);
+            img.onload = () => { URL.revokeObjectURL(objectUrl); status.text('Matching image loaded from PornPics search.'); };
+            img.onerror = () => { URL.revokeObjectURL(objectUrl); status.text('Downloaded image could not be displayed.'); };
+            img.src = objectUrl;
+            const source = response.headers.get('X-Image-Source');
+            if (source) {
+                const link = document.createElement('a');
+                link.href = source; link.target = '_blank'; link.rel = 'noopener noreferrer';
+                link.textContent = 'Image source'; caption.append(' · ', link);
+            }
+        } catch (error) {
+            img.remove();
+            status.text('Local image bridge unavailable or search failed: ' + error.message);
+            caption.prepend('Could not retrieve image. ');
+        }
+    }
 }
 settingsWin.find('#handy-st-test-image').on('click', () => testInlineImage());
 settingsWin.find('#handy-st-auto-images').prop('checked', !!extensionSettings[MODULE].imagePreviewPoc).on('change', function () {
@@ -366,7 +389,7 @@ function scheduleImagePreview(messageId, content) {
     if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
     imagePreviewSeen.add(messageId);
     lastImagePreviewAt = Date.now();
-    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) testInlineImage(query); }, 700);
+    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query); }, 700);
 }
 
 

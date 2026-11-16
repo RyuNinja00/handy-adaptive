@@ -228,6 +228,7 @@ pg.on('console', (msg) => {   // …and the picture-failure check causes one exp
     if (msg.type() !== 'error' || /Failed to load resource: .*404/.test(msg.text())) return;
     if (/Failed to load resource: .*500/.test(msg.text()) && state.expected500 > 0) { state.expected500--; return; }
     if (/Failed to load resource: .*40[12]/.test(msg.text()) && state.expectedVenice > 0) { state.expectedVenice--; return; }
+    if (/127\.0\.0\.1:38765|ERR_CONNECTION_REFUSED/.test(msg.text()) && state.expectBridgeDown) return;   // no image bridge running here
     pageErrors.push(msg.text());
 });
 const waitFor = async (fn, what, ms = 6000) => {
@@ -774,6 +775,21 @@ try {
         assert.equal(pics(), n); assert.doesNotMatch(lastEntry(), /PICTURES:/);
         await pg.click('#handy_game_btn');
         await openSettings(); await pg.check('#handy_img_on');   // the next step expects the settings window open
+
+        // the opt-in PornPics bridge (PR #13) still runs next to the drawn pictures, with the full search filter
+        state.expectBridgeDown = true;
+        await pg.check('#handy-st-auto-images');
+        n = pics();
+        const bridgeQueries = [];
+        pg.on('request', (r) => { if (r.url().startsWith('http://127.0.0.1:38765/image')) bridgeQueries.push(new URL(r.url()).searchParams.get('q')); });
+        await pg.evaluate(() => { const d = document.createElement('div'); d.dataset.messageId = 'bridge-msg'; d.style.cssText = 'width:400px;height:40px'; d.textContent = 'her message'; document.getElementById('app').append(d); });
+        state.next = { mode: 'new', content: 'Look at this. <pics="sleeping drunk redhead in stockings"/>' };
+        await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', userMessage: 'show me' }));
+        await waitFor(() => bridgeQueries.length === 1, 'bridge asked', 4000);
+        assert.equal(bridgeQueries[0], 'redhead in stockings', 'minor and non-consent words removed before searching');
+        await waitFor(async () => /Could not retrieve image/.test(await pg.textContent('figure[data-handy-image-poc]').catch(() => '')), 'bridge failure shown');
+        assert.equal(pics(), n, 'a PornPics search never goes to the image model');
+        await pg.uncheck('#handy-st-auto-images');
     });
     await step('turning AI instructions off empties the lorebook entry', async () => {
         await pg.uncheck('#handy_inject');

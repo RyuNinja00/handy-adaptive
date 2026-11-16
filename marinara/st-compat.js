@@ -228,6 +228,7 @@ async function afterReply(res, chatId, before) {
         const old = handled.has(m.id) ? handled.get(m.id) : before.get(m.id);
         if (old === m.content) continue;
         handled.set(m.id, m.content);
+        scheduleImagePreview(m.id, m.content);
         const text = old && m.content.startsWith(old) ? m.content.slice(old.length) : m.content;   // Continue: only the new part
         const ch = scene.characters.find((c) => c.id === m.characterId);
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
@@ -244,7 +245,7 @@ async function hookedFetch(input, init) {
     if (!chatId || body.impersonate || body.turnGameBots) return nativeFetch.apply(window, arguments);
     let before = new Map();
     try {
-        if (chatId !== scene.chatId) { previews.clear(); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
+        if (chatId !== scene.chatId) { previews.clear(); imagePreviewSeen.clear(); lastImagePreviewAt = 0; document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove()); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
         if (typeof body.userMessage === 'string' && body.userMessage.trim()) {
             const idx = mirror({ name: scene.name1, is_user: true, is_system: false, mes: body.userMessage, send_date: Date.now(), extra: {} });
             eventSource.emit(eventTypes.MESSAGE_SENT, idx);
@@ -282,6 +283,10 @@ const settingsWin = $(`
   <div class="handy-st-compat">
     <div id="handy-st-ai" class="handy-st-small"></div>
     <div class="menu_button" id="handy-st-hide-tags">Hide device tags in chat</div>
+    <div class="menu_button" id="handy-st-test-image" role="button" tabindex="0">🖼 Test inline image (POC)</div>
+    <label class="handy-st-small"><input type="checkbox" id="handy-st-auto-images"> Show real images for AI picture requests (including games)</label>
+    <div class="handy-st-small">Requires local image bridge: <code>node image-bridge/server.mjs</code> (port 38765).</div>
+    <div id="handy-st-image-status" class="handy-st-small" aria-live="polite"></div>
   </div>
   <div id="extensions_settings2"></div>
 </div>`).appendTo(document.body);
@@ -467,6 +472,112 @@ const imageHost = {
     },
 };
 
+// ---------------------------------------------------------------- real pictures from PornPics (opt-in, local bridge)
+// <pics="query"/> or <handy pics="query"/> in a reply: the local image bridge (node image-bridge/server.mjs)
+// finds a matching PornPics picture, shown under the message for this browser session only. This is separate
+// from the pictures she draws: these are never saved, never sent to an image model and never used as a reference.
+const TEST_IMAGE_URL = 'https://placehold.co/640x360/png?text=Handy+Adaptive+Image+Test';
+const imagePreviewSeen = new Set();
+let lastImagePreviewAt = 0;
+const IMAGE_PREVIEW_COOLDOWN = 45000;
+// same words the extension strips from picture/video search links: anything pointing at minors or non-consent
+const PICS_BLOCK = /\b(teens?|teenage\w*|tee?ny|underage\w*|minors?|young\w*|youth|little|tiny|kids?|child\w*|school\w*|students?|high ?school|barely|legal|loli\w*|shota\w*|babysitter\w*|daughter\w*|son|sister|brother|niece|nephew|incest\w*|family|virgin\w*|1[0-8]|eighteen|nineteen|years? old|hidden|spy\w*|voyeur\w*|upskirt\w*|creep\w*|leak\w*|stolen|revenge|drunk\w*|passed out|sleep\w*|asleep|unconscious|forc\w*|rap(e|ed|ing)|non ?con\w*|abus\w*|real (coworker|colleague|boss|neighbou?r)s?)\b/g;
+const pictureQuery = (content) => {
+    // Models sometimes emit <pics="query"/> instead of <handy pics="query"/>. Accept both.
+    const source = String(content || '');
+    const patterns = [
+        /<handy\b([^>]*?)\/?>(?:\s*<\/handy>)?/gi,
+        /<pics\s*=\s*(["'])(.*?)\1\s*\/?\s*>/gi,
+    ];
+    for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+            const raw = pattern === patterns[1] ? match[2] : [...match[1].matchAll(/\bpics\s*=\s*(["'])(.*?)\1/gi)][0]?.[2] || '';
+            const cleaned = raw.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').replace(PICS_BLOCK, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+            if (cleaned) return cleaned;
+        }
+    }
+    return null;
+};
+
+async function testInlineImage(query = null) {
+    const status = settingsWin.find('#handy-st-image-status');
+    const candidates = [
+        '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
+        '.chat-message', '.message', '[role="article"]',
+    ];
+    let target = null;
+    for (const selector of candidates) {
+        const matches = [...document.querySelectorAll(selector)].filter((el) =>
+            !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
+            el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
+        if (matches.length) { target = matches[matches.length - 1]; break; }
+    }
+    if (!target) {
+        status.text('No recognizable chat message found. Open a conversation with at least one message, then retry.');
+        compatToast('Image POC: no chat message container found', 'warning');
+        return;
+    }
+    if (!query) document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove());
+    const preview = document.createElement('figure');
+    preview.dataset.handyImagePoc = 'true';
+    preview.style.cssText = 'margin:12px 0;padding:10px;border:1px dashed #888;border-radius:8px;max-width:660px;';
+    const img = document.createElement('img');
+    if (!query) img.src = TEST_IMAGE_URL;
+    img.alt = 'Handy Adaptive test image';
+    img.style.cssText = 'display:block;width:100%;max-width:640px;height:auto;border-radius:5px;';
+    img.onload = () => { status.text(query ? 'Matching image loaded from local bridge.' : 'Test placeholder loaded in chat.'); };
+    img.onerror = () => { status.text('Image request failed: check browser network/CSP restrictions.'); };
+    const caption = document.createElement('figcaption');
+    caption.textContent = query ? `Picture search: ${query}` : 'Handy Adaptive image POC — temporary browser preview, not saved to chat';
+    if (query) {
+        const link = document.createElement('a');
+        link.href = `https://www.pornpics.com/?q=${encodeURIComponent(query)}`;
+        link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.textContent = 'Open matching picture search';
+        caption.append(' · ', link);
+    }
+    caption.style.cssText = 'font-size:12px;opacity:.8;margin-top:6px;';
+    preview.append(img, caption);
+    target.append(preview);
+    status.text(query ? 'Searching for matching image through local bridge…' : 'Preview inserted. Waiting for image to load…');
+    if (query) {
+        try {
+            const response = await nativeFetch('http://127.0.0.1:38765/image?q=' + encodeURIComponent(query), { signal: AbortSignal.timeout(25000) });
+            if (!response.ok) throw new Error((await response.text()).slice(0, 200));
+            const blob = await response.blob();
+            if (!blob.type.startsWith('image/')) throw new Error('Bridge returned non-image data');
+            const objectUrl = URL.createObjectURL(blob);
+            img.onload = () => { URL.revokeObjectURL(objectUrl); status.text('Matching image loaded from PornPics search.'); };
+            img.onerror = () => { URL.revokeObjectURL(objectUrl); status.text('Downloaded image could not be displayed.'); };
+            img.src = objectUrl;
+            const source = response.headers.get('X-Image-Source');
+            if (source) {
+                const link = document.createElement('a');
+                link.href = source; link.target = '_blank'; link.rel = 'noopener noreferrer';
+                link.textContent = 'Image source'; caption.append(' · ', link);
+            }
+        } catch (error) {
+            img.remove();
+            status.text('Local image bridge unavailable or search failed: ' + error.message);
+            caption.prepend('Could not retrieve image. ');
+        }
+    }
+}
+settingsWin.find('#handy-st-test-image').on('click', () => testInlineImage());
+settingsWin.find('#handy-st-auto-images').prop('checked', !!extensionSettings[MODULE].imagePreviewPoc).on('change', function () {
+    extensionSettings[MODULE].imagePreviewPoc = this.checked;
+    saveSettingsDebounced();
+});
+function scheduleImagePreview(messageId, content) {
+    if (!extensionSettings[MODULE].imagePreviewPoc) return;
+    const query = pictureQuery(content);
+    if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
+    imagePreviewSeen.add(messageId);
+    lastImagePreviewAt = Date.now();
+    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query); }, 700);
+}
+
+
 function refreshCompatStatus() {
     const s = extensionSettings[MODULE];
     $('#handy-st-ai').text(!s.enabled || s.injectProfile === false || !promptText ? 'AI instructions: off'
@@ -506,6 +617,7 @@ marinara.onCleanup(async () => {
         await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
     } catch { /* best effort */ }
     previews.clear(); clearInterval(previews.timer);
+    $('[data-handy-image-poc]').remove();
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;

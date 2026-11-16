@@ -1,7 +1,7 @@
 name: Build Marinara image POC ZIP
 on:
   push:
-    branches: [feature/marinara-image-poc, fix/marinara-shorthand-pics, fix/marinara-hide-pics-tags, feature/pornpics-local-image-service]
+    branches: [feature/marinara-image-poc, fix/marinara-shorthand-pics, fix/marinara-hide-pics-tags]
   workflow_dispatch:
 permissions:
   contents: write
@@ -13,8 +13,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate image bridge syntax
-        run: node --check image-bridge/server.mjs
       - name: Build extension ZIP
         run: node scripts/build-marinara.mjs
       - name: Check archive

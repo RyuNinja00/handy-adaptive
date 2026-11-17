@@ -157,7 +157,8 @@ server.listen(0, async () => {
     }
     const s2 = await st();
     check('settings: number and text fields are saved', +s2.maxSpeed === 45 && +s2.strokeFloor === 10 && +s2.strokeCeil === 90 && +s2.idleStopSec === 300 && +s2.readWpm === 180);
-    const boxes = await p.$$eval('#extensions_settings2 input[type=checkbox]', (els) => els.map((e) => e.id));
+    check('settings: generated pictures are Marinara-only (hidden in SillyTavern, with a note)', !(await p.isVisible('#handy_img_box')) && await p.isVisible('#handy_img_none'));
+    const boxes = await p.$$eval('#extensions_settings2 input[type=checkbox]', (els) => els.filter((e) => e.offsetParent !== null).map((e) => e.id));
     for (const id of boxes) { if (id === 'handy_enabled' || id === 'handy_show_panel') continue; await p.click('#' + id); await p.waitForTimeout(30); await p.click('#' + id); }
     for (const sel of await p.$$eval('#extensions_settings2 select', (els) => els.map((e) => e.id))) {
         const vals = await p.$$eval(`#${sel} option`, (o) => o.map((x) => x.value));

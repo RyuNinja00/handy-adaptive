@@ -10,7 +10,7 @@ Marinara runs extensions in a locked sandbox by default. That sandbox blocks int
 
 Full page access means the code runs with the same access as Marinara's own page. All of the source is in this repository, and Marinara shows you the exact code before you approve it. The extension only talks to:
 - the Handy API (`handyfeeling.com`), and
-- your own Marinara server: its chat, character, lorebook, regex and extension-storage endpoints, described below.
+- your own Marinara server: its chat, character, lorebook, regex, extension-storage, image-generation and Gallery endpoints, described below.
 
 ## Step 1. Allow imported extensions (once)
 
@@ -85,6 +85,12 @@ Also:
 - Video and picture search links appear on the panel only, not under her message.
 - Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
+## Pictures she sends
+
+In Marinara the games can show you pictures drawn by your own Marinara image connection. They're saved in the chat's **Gallery** and attached under her message. See **Pictures she sends** in Part 12 of the [User Guide](USER_GUIDE.md) for setup (including a second, image-editing connection that keeps a woman you ❤ looking the same, or **Venice directly**, which sends her ❤ picture to Venice's own editing API because Marinara's Venice service sends none).
+
+The extension draws them through Marinara's own endpoints: `POST /api/characters/avatar-generation` (the endpoint that takes a full prompt and reference pictures), `POST /api/gallery/<chat>/upload` and `PATCH /api/chats/<chat>/messages/<message>/extra`. Your API keys stay in Marinara. The picture appears under the message straight away, and Marinara shows its own copy of the attachment the next time it loads the messages.
+
 ## Updating
 
 1. Download the new `dist/handy-adaptive-marinara.zip`.
@@ -114,3 +120,17 @@ node scripts/build-marinara.mjs      # → dist/marinara/Handy Adaptive/ and dis
 node tests/marinara_e2e.mjs          # browser test against Marinara's full page runtime (Playwright)
 ```
 The build bundles, in order: Marinara's managed timers (as `setTimeout`/`setInterval`), a private jQuery, `marinara/st-compat.js`, then `synth.js`, `charstyle.js` and `index.js` unchanged. Keep `index.js` using only the SillyTavern features listed at the top of `st-compat.js`. When it needs a new one, add a matching stand-in there.
+
+## Local PornPics image bridge (opt-in)
+
+The **Show real images for AI picture requests (including games)** option uses a local Node.js 20+ companion service. It is **not** bundled as an executable inside the Marinara ZIP. The ZIP contains the updated extension client; the bridge must be started separately from the repository directory:
+
+```powershell
+node image-bridge/server.mjs
+```
+
+By default it listens only on `127.0.0.1:38765`. Check `http://127.0.0.1:38765/health` in the same browser. In Handy Adaptive's ⚙ settings, enable **Show real images for AI picture requests (including games)**. When an AI reply includes `<pics="black lace thong">` or `<handy pics="black lace thong"/>`, the extension asks the bridge for a matching PornPics search result, downloads it as a browser blob and inserts it under the latest chat message. The raw tag remains hidden by the display regex.
+
+**Limitations:** Search uses publicly accessible HTML image candidates and may stop working if PornPics changes its markup, blocks automated requests or requires JavaScript. The first downloadable candidate is not guaranteed to match the requested description. The inserted image is temporary DOM content and is not persisted with the chat. The manual **Test inline image (POC)** button continues to show a placeholder and does not exercise the bridge. Automatic requests have a 45-second cooldown. Before searching, the query loses the same words the extension strips from search links (anything pointing at minors or non-consent). These real pictures are separate from **Pictures she sends**: they're never saved, never sent to an image model and never used as a reference for a drawn picture. Only use this feature for lawful adult material and respect site terms.
+
+If Marinara is served from a different origin than `http://localhost:3000` or `http://127.0.0.1:3000`, configure `HANDY_IMAGE_ORIGINS` as a comma-separated list of your Marinara page's exact origin before starting the bridge. Browsers may block a loopback HTTP service from an HTTPS page depending on security settings.

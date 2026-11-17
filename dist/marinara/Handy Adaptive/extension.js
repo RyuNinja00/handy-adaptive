@@ -1,4 +1,4 @@
-// Handy Adaptive v0.14.1 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.14.2 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -314,23 +314,38 @@ settingsWin.find('#handy-st-hide-tags').on('click', () => ensureHideRegex({ quie
 // reference images. The picture is saved to the chat's Gallery and attached under the AI message that asked
 // for it, so it stays after a reload. Until Marinara next reloads the messages, a preview is shown in place.
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
+// Editing models (SpicyAPI's ".../edit", image-to-image, …) only work FROM a picture: asked for a new picture
+// with none, SpicyAPI answers "image_urls: is required". So new pictures go to a text-to-image connection, and
+// pictures drawn from one he ❤ go to an editing connection when there is one.
+const EDIT_MODEL = /(^|[\/_:.-])(edit|edits|multi-edit|image-to-image|img2img|i2i|inpaint(ing)?|kontext)([\/_:.-]|$)/i;
+const isEditModel = (model) => EDIT_MODEL.test(String(model || ''));
+const NEEDS_PICTURE = /image_urls?[^.]*required|requires? (an? )?(input |reference |source )?image|no (input|source) image/i;
 async function imageConnections() {
     return asList(await mapi('GET', '/connections')).filter((c) => c && c.provider === 'image_generation')
-        .map((c) => ({ id: c.id, name: c.name || c.model || 'Image connection', model: c.model || '', agentDefault: String(c.defaultForAgents) === 'true' }));
+        .map((c) => ({ id: c.id, name: c.name || c.model || 'Image connection', model: c.model || '', agentDefault: String(c.defaultForAgents) === 'true', edit: isEditModel(c.model) }));
 }
-async function resolveImageConnection(wantId, chatId) {
+const editHelp = (c) => `“${c.name}” uses an image-editing model (${c.model}), which can only change an existing picture. In Marinara add a second image connection with the same provider's text-to-image model (for SpicyAPI's MiniMax H3, its text-to-image model) and pick it as the Image connection; keep “${c.name}” for keeping a woman the same.`;
+// → { conn, note }. withRefs: the picture is drawn from pictures he ❤.
+async function resolveImageConnection(wantId, chatId, withRefs = false) {
     const list = await imageConnections();
     if (!list.length) throw new Error('no image connection in Marinara yet: add one under Connections (Image Generation)');
-    if (wantId) { const c = list.find((x) => x.id === wantId); if (c) return c; }
-    if (chatId) {   // the image model chosen in this chat's settings
+    let pick = wantId ? list.find((x) => x.id === wantId) : null;
+    if (!pick && chatId) {   // the image model chosen in this chat's settings
         try {
             const chat = await mapi('GET', `/chats/${enc(chatId)}`);
             const meta = parseMaybe(chat.metadata, {}) || {};
-            const c = list.find((x) => x.id === String(meta.imageGenConnectionId || '').trim());
-            if (c) return c;
+            pick = list.find((x) => x.id === String(meta.imageGenConnectionId || '').trim()) || null;
         } catch { /* fall through */ }
     }
-    return list.find((x) => x.agentDefault) || list[0];
+    pick ||= list.find((x) => x.agentDefault) || list[0];
+    if (withRefs) {
+        if (!pick.edit) { const e = list.find((x) => x.edit); if (e) return { conn: e, note: `drawn from her ❤ picture with ${e.name}` }; }
+        return { conn: pick, note: '' };
+    }
+    if (!pick.edit) return { conn: pick, note: '' };
+    const alt = list.find((x) => !x.edit && x.agentDefault) || list.find((x) => !x.edit);
+    if (alt) return { conn: alt, note: `${pick.name} is an editing model, so ${alt.name} was used for a new picture` };
+    throw new Error(editHelp(pick));
 }
 const blobToDataUrl = (blob) => new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => bad(fr.error); fr.readAsDataURL(blob); });
 async function toDataUrl(src) {
@@ -447,19 +462,26 @@ const imageHost = {
                 return { ...out, warning: `Venice editing failed (${e.message}), so this one was drawn without her ❤ picture.` };
             }
         }
-        const useEdit = references.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
-        const conn = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId);
         const refs = [];
         for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
+        const useEdit = refs.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
+        const { conn, note } = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId, refs.length > 0);
         const name = 'handy-picture';
-        const out = await mapi('POST', '/characters/avatar-generation', {
-            connectionId: conn.id, name, appearance: String(prompt).slice(0, 2000), purpose: 'avatar',
-            width: Math.round(width), height: Math.round(height),
-            ...(refs.length ? { referenceImages: refs } : {}),
-            promptOverrides: [{ id: `avatar:${name}`, prompt: String(prompt), negativePrompt: String(negativePrompt || '') }],
-        });
+        let out;
+        try {
+            out = await mapi('POST', '/characters/avatar-generation', {
+                connectionId: conn.id, name, appearance: String(prompt).slice(0, 2000), purpose: 'avatar',
+                width: Math.round(width), height: Math.round(height),
+                ...(refs.length ? { referenceImages: refs } : {}),
+                promptOverrides: [{ id: `avatar:${name}`, prompt: String(prompt), negativePrompt: String(negativePrompt || '') }],
+            });
+        } catch (e) {
+            // an editing model that the name didn't give away
+            if (!refs.length && NEEDS_PICTURE.test(String(e.message))) throw new Error(editHelp({ ...conn, model: conn.model || 'an editing model' }));
+            throw e;
+        }
         if (!out || typeof out.image !== 'string' || !out.image.startsWith('data:image/')) throw new Error('the image connection returned no picture');
-        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length };
+        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
     async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
@@ -2510,7 +2532,17 @@ const images = {
         $('#handy_img_status').text('Drawing a test picture…');
         try {
             const out = await host.generate({ prompt: `${S().imageStyle || DEFAULTS.imageStyle}. A black lace thong laid flat on white bedsheets, product photo.`, negativePrompt: IMG_NEG, width: 832, height: 832 });
-            $('#handy_img_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`);
+            let html = `New pictures work (${esc(out.connection)}).${out.note ? ` <i>${esc(out.note)}.</i>` : ''} <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`;
+            $('#handy_img_status').html(html);
+            // then the editing side, from that picture (Venice has its own test button)
+            if (S().imageEditConnection !== 'venice' && (await host.connections().catch(() => [])).some((c) => c.edit || c.id === S().imageEditConnection)) {
+                $('#handy_img_status').append('<div>Checking the editing connection…</div>');
+                try {
+                    const ed = await host.generate({ prompt: 'Keep the thong and the sheets exactly the same, but make the lace deep red.', negativePrompt: IMG_NEG, references: [out.dataUrl], width: 832, height: 832 });
+                    html += `<div>Keeping a woman the same works too (${esc(ed.connection)}). <img class="handy-img-test" src="${ed.dataUrl}" alt="test edit"></div>`;
+                } catch (e) { html += `<div>The editing connection failed: ${esc(e.message)}</div>`; }
+                $('#handy_img_status').html(html);
+            }
         } catch (e) { $('#handy_img_status').text(`Failed: ${e.message}`); }
     },
     veniceBox() { $('#handy_venice_box').toggle(S().imageEditConnection === 'venice'); },
@@ -2528,8 +2560,11 @@ const images = {
         if (!host) return;
         let list = [];
         try { list = await host.connections(); } catch (e) { $('#handy_img_status').text(`Couldn't list image connections: ${e.message}`); }
-        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}</option>`;
+        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}${c.edit ? ' · editing model' : ''}</option>`;
         $('#handy_img_conn').html(`<option value="">This chat's image model (or Marinara's default)</option>` + list.map((c) => opt(c, S().imageConnection)).join(''));
+        const chosen = list.find((c) => c.id === S().imageConnection);
+        if (chosen?.edit) $('#handy_img_status').text(`“${chosen.name}” is an editing model: it can only change an existing picture. Pick a text-to-image connection here, and choose “${chosen.name}” below for keeping a woman the same.`);
+        else if (list.length && list.every((c) => c.edit)) $('#handy_img_status').text('All your image connections use editing models, which can only change an existing picture. Add one with a text-to-image model in Marinara (for SpicyAPI\'s MiniMax H3, its text-to-image model).');
         $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join('')
             + `<option value="venice" ${S().imageEditConnection === 'venice' ? 'selected' : ''}>Venice directly (uncensored editing, needs a Venice API key)</option>`);
         this.veniceBox();

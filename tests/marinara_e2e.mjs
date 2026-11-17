@@ -160,6 +160,8 @@ const server = http.createServer(async (req, res) => {
         if (!connectionsDb.some((c) => c.id === body.connectionId && c.provider === 'image_generation')) return json(400, { error: 'Image generation connection not found' });
         if (!body.appearance) return json(400, { error: 'appearance description is required' });
         if (state.imageFail) return json(500, { error: 'SpicyAPI image generation failed: content error' });
+        const conn = connectionsDb.find((c) => c.id === body.connectionId);
+        if (/\/edit$/.test(conn.model) && !body.referenceImages?.length) return json(500, { error: 'SpicyAPI image generation failed (400): image_urls: is required' });   // like the real thing
         await new Promise((r) => setTimeout(r, 120));
         return json(200, { image: `data:image/png;base64,${PNG}`, prompt: body.promptOverrides?.[0]?.prompt });
     }
@@ -649,9 +651,27 @@ try {
         await waitFor(async () => (await pg.$$eval('#handy_img_conn option', (o) => o.length)) === 3, 'image connections listed');
         assert.deepEqual(await pg.$$eval('#handy_img_edit option', (o) => o.map((x) => x.value)), ['', 'img1', 'img2', 'venice'], 'only image connections (and Venice directly) are offered');
         assert.equal(await pg.isVisible('#handy_img_none'), false);
+        assert.match((await pg.$$eval('#handy_img_conn option', (o) => o.map((x) => x.textContent))).join('|'), /SpicyAPI edit \(minimax\/h3-image\/edit\) · editing model/, 'editing models are labelled');
         await pg.click('#handy_img_test');
-        await waitFor(async () => /Works \(SpicyAPI\)/.test(await pg.textContent('#handy_img_status')), 'test picture').catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_img_status')); });
-        assert.equal(state.pictures.at(-1).connectionId, 'img1', 'the chat\'s image model is used');
+        await waitFor(async () => /New pictures work \(SpicyAPI\)[\s\S]*Keeping a woman the same works too \(SpicyAPI edit\)/.test(await pg.textContent('#handy_img_status')), 'test picture').catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_img_status')); });
+        assert.equal(state.pictures.at(-2).connectionId, 'img1', 'the chat\'s image model is used');
+        assert.equal(state.pictures.at(-1).connectionId, 'img2', 'then the editing model is checked, from that picture');
+        assert.equal(state.pictures.at(-1).referenceImages?.length, 1);
+
+        // An editing model picked for new pictures (the "image_urls: is required" mistake): rerouted, not an error
+        await pg.selectOption('#handy_img_conn', 'img2');
+        await pg.click('#handy_img_reload');
+        await waitFor(async () => /is an editing model: it can only change an existing picture/.test(await pg.textContent('#handy_img_status')), 'warning about an editing model');
+        await pg.click('#handy_img_test');
+        await waitFor(async () => /New pictures work \(SpicyAPI\)\. SpicyAPI edit is an editing model, so SpicyAPI was used for a new picture/.test(await pg.textContent('#handy_img_status')), 'rerouted to the text-to-image model');
+        assert.ok(!state.pictures.some((x) => x.connectionId === 'img2' && !x.referenceImages), 'never sent to the edit model without a picture');
+        // only editing models: a clear explanation instead of SpicyAPI's error
+        const saved = connectionsDb.splice(1, 1);
+        await pg.click('#handy_img_test');
+        await waitFor(async () => /Failed: “SpicyAPI edit” uses an image-editing model \(minimax\/h3-image\/edit\)[\s\S]*text-to-image model/.test(await pg.textContent('#handy_img_status')), 'explained');
+        connectionsDb.splice(1, 0, ...saved);
+        await pg.selectOption('#handy_img_conn', '');
+        await pg.click('#handy_img_reload');
         await pg.click('#handy-st-settings .handy-st-close');
 
         if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');

@@ -1341,7 +1341,17 @@ const images = {
         $('#handy_img_status').text('Drawing a test picture…');
         try {
             const out = await host.generate({ prompt: `${S().imageStyle || DEFAULTS.imageStyle}. A black lace thong laid flat on white bedsheets, product photo.`, negativePrompt: IMG_NEG, width: 832, height: 832 });
-            $('#handy_img_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`);
+            let html = `New pictures work (${esc(out.connection)}).${out.note ? ` <i>${esc(out.note)}.</i>` : ''} <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`;
+            $('#handy_img_status').html(html);
+            // then the editing side, from that picture (Venice has its own test button)
+            if (S().imageEditConnection !== 'venice' && (await host.connections().catch(() => [])).some((c) => c.edit || c.id === S().imageEditConnection)) {
+                $('#handy_img_status').append('<div>Checking the editing connection…</div>');
+                try {
+                    const ed = await host.generate({ prompt: 'Keep the thong and the sheets exactly the same, but make the lace deep red.', negativePrompt: IMG_NEG, references: [out.dataUrl], width: 832, height: 832 });
+                    html += `<div>Keeping a woman the same works too (${esc(ed.connection)}). <img class="handy-img-test" src="${ed.dataUrl}" alt="test edit"></div>`;
+                } catch (e) { html += `<div>The editing connection failed: ${esc(e.message)}</div>`; }
+                $('#handy_img_status').html(html);
+            }
         } catch (e) { $('#handy_img_status').text(`Failed: ${e.message}`); }
     },
     veniceBox() { $('#handy_venice_box').toggle(S().imageEditConnection === 'venice'); },
@@ -1359,8 +1369,11 @@ const images = {
         if (!host) return;
         let list = [];
         try { list = await host.connections(); } catch (e) { $('#handy_img_status').text(`Couldn't list image connections: ${e.message}`); }
-        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}</option>`;
+        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}${c.edit ? ' · editing model' : ''}</option>`;
         $('#handy_img_conn').html(`<option value="">This chat's image model (or Marinara's default)</option>` + list.map((c) => opt(c, S().imageConnection)).join(''));
+        const chosen = list.find((c) => c.id === S().imageConnection);
+        if (chosen?.edit) $('#handy_img_status').text(`“${chosen.name}” is an editing model: it can only change an existing picture. Pick a text-to-image connection here, and choose “${chosen.name}” below for keeping a woman the same.`);
+        else if (list.length && list.every((c) => c.edit)) $('#handy_img_status').text('All your image connections use editing models, which can only change an existing picture. Add one with a text-to-image model in Marinara (for SpicyAPI\'s MiniMax H3, its text-to-image model).');
         $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join('')
             + `<option value="venice" ${S().imageEditConnection === 'venice' ? 'selected' : ''}>Venice directly (uncensored editing, needs a Venice API key)</option>`);
         this.veniceBox();

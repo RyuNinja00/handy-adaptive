@@ -682,7 +682,7 @@ try {
         // a message element, so the live preview has somewhere to go
         let n = pics();
         await turn('Look at her. <handy act="handjob" her="Dana" look="auburn bob, green eyes, freckles, curvy, 30s" img="bent over a desk, from behind, teen schoolgirl skirt pulled up" panties="red lace thong"/>');
-        await waitFor(() => state.uploads.length >= 1 && pics() === n + 1, 'picture drawn and saved');
+        await waitFor(() => state.uploads.length >= 1 && pics() === n + 1, 'picture drawn and saved').catch(async (e) => { throw new Error(e.message + ' pics=' + (pics() - n) + ' uploads=' + state.uploads.length + ' status=' + await pg.textContent('#handy_pic_status') + ' errors=' + JSON.stringify(pageErrors) + ' all=' + JSON.stringify(state.pictures.map(x=>[x.connectionId,(x.promptOverrides?.[0]?.prompt||'').slice(0,90)])) + ' last=' + JSON.stringify(state.chats.chat1.slice(-2).map(m=>m.content))); });
         const first = state.pictures.at(-1), fp = first.promptOverrides[0];
         assert.equal(first.connectionId, 'img1'); assert.equal(first.referenceImages, undefined);
         assert.match(fp.prompt, /Dana, an adult woman \(25 or older\): auburn bob, green eyes, freckles, curvy, 30s/);
@@ -772,6 +772,24 @@ try {
         await turn('Hm. <handy act="handjob"/>');
         assert.match(lastEntry(), /only of invented adult women/);
 
+        // the model "shows" with the old picture-search tag and no device tag at all: still drawn, of the woman named
+        n = pics();
+        await turn('i\'m gonna describe her outfit for you. Claire is gonna wear some pretty pink lace today.\n<pics="princess pink lace cheeky panties ass thighs legs hair messy bun">');
+        await waitFor(() => pics() === n + 1, 'picture from pics=');
+        const fromPics = state.pictures.at(-1).promptOverrides?.[0]?.prompt || JSON.stringify(state.pictures.at(-1)).slice(0, 400);
+        assert.match(fromPics, /Claire, an adult woman/); assert.match(fromPics, /pink lace cheeky panties ass/);
+        assert.ok(await G(() => !!window.handyAdaptive.cast.all().claire), 'Claire joins the cast');
+        await turn('Mm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /You used pics=/);
+        assert.match(lastEntry(), /SEND HIM A PICTURE of her in it/);
+        assert.match(lastEntry(), /Never write <pics=/);
+        // never the character herself, by tag or by the pics= fallback
+        n = pics();
+        await turn('Look at me. <handy act="handjob" her="Vex" img="me in pink lace"/>');
+        await turn('Mm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /never of you \(Vex\)/);
+        await turn('Vex is wearing pink lace for you. <pics="pink lace panties">');
+        assert.equal(pics(), n, 'a reply about herself draws nothing');
         // a failure is reported, not fatal
         state.imageFail = true; state.expected500 = 1; n = pics();
         await turn('<handy act="handjob" her="Dana" img="in the shower"/>');

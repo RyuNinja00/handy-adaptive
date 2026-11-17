@@ -921,6 +921,11 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 
 ## Part 17 — Troubleshooting
 
+**Pictures: she says she's showing you one, but nothing is drawn**
+- Some models "show" with `pics="…"` or a bare `<pics="…">` tag. Those are only picture-search links. A drawn picture needs `img="…"` and `her="NAME"` on a `<handy …/>` tag.
+- Since 0.14.3, during a game, a `pics=` request is drawn anyway, of the woman the reply names (for example "Claire is gonna wear…"), and the AI is told to use `img=` next time. Outside a game, `pics=` stays a search link.
+- It is never a picture of the character herself. A reply about her draws nothing.
+
 **Pictures: "image_urls: is required" (or the picture fails right away)**
 - The connection used for new pictures is an **image-editing** model (SpicyAPI's MiniMax H3 *edit* model, image-to-image, and similar), and those can only change an existing picture.
 - In Marinara, add an image connection with the provider's **text-to-image** model and pick it as **Image connection** in Handy's settings, or as the chat's image model. Keep the edit-model connection for **For keeping a woman the same**.

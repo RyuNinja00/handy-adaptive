@@ -28,20 +28,23 @@ const EXT = { id: 'ext1', name: 'Handy Adaptive', contentHash: 'sha256:test' };
 
 const state = { storage: {}, lorebooks: [], entries: [], regex: [], chats: {}, handy: [], generations: [], csrfFailures: 0, next: null, ids: 0 };
 // A Handy that moves: v2 HDSP sleeve position over real time (same model as tests/sim/bench.mjs)
-const dev = { mode: null, seg: null, rest: 0, cmds: [] };
+const dev = { mode: null, seg: null, rest: 0, cmds: [], fw: '3.2.3', quirk: null };
 const devPos = (t = Date.now()) => { const g = dev.seg; if (!g) return dev.rest; if (t >= g.t1) return g.p1; return g.p0 + (g.p1 - g.p0) * ((t - g.t0) / (g.t1 - g.t0)); };
 const halt = () => { dev.rest = devPos(); dev.seg = null; };
 function handyCmd(p, body) {
     if (p === '/connected') return { connected: true };
+    if (p === '/info') return { fwVersion: dev.fw };
+    if (p === '/slider/state') return { position: devPos() };
     if (p === '/servertime') return { serverTime: Date.now() };
     if (p === '/mode') { if (body?.mode !== dev.mode) halt(); dev.mode = body?.mode; return { result: 0 }; }
     if (p === '/hamp/stop' || p === '/hssp/stop') { halt(); return { result: 0 }; }
     if (p === '/hdsp/xpt') {
         if (dev.mode !== 2) return { error: { message: 'device not in HDSP mode' } };
         if (!Number.isFinite(body?.position) || !Number.isFinite(body?.duration)) return { error: { message: 'bad xpt payload' } };
+        const goal = dev.quirk === 'stuck' ? 100 : body.position;   // "stuck": firmware 4 misreading API v2 positions
         const p0 = devPos(), t0 = Date.now(), dur = Math.max(body.duration, 1);
-        dev.seg = { p0, p1: body.position, t0, t1: t0 + dur };
-        dev.cmds.push({ t: t0, p0, p1: body.position, v: (Math.abs(body.position - p0) / dur) * 1000 });
+        dev.seg = { p0, p1: goal, t0, t1: t0 + dur };
+        dev.cmds.push({ t: t0, p0, p1: goal, v: (Math.abs(goal - p0) / dur) * 1000 });
         return { result: 0 };
     }
     return { result: 0 };
@@ -454,6 +457,37 @@ try {
         await waitFor(async () => !(await pg.isVisible('#handy_load')), 'load row hidden after rating');
         assert.equal(await pg.isDisabled('#handy_game_mode'), false, 'menu unlocked');
         await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
+    });
+    await step('calibration self-check in Marinara: firmware 4 shown, a Handy that ignores positions is flagged, the wrong-way help and Flip work', async () => {
+        dev.fw = '4.0.12';
+        await pg.click('#handy_settings_btn');
+        await pg.click('#handy_test');
+        await waitFor(async () => /firmware 4\.0\.12/.test(await pg.textContent('#handy_status')) && /Buffered streaming/.test(await pg.textContent('#handy_status')), 'firmware + tip shown');
+        await pg.click('#handy-st-settings .handy-st-close');
+        dev.quirk = 'stuck';
+        await pg.click('#handy_calib_btn');
+        await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
+        if ((await calib()).step === -1) await pg.click('#handy_calib_test');   // "Recalibrate", if it asked about the setup
+        await pg.click('#handy_calib_next');                                     // Start
+        await waitFor(jogVisible, 'arrows shown', 15000);
+        assert.ok(await pg.isVisible('#handy_calib_wrong'), 'the wrong-way link is offered');
+        for (let k = 0; k < 3; k++) { await pg.click('#handy_calib [data-jog="-10"]'); await waitFor(async () => !(await calib()).moving, 'move done', 15000); await new Promise((r) => setTimeout(r, 300)); }
+        await pg.waitForSelector('#handy_calib_warn', { state: 'visible', timeout: 5000 });
+        const w = await pg.textContent('#handy_calib_warn');
+        assert.match(w, /isn't moving/); assert.match(w, /firmware 4/); assert.match(w, /Application ID/);
+        await pg.click('#handy_calib [data-calfix="close"]');
+        dev.quirk = null;
+        await pg.click('#handy_calib_wrong');
+        await pg.waitForSelector('#handy_calib [data-calfix="flip"]', { state: 'visible' });
+        await pg.click('#handy_calib [data-calfix="flip"]');
+        await waitFor(() => state.storage.settings?.flipAxis === true, 'flip saved to Marinara storage');
+        await pg.click('#handy_calib_wrong');
+        await pg.click('#handy_calib [data-calfix="flip"]');
+        await waitFor(() => state.storage.settings?.flipAxis === false, 'flip undone');
+        await pg.click('#handy_calib_cancel');
+        await waitFor(async () => !(await calib()).active, 'calibration closed');
+        dev.fw = '3.2.3';
+        await pg.evaluate(() => { window.handyAdaptive.api && (window.handyAdaptive.api.fwMajor = null); });
     });
     await step('every game plays through Marinara: instructions reach the AI, tags drive the device, endings work', async () => {
         const G = (f, a) => pg.evaluate(f, a);

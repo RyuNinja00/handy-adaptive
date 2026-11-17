@@ -1,4 +1,4 @@
-// Handy Adaptive — SillyTavern extension (v0.13.0; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.13.1; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -46,6 +46,7 @@ const DEFAULTS = {
     videoLinks: true,           // the AI may suggest a video search: a link to the site's own search results
     videoSite: 'pornhub',       // pornhub | xhamster | xvideos
     picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
+    flipAxis: false,            // the Handy moves the opposite way to its commands (set from calibration)
     storyStageMinutes: 8,       // story mode: minutes per stage (or 2 edges, whichever comes first)
     voiceOn: false,             // read her replies aloud (the browser's own voices)
     voiceSync: true,            // …with a deep stroke on the words that matter
@@ -157,7 +158,22 @@ const api = {
     // the full range is restored whenever acts or calibration start. Your limits are applied here instead.
     fullRange: () => api.slide(0, 100).catch(() => {}),
     // HDSP
-    xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: Math.round(position), duration: Math.round(duration), stopOnTarget: true }),
+    xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: Math.round(wire(position)), duration: Math.round(duration), stopOnTarget: true }),
+    // Firmware version (GET /info), e.g. 3 or 4; null until read.
+    fwMajor: null,
+    async info() {
+        const r = await api.call('GET', '/info');
+        const v = String(r.fwVersion ?? r.fw_version ?? r.firmware ?? '');
+        const m = /^(\d+)/.exec(v);
+        api.fwVersion = v || null; api.fwMajor = m ? +m[1] : null;
+        return r;
+    },
+    // Where the sleeve is, as the device reports it (any unit: only the direction of change is used).
+    async where(v3) {
+        const r = await (v3 ? api3.call('GET', '/slider/state') : api.call('GET', '/slider/state'));
+        const v = [r.position, r.pos, r.positionAbsolute, r.position_absolute, r.pos_absolute].find((x) => Number.isFinite(+x) && x !== null && x !== '');
+        return v === undefined ? null : +v;   // raw, as the device sees it
+    },
     // HSSP
     async syncTime() {
         if (Date.now() - api.offsetAt < 10 * 60000) return;
@@ -191,6 +207,9 @@ function cal() {
     return c && Number.isFinite(+c.base) && Number.isFinite(+c.tip) && Math.abs(c.tip - c.base) >= 10 ? c : null;
 }
 const span = () => { const c = cal(); return c ? Math.abs(c.tip - c.base) / 100 : 1; };
+// "Flip direction": for a Handy that moves the opposite way to its commands. Applied to every position
+// sent to the device, so calibration and play stay consistent.
+const wire = (p) => (S().flipAxis ? 100 - p : p);
 const toDev = (p) => { const c = cal(); const x = clamp(+p || 0, 0, 100); return c ? c.base + (x / 100) * (c.tip - c.base) : x; };
 // The speed cap is a physical limit on the device; in body units it is wider when your range is shorter.
 const capBody = () => maxVel() / span();
@@ -233,7 +252,7 @@ const api3 = {
     },
     connected: () => api3.call('GET', '/connected'),
     async mode(m) { try { return await api3.call('PUT', '/mode2', { mode: m }); } catch { return api3.call('PUT', '/mode', { mode: m }); } },
-    xpt: (pos, ms) => api3.call('PUT', '/hdsp/xpt', { xp: Math.round(clamp(pos, 0, 100) * 100) / 10000, t: Math.round(ms), stop_on_target: true, immediate_rsp: false }),
+    xpt: (pos, ms) => api3.call('PUT', '/hdsp/xpt', { xp: Math.round(clamp(wire(pos), 0, 100) * 100) / 10000, t: Math.round(ms), stop_on_target: true, immediate_rsp: false }),
     stroke: (min, max) => api3.call('PUT', '/slider/stroke', { min, max }),
     setup: (id) => api3.call('PUT', '/hsp/setup', { stream_id: id }),
     add: (points, tail, flush) => api3.call('PUT', '/hsp/add', { points, tail_point_stream_index: Math.max(1, tail), flush }),
@@ -435,7 +454,7 @@ const actEngine = {
         let start;
         try {
             await api.syncTime(); if (my !== epoch) return;
-            const url = await api.upload(g.actions.map((a) => ({ at: a.at, pos: Math.round(toDev(a.pos)) }))); if (my !== epoch) return;
+            const url = await api.upload(g.actions.map((a) => ({ at: a.at, pos: Math.round(wire(toDev(a.pos))) }))); if (my !== epoch) return;
             const tSetup = Date.now();
             if (!swapping) { await api.mode(1); await api.fullRange(); }
             if (my !== epoch) return;
@@ -544,7 +563,7 @@ const actEngine = {
             for (let k = 0; k < pts.length; k += 100) {
                 const chunk = pts.slice(k, k + 100);
                 h.count += chunk.length;
-                st = await api3.add(chunk.map((a) => ({ t: Math.max(0, Math.round(a.at - h.origin)), x: Math.round(clamp(toDev(a.pos), 0, 100)) })), h.count - 1, flush && k === 0);
+                st = await api3.add(chunk.map((a) => ({ t: Math.max(0, Math.round(a.at - h.origin)), x: Math.round(clamp(wire(toDev(a.pos)), 0, 100)) })), h.count - 1, flush && k === 0);
             }
             h.sentUntil = pts[pts.length - 1].at;
             this.fails = 0;
@@ -690,7 +709,7 @@ const hamp = {
         api.busy = true;
         try {
             if (Math.abs(tg.min - this.sent.min) >= 3 || Math.abs(tg.max - this.sent.max) >= 3) {
-                const a = toDev(tg.min), b = toDev(tg.max);
+                const a = wire(toDev(tg.min)), b = wire(toDev(tg.max));
                 await api.slide(Math.min(a, b), Math.max(a, b)); this.sent.min = tg.min; this.sent.max = tg.max;
             }
             if (Math.abs(tg.speed - this.sent.speed) >= 2) { await api.velocity(tg.speed); this.sent.speed = tg.speed; }
@@ -2562,7 +2581,38 @@ const calib = {
     at: null,        // where the sleeve is, once its last move has finished (null: not known)
     moving: false,
     SPEED: 25,       // %/s for every calibration move
-    v3: () => S().transport === 'hsp',
+    // API v3 when you chose Buffered streaming, or automatically for firmware 4 when an Application ID is set
+    v3: () => S().transport === 'hsp' || (api.fwMajor >= 4 && !!S().appId),
+    // ---- self-check: after each move, where does the device say it is? (best effort: not every device answers)
+    seen: [],         // [{ cmd, rep }] for the last few finished moves
+    problem: null,    // 'reversed' | 'stuck' | null
+    async checkMove(p) {
+        let rep;
+        try { rep = await api.where(this.v3()); } catch { return; }
+        if (rep === null || !Number.isFinite(rep)) return;
+        this.seen.push({ cmd: p, rep }); if (this.seen.length > 4) this.seen.shift();
+        // compare the last two moves that were big enough to tell (4 %+)
+        const pairs = [];
+        for (let i = 1; i < this.seen.length; i++) {
+            // compared with what was actually sent (after any flip): the device reports in its own terms
+            const dc = wire(this.seen[i].cmd) - wire(this.seen[i - 1].cmd), dr = this.seen[i].rep - this.seen[i - 1].rep;
+            if (Math.abs(dc) >= 4) pairs.push({ dc, dr });
+        }
+        const last = pairs.slice(-2);
+        if (last.length < 2) return;
+        const was = this.problem;
+        if (last.every((x) => Math.abs(x.dr) < 0.5)) this.problem = 'stuck';
+        // once you've flipped, a mounted-upside-down Handy and a backwards one look alike from here: trust your eyes
+        else if (!S().flipAxis && last.every((x) => Math.sign(x.dr) === -Math.sign(x.dc) && Math.abs(x.dr) >= 0.5)) this.problem = 'reversed';
+        else if (S().flipAxis || last.every((x) => Math.sign(x.dr) === Math.sign(x.dc))) this.problem = null;
+        if (this.problem !== was) ui.calib();
+    },
+    flip() {
+        S().flipAxis = !S().flipAxis; save();
+        this.seen = []; this.problem = null; this.at = null;   // re-time the next move from scratch
+        toast(S().flipAxis ? 'Direction flipped: ▲ now moves the sleeve the other way.' : 'Direction back to normal.', 'info');
+        ui.calib(); this.target(this.pos);
+    },
     // Set where the sleeve should go. It gets there by drive(), one finished move at a time.
     target(p) { this.pos = Math.round(clamp(p, 0, 100)); $('#handy_calib_pos').text(this.pos); return this.drive(); },
     async drive() {
@@ -2579,6 +2629,7 @@ const calib = {
                 await new Promise((r) => setTimeout(r, ms + 150));   // let it arrive before the next move
                 if (!this.active || my !== epoch) break;
                 this.at = p;
+                await this.checkMove(p);
             }
         } finally { this.moving = false; if (this.active && my === epoch) ui.calib(); }
     },
@@ -2615,6 +2666,8 @@ const calib = {
     async begin() {
         if (this.step !== 0 || this.moving) return;
         const my = this.my;
+        if (api.fwMajor === null) await api.info().catch(() => {});   // firmware 4 + an Application ID: calibrate through API v3
+        this.seen = []; this.problem = null;
         try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
         catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
         await (this.v3() ? api3.stroke(0, 1).catch(() => {}) : api.fullRange());   // calibrate against the whole device range
@@ -3029,7 +3082,13 @@ const ui = {
         ex(); $('#handy_explore').on('input', function () { S().profile.exploreBias = +this.value; ex(); save(); });
         $('#handy_test').on('click', async () => {
             $('#handy_status').text('…');
-            try { const r = await (S().transport === 'hsp' ? api3.connected() : api.connected()); $('#handy_status').text(r.connected ? `✅ connected · ${Math.round(api.rtt)} ms round trip` : '❌ not connected'); }
+            try {
+                const r = await (S().transport === 'hsp' ? api3.connected() : api.connected());
+                if (r.connected) await api.info().catch(() => {});
+                const fw = api.fwVersion ? ` · firmware ${api.fwVersion}` : '';
+                const tip = r.connected && api.fwMajor >= 4 && S().transport !== 'hsp' ? ' · tip: firmware 4 works best with Buffered streaming (needs an Application ID)' : '';
+                $('#handy_status').text(r.connected ? `✅ connected · ${Math.round(api.rtt)} ms round trip${fw}${tip}` : '❌ not connected');
+            }
             catch (e) { $('#handy_status').text('❌ ' + e.message); }
         });
         const pickFile = (cb) => { const inp = Object.assign(document.createElement('input'), { type: 'file', accept: '.json' }); inp.onchange = async () => { try { cb(JSON.parse(await inp.files[0].text())); } catch (e) { toast(e.message, 'error'); } }; inp.click(); };
@@ -3087,6 +3146,8 @@ const ui = {
       <div class="menu_button" data-jog="-10">▼▼ −10</div><div class="menu_button" data-jog="-2">▼ −2</div>
       <div class="menu_button" data-jog="2">▲ +2</div><div class="menu_button" data-jog="10">▲▲ +10</div>
     </div>
+    <div id="handy_calib_warn" class="handy-calib-warn"></div>
+    <div id="handy_calib_help" class="handy-small handy-calib-help"><a href="#" id="handy_calib_wrong">Arrows move the sleeve the wrong way?</a></div>
     <div class="handy-calib-actions">
       <div id="handy_calib_back" class="menu_button">Back</div>
       <div id="handy_calib_test" class="menu_button">Test</div>
@@ -3096,6 +3157,9 @@ const ui = {
   </div>
 </div>`);
         $('#handy_calib').on('click', '[data-jog]', function () { calib.jog(+this.dataset.jog); });
+        $('#handy_calib').on('click', '#handy_calib_wrong', (e) => { e.preventDefault(); calib.problem = calib.problem || 'ask'; ui.calib(); });
+        $('#handy_calib').on('click', '[data-calfix="flip"]', () => calib.flip());
+        $('#handy_calib').on('click', '[data-calfix="close"]', () => { calib.problem = null; ui.calib(); });
         $('#handy_calib_back').on('click', () => calib.back());
         $('#handy_calib_test').on('click', () => (calib.step === -1 ? calib.recal() : calib.test()));
         $('#handy_calib_next').on('click', () => (calib.step === -1 ? calib.confirm() : calib.step === 0 ? calib.begin() : calib.step === 3 ? calib.finish() : calib.mark()));
@@ -3229,6 +3293,17 @@ const ui = {
         $('#handy_calib_setup').html((cur ? '' : '<option value="">— current calibration —</option>') + sl.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.name)} (base ${x.base}, tip ${x.tip})</option>`).join(''));
         $('#handy_calib .handy-calib-jog').toggle(c.step === 1 || c.step === 2);
         $('#handy_calib_back').toggle(c.step > 1);
+        const fw4 = api.fwMajor >= 4, onV2 = !c.v3();
+        const fwTip = fw4 && onV2 ? ' Your Handy has <b>firmware 4</b>: it is controlled most reliably through Handy\'s newer API. Add an <b>API v3 Application ID</b> in the settings (see the User Guide, Part 4) and calibration will use it automatically; then choose <b>Buffered streaming</b> as the Transport for play.' : '';
+        const warn = !c.active || c.step < 1 ? '' : c.problem === 'reversed'
+            ? `⚠ The sleeve is moving the <b>opposite</b> way to the buttons.${fwTip} <div class="handy-row"><div class="menu_button" data-calfix="flip">Flip direction</div><div class="menu_button" data-calfix="close">Dismiss</div></div>`
+            : c.problem === 'stuck'
+                ? `⚠ The Handy says the sleeve <b>isn't moving</b> to where the buttons ask.${fwTip || ' Check that nothing else (the Handy app, another site) is controlling it, then try again.'} <div class="handy-row"><div class="menu_button" data-calfix="close">Dismiss</div></div>`
+                : c.problem === 'ask'
+                    ? `If <b>▼ raises</b> the sleeve and <b>▲ lowers</b> it, press <b>Flip direction</b>.${fwTip} If every button raises it, ${fw4 && onV2 ? 'the Application ID above is the fix' : 'set the Transport to match your firmware (firmware 4: Buffered streaming with an Application ID) and run Test connection'}. <div class="handy-row"><div class="menu_button" data-calfix="flip">Flip direction</div><div class="menu_button" data-calfix="close">Close</div></div>`
+                    : '';
+        $('#handy_calib_warn').html(warn).toggle(!!warn);
+        $('#handy_calib_help').toggle(c.active && c.step >= 1 && c.step <= 2 && !warn);
         $('#handy_calib_test').toggle(asking || c.step === 3);
         $('#handy_calib_pos').text(c.pos);
         $('#handy_calib_marks').text([c.moving ? 'moving…' : '', c.tip !== null ? `tip ${c.tip}` : '', c.base !== null ? `base ${c.base}` : ''].filter(Boolean).join(' · '));

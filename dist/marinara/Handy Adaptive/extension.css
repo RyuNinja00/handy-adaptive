@@ -1,4 +1,4 @@
-/* Handy Adaptive v0.13.0 for Marinara Engine: style.css + marinara/compat.css */
+/* Handy Adaptive v0.13.1 for Marinara Engine: style.css + marinara/compat.css */
 #handy_panel {
     position: fixed; right: 12px; bottom: 90px; z-index: 3000; width: 250px;
     background: var(--SmartThemeBlurTintColor, #222c); backdrop-filter: blur(8px);
@@ -72,6 +72,11 @@
 
 .handy-videos { margin-top: 4px; line-height: 1.5; }
 .handy-videos a { text-decoration: underline; }
+
+.handy-calib-warn { margin: 6px 0; padding: 6px 8px; border: 1px solid #e0a43a; border-radius: 6px; background: #e0a43a22; font-size: .92em; }
+.handy-calib-warn .handy-row { margin-top: 6px; gap: 6px; }
+.handy-calib-help { margin: 4px 0; }
+.handy-calib-help a { text-decoration: underline; cursor: pointer; }
 
 
 /* Handy Adaptive in Marinara Engine: the SillyTavern classes and theme variables

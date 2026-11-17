@@ -71,3 +71,8 @@
 
 .handy-videos { margin-top: 4px; line-height: 1.5; }
 .handy-videos a { text-decoration: underline; }
+
+.handy-calib-warn { margin: 6px 0; padding: 6px 8px; border: 1px solid #e0a43a; border-radius: 6px; background: #e0a43a22; font-size: .92em; }
+.handy-calib-warn .handy-row { margin-top: 6px; gap: 6px; }
+.handy-calib-help { margin: 4px 0; }
+.handy-calib-help a { text-decoration: underline; cursor: pointer; }

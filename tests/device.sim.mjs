@@ -1324,6 +1324,34 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     check('a very high rate slows everything down, with a warning', hb.H.actEngine.intent.intensity <= 0.3 && hb.toasts.some((x) => /Heart rate 182: slowing down/.test(x.m)));
     await hb.advance(16000);
     check('no readings for 15 s: the sensor is ignored', !hb.H.hr.live() && !/HEART RATE \(live/.test(hb.st.prompts.filter(Boolean).pop() || ''));
+
+    // ---- calibration self-check: a device that moves the wrong way, or ignores where it's told to go
+    {
+        const run = async (opts) => {
+            const h = await boot({ seed: 480, ...opts });
+            h.H.calib.start(); await h.advance(300); h.H.calib.begin(); await h.advance(6000);
+            for (let k = 0; k < 3; k++) { h.H.calib.jog(-10); await h.advance(2500); }
+            return h;
+        };
+        const ok = await run({});
+        check('calibration self-check: a normal Handy raises no warning', ok.H.calib.problem === null && ok.H.calib.seen.length >= 3 && Math.abs(ok.devPos() - 20) < 2, `pos ${ok.devPos().toFixed(1)}`);
+        const rv = await run({ quirk: 'reversed' });
+        check('a Handy that moves the opposite way is spotted', rv.H.calib.problem === 'reversed' && rv.devPos() > 70, `pos ${rv.devPos().toFixed(1)}`);
+        rv.H.calib.flip(); await rv.advance(6000);
+        for (let k = 0; k < 2; k++) { rv.H.calib.jog(-10); await rv.advance(2500); }
+        check('Flip direction fixes it: ▼ now lowers the sleeve, and it is remembered', rv.st.extensionSettings.handy_adaptive.flipAxis === true && rv.H.calib.problem === null && Math.abs(rv.devPos() - rv.H.calib.pos) < 2 && rv.H.calib.pos === 0, `pos ${rv.devPos().toFixed(1)} vs ${rv.H.calib.pos}`);
+        // play after flipping: the device ends where the motion wants it (the flip applies to everything)
+        rv.H.calib.mark(); await rv.advance(1000); rv.H.calib.jog(10); await rv.advance(2500); rv.H.calib.jog(10); await rv.advance(2500); rv.H.calib.jog(10); await rv.advance(2500);
+        rv.H.calib.mark(); await rv.advance(500); rv.H.calib.finish(); await rv.advance(500);
+        const cal0 = rv.st.extensionSettings.handy_adaptive.calibration;
+        check('…and the calibration saved through it is the real one', cal0 && cal0.tip === 0 && cal0.base === 30, JSON.stringify(cal0));
+        const st = await run({ fw: '4.0.12', quirk: 'stuck' });
+        check('a Handy that ignores positions is spotted, with the firmware 4 advice', st.H.calib.problem === 'stuck' && st.H.calib.v3() === false);
+        const st3 = await run({ fw: '4.0.12', quirk: 'stuck', settings: { appId: 'app-123' } });
+        check('firmware 4 with an Application ID: calibration uses API v3 automatically, and works', st3.H.calib.v3() && st3.H.calib.problem === null && Math.abs(st3.devPos() - 20) < 2 && st3.dev.calls.some((c) => c.v3 && c.path === '/hdsp/xpt'), `pos ${st3.devPos().toFixed(1)}`);
+        const nr = await run({ quirk: 'reversed', reportsPosition: false });
+        check('a Handy that does not report its position: no false alarm (the manual Flip is still offered)', nr.H.calib.problem === null);
+    }
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall device checks passed');

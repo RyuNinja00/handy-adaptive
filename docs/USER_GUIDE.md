@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.13.0.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.13.1.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -162,6 +162,12 @@ Calibration moves are deliberately slow and one step at a time, so they look ste
 While the calibration is open, nothing else can move the device: Play, Finish me, favorites and the AI's tags are held off until you save or cancel.
 
 The extension uses the device's whole stroke range and applies your calibration and stroke limits itself. A stroke range set in the Handy app or with the device's buttons is reset to full when an act or the calibration starts, because it would otherwise squeeze every stroke and shift your calibration.
+
+**If the arrows move the sleeve the wrong way.** After each move, the extension asks the Handy where it actually is and warns you on the calibration screen if something's off:
+- **"The sleeve is moving the opposite way"**: press **Flip direction**. Every position sent to the Handy is then mirrored, for calibration and play alike, and the setting is remembered. You can also use the **Arrows move the sleeve the wrong way?** link at any time, for example if ▼ raises the sleeve and ▲ lowers it (some mounts hold the Handy upside down, and not every Handy reports its position).
+- **"The Handy says the sleeve isn't moving to where the buttons ask"**, or every button raises it: this usually means the Handy runs **firmware 4** and is being driven through the older API. Add an **API v3 Application ID** in the settings (Part 4). Calibration then uses the newer API automatically. For play, choose **Buffered streaming** as the Transport.
+
+**Test connection** shows your Handy's firmware version, with a tip if a firmware 4 Handy isn't on Buffered streaming.
 
 Calibration moves are slow (25%/s at most). STOP, Esc, a typed "stop" and the device's own button all work, and AI tags are ignored until you finish. The **Stroke limits** now apply within your calibrated range (0 = your base, 100 = your tip), and the **Max speed** stays a limit on the device itself. **Clear calibration** returns to the full device range.
 
@@ -875,6 +881,8 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ---
 
 ## Part 17 — Troubleshooting
+
+- **Calibration arrows all raise the sleeve, or ▼ raises it.** See *If the arrows move the sleeve the wrong way* in Part 5. In short: if it's simply reversed, press **Flip direction**. If every arrow raises it, your Handy is likely on firmware 4: add an API v3 Application ID (Part 4) and choose Buffered streaming.
 
 **Extension doesn't appear**
 - Make sure the folder is directly inside the extensions folder and contains `manifest.json` at its top level, not inside a nested `handy-adaptive/handy-adaptive/`.

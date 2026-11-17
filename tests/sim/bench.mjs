@@ -10,7 +10,7 @@ console.warn = (...a) => { warns.push(a.map(String).join(' ').split('\n')[0]); }
 const flush = () => new Promise((r) => realImmediate(r));
 
 const ROOT = new URL('../../', import.meta.url).href.replace(/\/$/, '');
-export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9, seed = 1, settings = {}, minTimer = 0, startPos = 50 } = {}) {
+export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9, seed = 1, settings = {}, minTimer = 0, startPos = 50, fw = '3.2.3', quirk = null, reportsPosition = true } = {}) {
     // ---- deterministic randomness
     let a = seed >>> 0;
     Math.random = () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -44,7 +44,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
 
     // ---- simulated device
     const errors = [], toasts = [];
-    const dev = { mode: 0, seg: null, restPos: startPos, hamp: false, cmds: [], traj: [], calls: [], slides: [], scripts: {}, hssp: null, hsspEvents: [], uploads: 0 };
+    const dev = { fw, quirk, mode: 0, seg: null, restPos: startPos, hamp: false, cmds: [], traj: [], calls: [], slides: [], scripts: {}, hssp: null, hsspEvents: [], uploads: 0 };
     const hsspPos = (t) => {
         const h = dev.hssp; if (!h || !h.playing) return null;
         const st = t - h.playAt + h.startTime, A = h.actions;
@@ -94,9 +94,10 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         if (path === '/connected') return { result: { connected: true } };
         if (path === '/mode2') { if (body.mode !== dev.mode) halt(); dev.mode = body.mode; return { result: { mode: dev.mode } }; }
         if (path === '/slider/stroke') { dev.stroke = body; return { result: body }; }
+        if (path === '/slider/state') return { result: { position: devPos() } };
         if (path === '/hdsp/xpt') {
             if (dev.mode !== 2) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'device not in HDSP mode' } }; }
-            return handle('PUT', '/hdsp/xpt', { position: body.xp * 100, duration: body.t });
+            return handle('PUT', '/hdsp/xpt', { position: body.xp * 100, duration: body.t, viaV3: true });
         }
         if (path === '/hsp/setup') { halt(); dev.mode = 4; dev.hsp = { streamId: body.stream_id, points: [], playing: false, pauseOnStarving: false, base: 0, anchor: vnow, pos0: devPos(), st0: 0 }; return { result: hspState() }; }
         if (path === '/hsp/add') {
@@ -127,6 +128,8 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
     function handle(method, path, body) {
         dev.calls.push({ t: vnow, method, path, body });
         if (path === '/connected') return { connected: true };
+        if (path === '/info') return { fwVersion: dev.fw, model: 'H01' };
+        if (path === '/slider/state') return reportsPosition ? { position: devPos(), positionAbsolute: devPos() * 1.1 } : { error: { message: 'unknown /slider/state' } };
         if (path === '/servertime') return { serverTime: vnow };
         if (path === '/mode') { if (body.mode !== dev.mode) halt(); dev.mode = body.mode; dev.hamp = false; return { result: 0 }; }
         if (path === '/hamp/start') { dev.hamp = true; return { result: 0 }; }
@@ -136,11 +139,13 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
         if (path === '/hdsp/xpt') {
             if (dev.mode !== 2) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'device not in HDSP mode' } }; }
             if (!Number.isFinite(body.position) || !Number.isFinite(body.duration)) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'bad xpt payload' } }; }
-            const p0 = devPos(), dist = Math.abs(body.position - p0);
+            // quirks of a misbehaving device: moves the opposite way, or pins to the top whatever it's told
+            const goal = dev.quirk === 'reversed' ? 100 - body.position : dev.quirk === 'stuck' && !body.viaV3 ? 100 : body.position;   // "stuck" models firmware 4 misreading API v2 positions
+            const p0 = devPos(), dist = Math.abs(goal - p0);
             const dur = Math.max(body.duration, (dist / devMax) * 1000, 1);
-            dev.seg = { p0, p1: body.position, t0: vnow, t1: vnow + dur };
-            dev.cmds.push({ t: vnow, p0, p1: body.position, duration: body.duration, v: (dist / Math.max(1, body.duration)) * 1000 });
-            dev.traj.push({ t: vnow, p: p0 }, { t: vnow + dur, p: body.position, end: true });
+            dev.seg = { p0, p1: goal, t0: vnow, t1: vnow + dur };
+            dev.cmds.push({ t: vnow, p0, p1: goal, sent: body.position, duration: body.duration, v: (dist / Math.max(1, body.duration)) * 1000 });
+            dev.traj.push({ t: vnow, p: p0 }, { t: vnow + dur, p: goal, end: true });
             return { result: 0 };
         }
         if (path === '/hssp/setup') { halt(); dev.hssp = { actions: dev.scripts[body.url], playing: false }; dev.hsspEvents.push({ t: vnow, type: 'setup' }); return { result: 0 }; }

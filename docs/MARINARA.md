@@ -101,7 +101,7 @@ Settings, calibration, setups, character styles, learned taste and the managed l
 
 ## Troubleshooting
 
-- **Calibration arrows all raise the sleeve.** Your Handy is most likely on firmware 4. Add an API v3 Application ID in the settings, and calibration will use the newer API automatically. If ▼ raises and ▲ lowers instead, press **Flip direction** on the calibration screen. More in the User Guide, Part 5.
+- **Calibration arrows all raise the sleeve.** Your Handy is most likely on firmware 4, reading positions on a 0–1 scale. Calibration checks this and switches by itself; if it can't tell, press **Try the other position format** on the calibration screen. With an API v3 Application ID in the settings, calibration uses the newer API instead. If ▼ raises and ▲ lowers instead, press **Flip direction** on the calibration screen. More in the User Guide, Part 5.
 
 | Problem | Fix |
 |---|---|

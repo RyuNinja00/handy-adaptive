@@ -1329,7 +1329,7 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     {
         const run = async (opts) => {
             const h = await boot({ seed: 480, ...opts });
-            h.H.calib.start(); await h.advance(300); h.H.calib.begin(); await h.advance(6000);
+            h.H.calib.start(); await h.advance(300); h.H.calib.begin(); await h.advance(16000);   // (firmware 4: the format check first)
             for (let k = 0; k < 3; k++) { h.H.calib.jog(-10); await h.advance(2500); }
             return h;
         };
@@ -1351,6 +1351,33 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
         check('firmware 4 with an Application ID: calibration uses API v3 automatically, and works', st3.H.calib.v3() && st3.H.calib.problem === null && Math.abs(st3.devPos() - 20) < 2 && st3.dev.calls.some((c) => c.v3 && c.path === '/hdsp/xpt'), `pos ${st3.devPos().toFixed(1)}`);
         const nr = await run({ quirk: 'reversed', reportsPosition: false });
         check('a Handy that does not report its position: no false alarm (the manual Flip is still offered)', nr.H.calib.problem === null);
+    }
+
+    // ---- a firmware 4 Handy that reads streamed positions on a 0-1 scale (50 → all the way up)
+    {
+        const run = async (opts) => {
+            const h = await boot({ seed: 490, fw: '4.0.12', quirk: 'fraction', ...opts });
+            h.H.calib.start(); await h.advance(300); h.H.calib.begin(); await h.advance(14000);
+            return h;
+        };
+        const fr = await run({});
+        check('the probe finds the 0–1 format, switches, and remembers it', fr.H.api.scale === 'fraction' && fr.st.extensionSettings.handy_adaptive.posScaleFound === 'fraction' && fr.toasts.some((t) => /0–1 scale/.test(t.m)));
+        check('…so "go to 50" lands at 50, not near the top', Math.abs(fr.devPos() - fr.H.calib.pos) < 2, `pos ${fr.devPos().toFixed(1)} vs ${fr.H.calib.pos}`);
+        for (let k = 0; k < 3; k++) { fr.H.calib.jog(-10); await fr.advance(2500); }
+        check('…and ▼ lowers the sleeve', Math.abs(fr.devPos() - fr.H.calib.pos) < 2 && fr.H.calib.pos === 20 && fr.H.calib.problem === null, `pos ${fr.devPos().toFixed(1)}`);
+        fr.H.calib.abort(); await fr.advance(500);
+        fr.H.run({ act: 'handjob', intensity: 0.6 }); await fr.advance(8000);
+        const ps = fr.dev.cmds.filter((c) => c.sent !== undefined).slice(-20).map((c) => c.sent);
+        check('play streams in the same format', ps.length > 5 && ps.every((x) => x >= 0 && x <= 1), JSON.stringify(ps.slice(0, 4)));
+        // without position reports, the manual button does it
+        const nr = await run({ reportsPosition: false });
+        check('a Handy without position reports keeps 0–100 (no guessing)', nr.H.api.scale === null && Math.abs(nr.devPos() - 100) < 2);
+        nr.H.calib.toggleScale(); await nr.advance(6000);
+        for (let k = 0; k < 2; k++) { nr.H.calib.jog(-10); await nr.advance(2500); }
+        check('…and "Try the other position format" fixes it by hand, remembered', nr.st.extensionSettings.handy_adaptive.posScale === 'fraction' && Math.abs(nr.devPos() - nr.H.calib.pos) < 2, `pos ${nr.devPos().toFixed(1)} vs ${nr.H.calib.pos}`);
+        const f3 = await boot({ seed: 491 });
+        f3.H.calib.start(); await f3.advance(300); f3.H.calib.begin(); await f3.advance(6000);
+        check('firmware 3: no probe, nothing changes', f3.H.api.scale === null && !f3.dev.cmds.some((c) => c.sent === 35));
     }
 }
 

@@ -1356,12 +1356,13 @@ const images = {
         try {
             const prompt = this.prompt(job);
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
-            let url = out.dataUrl, galleryId = null;
-            if (job.chatId) { try { ({ url, galleryId } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { toast(`Picture drawn, but not saved: ${e.message}`, 'warning'); } }
+            let url = out.dataUrl, galleryId = null, warning = '';
+            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
             const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
             this.status = '';
-            if (out.warning) { this.status = `🖼 ${out.warning}`; toast(out.warning, 'warning'); }
+            const detail = [warning, out.warning].filter(Boolean).join(' ');
+            if (detail) { this.status = `🖼 ${detail}`; toast(detail, 'warning'); }
         } catch (e) {
             this.status = `🖼 picture failed: ${e.message}`;
             this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);

@@ -485,8 +485,13 @@ const imageHost = {
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
     async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
-        const mime = /^data:([^;,]+)/.exec(dataUrl)?.[1] || 'image/png';
-        const blob = await (await nativeFetch.call(window, dataUrl)).blob();
+        // Marinara permits data: in img-src, but its connect-src blocks fetch(dataUrl).
+        const comma = dataUrl.indexOf(',');
+        const match = /^data:(image\/[\w.+-]+);base64$/i.exec(dataUrl.slice(0, comma));
+        if (comma < 0 || !match) throw new Error('Expected a base64-encoded image');
+        const mime = match[1].toLowerCase();
+        const bytes = Uint8Array.from(atob(dataUrl.slice(comma + 1)), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: mime });
         const fd = new FormData();
         fd.append('prompt', String(prompt).slice(0, 4000));
         fd.append('provider', 'image_generation'); fd.append('model', 'Handy Adaptive');
@@ -498,12 +503,13 @@ const imageHost = {
             try {
                 const msgs = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=30`);
                 const msg = (Array.isArray(msgs) ? msgs : []).find((x) => x.id === messageId);
-                const extra = parseMaybe(msg?.extra, {}) || {};
+                if (!msg) throw new Error('The original message is no longer among the recent messages');
+                const extra = parseMaybe(msg.extra, {}) || {};
                 const attachments = [...(Array.isArray(extra.attachments) ? extra.attachments : []),
                     { type: 'image', url: saved.url, prompt: String(prompt).slice(0, 2000), galleryId: saved.id, name: title || 'picture', filename: title || 'picture' }];
                 await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra`, { attachments });
                 previews.show(messageId, saved.url, title);
-            } catch (e) { console.warn('[Handy] picture saved to the Gallery, but not attached to the message', e); }
+            } catch (e) { return { url: saved.url, galleryId: saved.id, warning: `Picture saved in the Gallery but could not be attached to the reply (${e.message}).` }; }
         }
         return { url: saved.url, galleryId: saved.id };
     },
@@ -2547,12 +2553,13 @@ const images = {
         try {
             const prompt = this.prompt(job);
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
-            let url = out.dataUrl, galleryId = null;
-            if (job.chatId) { try { ({ url, galleryId } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { toast(`Picture drawn, but not saved: ${e.message}`, 'warning'); } }
+            let url = out.dataUrl, galleryId = null, warning = '';
+            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
             const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
             this.status = '';
-            if (out.warning) { this.status = `🖼 ${out.warning}`; toast(out.warning, 'warning'); }
+            const detail = [warning, out.warning].filter(Boolean).join(' ');
+            if (detail) { this.status = `🖼 ${detail}`; toast(detail, 'warning'); }
         } catch (e) {
             this.status = `🖼 picture failed: ${e.message}`;
             this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);

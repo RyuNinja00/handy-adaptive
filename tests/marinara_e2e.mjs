@@ -135,7 +135,7 @@ const server = http.createServer(async (req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
     const p = url.pathname, m = req.method;
     if (p.startsWith('/api/') && m !== 'GET' && req.headers['x-marinara-csrf'] !== '1') { state.csrfFailures++; return json(403, { error: 'CSRF' }); }
-    if (p === '/') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(page); }
+    if (p === '/') { res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Security-Policy': "connect-src 'self' http: https: ws: wss:" }); return res.end(page); }
     if (p === '/api/personal-extensions/ext1/page-runtime.js') { res.writeHead(200, { 'Content-Type': 'application/javascript' }); return res.end(pageRuntime); }
     if (p === '/api/personal-extensions/ext1/page-style.css') { res.writeHead(200, { 'Content-Type': 'text/css' }); return res.end(css); }
     if (p === '/api/personal-extensions/ext1/storage') { if (m === 'PATCH') Object.assign(state.storage, body); return json(200, { value: state.storage }); }

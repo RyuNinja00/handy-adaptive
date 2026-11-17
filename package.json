@@ -1,6 +1,6 @@
 {
   "name": "handy-adaptive",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "private": true,
   "description": "SillyTavern / Marinara Engine extension: AI-driven, learning motion control for The Handy",
   "type": "module",

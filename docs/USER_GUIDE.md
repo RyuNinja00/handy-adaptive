@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.14.2.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.14.3.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -653,7 +653,7 @@ In Marinara, she can show you pictures she makes, drawn by an image model you've
 3. In Handy's ⚙ settings, under **Pictures she sends**:
    - **Let her send pictures**: on by default.
    - **Image connection**: the default is the image model chosen in the chat's own settings, or Marinara's default.
-   - **For keeping a woman the same**: pick the editing connection from step 2. If you leave it on *Same as above*, the reference picture is sent to your main model, which may ignore it. Or pick **Venice directly** (see below).
+   - **For keeping a woman the same**: pick the editing connection from step 2 (marked *· editing model*). Don't pick an editing model as the main **Image connection**: it can't draw a new picture from nothing. If you leave it on *Same as above*, the reference picture is sent to your main model, which may ignore it. Or pick **Venice directly** (see below).
    - **Picture style**: for example *photorealistic amateur smartphone photo* or *anime illustration*.
    - **At least this many seconds between pictures**: 60 by default, so pictures don't pile up (each one costs a generation).
    - **Test picture** draws a harmless test image to check the connection.
@@ -928,6 +928,17 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 ## Part 17 — Troubleshooting
 
 - **Calibration arrows all raise the sleeve, or ▼ raises it.** See *If the arrows move the sleeve the wrong way* in Part 5. In short: if it's simply reversed, press **Flip direction**. If every arrow raises it, your Handy is likely on firmware 4: add an API v3 Application ID (Part 4) and choose Buffered streaming.
+
+**Pictures: she says she's showing you one, but nothing is drawn**
+- Some models "show" with `pics="…"` or a bare `<pics="…">` tag. Those are only picture-search links. A drawn picture needs `img="…"` and `her="NAME"` on a `<handy …/>` tag.
+- Since 0.14.3, during a game, a `pics=` request is drawn anyway, of the woman the reply names (for example "Claire is gonna wear…"), and the AI is told to use `img=` next time. Outside a game, `pics=` stays a search link.
+- It is never a picture of the character herself. A reply about her draws nothing.
+
+**Pictures: "image_urls: is required" (or the picture fails right away)**
+- The connection used for new pictures is an **image-editing** model (SpicyAPI's MiniMax H3 *edit* model, image-to-image, and similar), and those can only change an existing picture.
+- In Marinara, add an image connection with the provider's **text-to-image** model and pick it as **Image connection** in Handy's settings, or as the chat's image model. Keep the edit-model connection for **For keeping a woman the same**.
+- Since 0.14.3 the extension spots editing models (they're marked *· editing model* in the list) and uses a text-to-image connection for new pictures by itself, so you only see this if every image connection you have is an editing model.
+- **Test picture** checks both: a new picture, then an edit of it.
 
 **Extension doesn't appear**
 - Make sure the folder is directly inside the extensions folder and contains `manifest.json` at its top level, not inside a nested `handy-adaptive/handy-adaptive/`.

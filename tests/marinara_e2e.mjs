@@ -163,6 +163,8 @@ const server = http.createServer(async (req, res) => {
         if (!connectionsDb.some((c) => c.id === body.connectionId && c.provider === 'image_generation')) return json(400, { error: 'Image generation connection not found' });
         if (!body.appearance) return json(400, { error: 'appearance description is required' });
         if (state.imageFail) return json(500, { error: 'SpicyAPI image generation failed: content error' });
+        const conn = connectionsDb.find((c) => c.id === body.connectionId);
+        if (/\/edit$/.test(conn.model) && !body.referenceImages?.length) return json(500, { error: 'SpicyAPI image generation failed (400): image_urls: is required' });   // like the real thing
         await new Promise((r) => setTimeout(r, 120));
         return json(200, { image: `data:image/png;base64,${PNG}`, prompt: body.promptOverrides?.[0]?.prompt });
     }
@@ -683,9 +685,27 @@ try {
         await waitFor(async () => (await pg.$$eval('#handy_img_conn option', (o) => o.length)) === 3, 'image connections listed');
         assert.deepEqual(await pg.$$eval('#handy_img_edit option', (o) => o.map((x) => x.value)), ['', 'img1', 'img2', 'venice'], 'only image connections (and Venice directly) are offered');
         assert.equal(await pg.isVisible('#handy_img_none'), false);
+        assert.match((await pg.$$eval('#handy_img_conn option', (o) => o.map((x) => x.textContent))).join('|'), /SpicyAPI edit \(minimax\/h3-image\/edit\) · editing model/, 'editing models are labelled');
         await pg.click('#handy_img_test');
-        await waitFor(async () => /Works \(SpicyAPI\)/.test(await pg.textContent('#handy_img_status')), 'test picture').catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_img_status')); });
-        assert.equal(state.pictures.at(-1).connectionId, 'img1', 'the chat\'s image model is used');
+        await waitFor(async () => /New pictures work \(SpicyAPI\)[\s\S]*Keeping a woman the same works too \(SpicyAPI edit\)/.test(await pg.textContent('#handy_img_status')), 'test picture').catch(async (e) => { throw new Error(e.message + ': ' + await pg.textContent('#handy_img_status')); });
+        assert.equal(state.pictures.at(-2).connectionId, 'img1', 'the chat\'s image model is used');
+        assert.equal(state.pictures.at(-1).connectionId, 'img2', 'then the editing model is checked, from that picture');
+        assert.equal(state.pictures.at(-1).referenceImages?.length, 1);
+
+        // An editing model picked for new pictures (the "image_urls: is required" mistake): rerouted, not an error
+        await pg.selectOption('#handy_img_conn', 'img2');
+        await pg.click('#handy_img_reload');
+        await waitFor(async () => /is an editing model: it can only change an existing picture/.test(await pg.textContent('#handy_img_status')), 'warning about an editing model');
+        await pg.click('#handy_img_test');
+        await waitFor(async () => /New pictures work \(SpicyAPI\)\. SpicyAPI edit is an editing model, so SpicyAPI was used for a new picture/.test(await pg.textContent('#handy_img_status')), 'rerouted to the text-to-image model');
+        assert.ok(!state.pictures.some((x) => x.connectionId === 'img2' && !x.referenceImages), 'never sent to the edit model without a picture');
+        // only editing models: a clear explanation instead of SpicyAPI's error
+        const saved = connectionsDb.splice(1, 1);
+        await pg.click('#handy_img_test');
+        await waitFor(async () => /Failed: “SpicyAPI edit” uses an image-editing model \(minimax\/h3-image\/edit\)[\s\S]*text-to-image model/.test(await pg.textContent('#handy_img_status')), 'explained');
+        connectionsDb.splice(1, 0, ...saved);
+        await pg.selectOption('#handy_img_conn', '');
+        await pg.click('#handy_img_reload');
         await pg.click('#handy-st-settings .handy-st-close');
 
         if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');
@@ -696,7 +716,7 @@ try {
         // a message element, so the live preview has somewhere to go
         let n = pics();
         await turn('Look at her. <handy act="handjob" her="Dana" look="auburn bob, green eyes, freckles, curvy, 30s" img="bent over a desk, from behind, teen schoolgirl skirt pulled up" panties="red lace thong"/>');
-        await waitFor(() => state.uploads.length >= 1 && pics() === n + 1, 'picture drawn and saved');
+        await waitFor(() => state.uploads.length >= 1 && pics() === n + 1, 'picture drawn and saved').catch(async (e) => { throw new Error(e.message + ' pics=' + (pics() - n) + ' uploads=' + state.uploads.length + ' status=' + await pg.textContent('#handy_pic_status') + ' errors=' + JSON.stringify(pageErrors) + ' all=' + JSON.stringify(state.pictures.map(x=>[x.connectionId,(x.promptOverrides?.[0]?.prompt||'').slice(0,90)])) + ' last=' + JSON.stringify(state.chats.chat1.slice(-2).map(m=>m.content))); });
         const first = state.pictures.at(-1), fp = first.promptOverrides[0];
         assert.equal(first.connectionId, 'img1'); assert.equal(first.referenceImages, undefined);
         assert.match(fp.prompt, /Dana, an adult woman \(25 or older\): auburn bob, green eyes, freckles, curvy, 30s/);
@@ -786,6 +806,24 @@ try {
         await turn('Hm. <handy act="handjob"/>');
         assert.match(lastEntry(), /only of invented adult women/);
 
+        // the model "shows" with the old picture-search tag and no device tag at all: still drawn, of the woman named
+        n = pics();
+        await turn('i\'m gonna describe her outfit for you. Claire is gonna wear some pretty pink lace today.\n<pics="princess pink lace cheeky panties ass thighs legs hair messy bun">');
+        await waitFor(() => pics() === n + 1, 'picture from pics=');
+        const fromPics = state.pictures.at(-1).promptOverrides?.[0]?.prompt || JSON.stringify(state.pictures.at(-1)).slice(0, 400);
+        assert.match(fromPics, /Claire, an adult woman/); assert.match(fromPics, /pink lace cheeky panties ass/);
+        assert.ok(await G(() => !!window.handyAdaptive.cast.all().claire), 'Claire joins the cast');
+        await turn('Mm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /You used pics=/);
+        assert.match(lastEntry(), /SEND HIM A PICTURE of her in it/);
+        assert.match(lastEntry(), /Never write <pics=/);
+        // never the character herself, by tag or by the pics= fallback
+        n = pics();
+        await turn('Look at me. <handy act="handjob" her="Vex" img="me in pink lace"/>');
+        await turn('Mm. <handy act="handjob"/>');
+        assert.match(lastEntry(), /never of you \(Vex\)/);
+        await turn('Vex is wearing pink lace for you. <pics="pink lace panties">');
+        assert.equal(pics(), n, 'a reply about herself draws nothing');
         // a failure is reported, not fatal
         state.imageFail = true; state.expected500 = 1; n = pics();
         await turn('<handy act="handjob" her="Dana" img="in the shower"/>');

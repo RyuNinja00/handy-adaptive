@@ -1,4 +1,4 @@
-// Handy Adaptive v0.14.2 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.14.3 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -314,23 +314,38 @@ settingsWin.find('#handy-st-hide-tags').on('click', () => ensureHideRegex({ quie
 // reference images. The picture is saved to the chat's Gallery and attached under the AI message that asked
 // for it, so it stays after a reload. Until Marinara next reloads the messages, a preview is shown in place.
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
+// Editing models (SpicyAPI's ".../edit", image-to-image, …) only work FROM a picture: asked for a new picture
+// with none, SpicyAPI answers "image_urls: is required". So new pictures go to a text-to-image connection, and
+// pictures drawn from one he ❤ go to an editing connection when there is one.
+const EDIT_MODEL = /(^|[\/_:.-])(edit|edits|multi-edit|image-to-image|img2img|i2i|inpaint(ing)?|kontext)([\/_:.-]|$)/i;
+const isEditModel = (model) => EDIT_MODEL.test(String(model || ''));
+const NEEDS_PICTURE = /image_urls?[^.]*required|requires? (an? )?(input |reference |source )?image|no (input|source) image/i;
 async function imageConnections() {
     return asList(await mapi('GET', '/connections')).filter((c) => c && c.provider === 'image_generation')
-        .map((c) => ({ id: c.id, name: c.name || c.model || 'Image connection', model: c.model || '', agentDefault: String(c.defaultForAgents) === 'true' }));
+        .map((c) => ({ id: c.id, name: c.name || c.model || 'Image connection', model: c.model || '', agentDefault: String(c.defaultForAgents) === 'true', edit: isEditModel(c.model) }));
 }
-async function resolveImageConnection(wantId, chatId) {
+const editHelp = (c) => `“${c.name}” uses an image-editing model (${c.model}), which can only change an existing picture. In Marinara add a second image connection with the same provider's text-to-image model (for SpicyAPI's MiniMax H3, its text-to-image model) and pick it as the Image connection; keep “${c.name}” for keeping a woman the same.`;
+// → { conn, note }. withRefs: the picture is drawn from pictures he ❤.
+async function resolveImageConnection(wantId, chatId, withRefs = false) {
     const list = await imageConnections();
     if (!list.length) throw new Error('no image connection in Marinara yet: add one under Connections (Image Generation)');
-    if (wantId) { const c = list.find((x) => x.id === wantId); if (c) return c; }
-    if (chatId) {   // the image model chosen in this chat's settings
+    let pick = wantId ? list.find((x) => x.id === wantId) : null;
+    if (!pick && chatId) {   // the image model chosen in this chat's settings
         try {
             const chat = await mapi('GET', `/chats/${enc(chatId)}`);
             const meta = parseMaybe(chat.metadata, {}) || {};
-            const c = list.find((x) => x.id === String(meta.imageGenConnectionId || '').trim());
-            if (c) return c;
+            pick = list.find((x) => x.id === String(meta.imageGenConnectionId || '').trim()) || null;
         } catch { /* fall through */ }
     }
-    return list.find((x) => x.agentDefault) || list[0];
+    pick ||= list.find((x) => x.agentDefault) || list[0];
+    if (withRefs) {
+        if (!pick.edit) { const e = list.find((x) => x.edit); if (e) return { conn: e, note: `drawn from her ❤ picture with ${e.name}` }; }
+        return { conn: pick, note: '' };
+    }
+    if (!pick.edit) return { conn: pick, note: '' };
+    const alt = list.find((x) => !x.edit && x.agentDefault) || list.find((x) => !x.edit);
+    if (alt) return { conn: alt, note: `${pick.name} is an editing model, so ${alt.name} was used for a new picture` };
+    throw new Error(editHelp(pick));
 }
 const blobToDataUrl = (blob) => new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => bad(fr.error); fr.readAsDataURL(blob); });
 async function toDataUrl(src) {
@@ -447,19 +462,26 @@ const imageHost = {
                 return { ...out, warning: `Venice editing failed (${e.message}), so this one was drawn without her ❤ picture.` };
             }
         }
-        const useEdit = references.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
-        const conn = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId);
         const refs = [];
         for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
+        const useEdit = refs.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
+        const { conn, note } = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId, refs.length > 0);
         const name = 'handy-picture';
-        const out = await mapi('POST', '/characters/avatar-generation', {
-            connectionId: conn.id, name, appearance: String(prompt).slice(0, 2000), purpose: 'avatar',
-            width: Math.round(width), height: Math.round(height),
-            ...(refs.length ? { referenceImages: refs } : {}),
-            promptOverrides: [{ id: `avatar:${name}`, prompt: String(prompt), negativePrompt: String(negativePrompt || '') }],
-        });
+        let out;
+        try {
+            out = await mapi('POST', '/characters/avatar-generation', {
+                connectionId: conn.id, name, appearance: String(prompt).slice(0, 2000), purpose: 'avatar',
+                width: Math.round(width), height: Math.round(height),
+                ...(refs.length ? { referenceImages: refs } : {}),
+                promptOverrides: [{ id: `avatar:${name}`, prompt: String(prompt), negativePrompt: String(negativePrompt || '') }],
+            });
+        } catch (e) {
+            // an editing model that the name didn't give away
+            if (!refs.length && NEEDS_PICTURE.test(String(e.message))) throw new Error(editHelp({ ...conn, model: conn.model || 'an editing model' }));
+            throw e;
+        }
         if (!out || typeof out.image !== 'string' || !out.image.startsWith('data:image/')) throw new Error('the image connection returned no picture');
-        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length };
+        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
     async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
@@ -1167,7 +1189,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.14.2; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.14.3; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -2408,7 +2430,9 @@ const videos = {
     text() {
         const L = [];
         if (S().videoLinks) L.push(`add search="SHORT SEARCH TERMS" to a tag for a video (e.g. search="milf black lace lingerie POV"): the user gets a link to ${VIDEO_SITES[S().videoSite]?.name || 'Pornhub'}'s search results`);
-        if (S().picLinks) L.push(`add pics="SHORT SEARCH TERMS" for pictures (e.g. pics="white cotton cheeky panties ass"): a link to PornPics search results, great for showing a cut, fabric or body part`);
+        if (S().picLinks) L.push(images.on()
+            ? `add pics="SHORT SEARCH TERMS" for a link to PornPics search results of real-world examples of a style (to SHOW HIM a woman, send a picture with img= instead)`
+            : `add pics="SHORT SEARCH TERMS" for pictures (e.g. pics="white cotton cheeky panties ass"): a link to PornPics search results, great for showing a cut, fabric or body part`);
         if (!L.length) return '';
         return `- Suggestions: when it would help, ${L.join('; or ')}. Tell them what to look for. Describe adult performers only: never ages, "teen", young-sounding or family words, and nothing non-consensual (they are removed anyway).`;
     },
@@ -2437,6 +2461,45 @@ const images = {
         const k = cast.key(name); if (!k) return null;
         return (this.session.subjects[k] ??= { k, name: String(name).trim().slice(0, 40), look: '', refs: [], loved: 0, nope: 0 });
     },
+    // A whole reply. Models often "show" with pics= (a PornPics search) or a bare <pics="…"> tag, the older
+    // picture-search feature. With pictures on, that is read as a picture request too: the search words become
+    // what the picture shows, of the woman the reply is about.
+    fromReply(attrs, msg) {
+        if (!this.on()) return;
+        if (attrs.some((x) => x.img && x.img !== true)) return this.fromTags(attrs, msg);
+        if (!game.active) return;   // outside a game, pics= stays a search link
+        const text = String(msg?.mes || '');
+        const tagged = attrs.find((x) => x.pics && x.pics !== true);
+        const pics = tagged?.pics || /<pics\s*=\s*(["'])(.*?)\1/i.exec(text)?.[2];
+        if (!pics || !String(pics).trim()) return;
+        const from = tagged || attrs.find((x) => (x.her && x.her !== true) || (x.girl && x.girl !== true)) || {};
+        const named = [from.her, from.girl].find((x) => x && x !== true);
+        const name = named && !this.isSelf(named, msg) ? named : this.nameIn(text, msg);
+        if (name && !from.her && !from.girl) cast.meet({ her: name });   // she joins the cast, so she stays the same
+        if (!name) return this.note('A picture needs her="NAME" (another woman of the cast, never you): none was drawn.');
+        this.note('You used pics= (that only gives him a search link). To send him a picture, put img="WHAT THE PICTURE SHOWS" and her="HER NAME" on a <handy …/> tag. This time the picture was drawn from your pics= words.');
+        return this.fromTags([{ ...from, img: pics, her: name || undefined }], msg);
+    },
+    // The woman a reply is about: a cast member named in it, else a woman it introduces by name ("Claire is gonna
+    // wear…", who becomes a new invented cast member), else the last woman pictured, else the current one.
+    // Never the character herself (or him): pictures are only of the women of the cast.
+    isSelf(name, msg) {
+        const k = cast.key(name), c = ctx();
+        // the speaking character, the chat's character and the user, by full name or first name
+        return !k || [msg?.name, c.name2, c.name1].filter(Boolean).some((n) => cast.key(n) === k || cast.key(String(n).trim().split(/\s+/)[0]) === k);
+    },
+    nameIn(text, msg) {
+        const all = cast.all(), t = ` ${String(text).toLowerCase()} `;
+        const named = Object.values(all).filter((c) => c?.name && !this.isSelf(c.name, msg) && t.includes(` ${c.name.toLowerCase()}`));
+        if (named.length) return named[named.length - 1].name;
+        const m = /\b([A-Z][a-z]{2,14})\s+(?:is|was|has|likes|loves|wears|wants|gets)\b/.exec(String(text).replace(/<[^>]*>/g, ' '));
+        const STOP = /^(She|They|This|That|There|Her|His|Your|You|And|But|Now|Then|Mommy|Daddy|Baby|God|Fuck|Yes|Okay|Hmm)$/;
+        if (m && !STOP.test(m[1])) return this.isSelf(m[1], msg) ? '' : m[1];   // about herself: no picture
+        const shots = this.session.shots;
+        if (shots.length) return shots[shots.length - 1].name;
+        if (cast.cur && all[cast.cur] && !this.isSelf(all[cast.cur].name, msg)) return all[cast.cur].name;
+        return '';
+    },
     // From a reply's tags: at most one picture per reply.
     fromTags(attrs, msg) {
         if (!this.on()) return;
@@ -2444,6 +2507,7 @@ const images = {
         if (!a) return;
         const name = [a.her, a.girl].find((x) => x && x !== true) || (cast.cur && cast.all()[cast.cur]?.name) || '';
         if (!name) return this.note('A picture needs her="NAME" (a woman of the cast): none was drawn.');
+        if (this.isSelf(name, msg)) return this.note(`No picture was drawn: pictures are of the other women of the cast, never of you (${name}).`);
         if (this.busy) return this.note('You asked for a picture while the last one was still being drawn: wait for it before asking again.');
         if (this.waitSec() > 0) return this.note(`Pictures are spaced out: the next one is possible in about ${this.waitSec()} s.`);
         const what = cleanImgText(a.img);
@@ -2517,7 +2581,7 @@ const images = {
         if (!this.on()) return '';
         const ss = Object.values(this.session.subjects), pr = S().profile.pictures || { loved: [], nope: [] };
         const avail = this.busy ? `a picture of ${this.busy} is being drawn right now (don't ask for another yet)` : this.waitSec() ? `the next picture is possible in about ${this.waitSec()} s` : 'you may send a picture now';
-        const L = [`- PICTURES: you can show him a picture you make. On a tag add img="WHAT THE PICTURE SHOWS" (pose, framing, what she is wearing or not, the setting, her expression) and her="NAME" (a woman of the cast). It is drawn and appears under your message after a short while; talk as if you are sending it to him. The first time a woman is pictured, also add look="HER FIXED LOOK" (age 25+, face, hair, eyes, skin tone, body, one distinguishing detail): it is kept, and every later picture of her uses it, so she stays the same woman. At most one picture per reply, only when it heightens the moment; ${avail}. Pictures are only of the invented adult women of the cast: never yourself, never real people or anyone he mentions knowing.`];
+        const L = [`- PICTURES: you can show him a picture you make. Exactly like this, on a device tag: <handy act="…" her="Claire" look="early 30s, chestnut hair in a messy bun, glasses, hazel eyes, fair skin, curvy hips" img="from behind, pencil skirt lifted, pink lace cheeky panties, looking back over her shoulder"/>. Never write <pics=…> or pics= to send a picture: those are only search links. On the tag, img="WHAT THE PICTURE SHOWS" (pose, framing, what she is wearing or not, the setting, her expression) and her="NAME" (a woman of the cast). It is drawn and appears under your message after a short while; talk as if you are sending it to him. The first time a woman is pictured, also add look="HER FIXED LOOK" (age 25+, face, hair, eyes, skin tone, body, one distinguishing detail): it is kept, and every later picture of her uses it, so she stays the same woman. At most one picture per reply, only when it heightens the moment; ${avail}. Pictures are only of the invented adult women of the cast: never yourself, never real people or anyone he mentions knowing.`];
         if (game.active && this.GAME_LINES[game.mode]) L.push(`- ${this.GAME_LINES[game.mode]}`);
         if (ss.length) L.push(`- Pictured this session: ${ss.map((x) => `${x.name}${x.refs.length ? ' (look locked to a picture he ❤)' : ''}${x.loved ? `, ❤${x.loved}` : ''}${x.nope ? `, 👎${x.nope}` : ''}`).join('; ')}. Keep showing the same women unless the game calls for someone new.`);
         if (pr.loved?.length) L.push(`- Pictures he has loved before: ${pr.loved.slice(0, 5).join('; ')}.${pr.nope?.length ? ` Not for him: ${pr.nope.slice(0, 3).join('; ')}.` : ''}`);
@@ -2529,7 +2593,17 @@ const images = {
         $('#handy_img_status').text('Drawing a test picture…');
         try {
             const out = await host.generate({ prompt: `${S().imageStyle || DEFAULTS.imageStyle}. A black lace thong laid flat on white bedsheets, product photo.`, negativePrompt: IMG_NEG, width: 832, height: 832 });
-            $('#handy_img_status').html(`Works (${esc(out.connection)}). <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`);
+            let html = `New pictures work (${esc(out.connection)}).${out.note ? ` <i>${esc(out.note)}.</i>` : ''} <img class="handy-img-test" src="${out.dataUrl}" alt="test picture">`;
+            $('#handy_img_status').html(html);
+            // then the editing side, from that picture (Venice has its own test button)
+            if (S().imageEditConnection !== 'venice' && (await host.connections().catch(() => [])).some((c) => c.edit || c.id === S().imageEditConnection)) {
+                $('#handy_img_status').append('<div>Checking the editing connection…</div>');
+                try {
+                    const ed = await host.generate({ prompt: 'Keep the thong and the sheets exactly the same, but make the lace deep red.', negativePrompt: IMG_NEG, references: [out.dataUrl], width: 832, height: 832 });
+                    html += `<div>Keeping a woman the same works too (${esc(ed.connection)}). <img class="handy-img-test" src="${ed.dataUrl}" alt="test edit"></div>`;
+                } catch (e) { html += `<div>The editing connection failed: ${esc(e.message)}</div>`; }
+                $('#handy_img_status').html(html);
+            }
         } catch (e) { $('#handy_img_status').text(`Failed: ${e.message}`); }
     },
     veniceBox() { $('#handy_venice_box').toggle(S().imageEditConnection === 'venice'); },
@@ -2547,8 +2621,11 @@ const images = {
         if (!host) return;
         let list = [];
         try { list = await host.connections(); } catch (e) { $('#handy_img_status').text(`Couldn't list image connections: ${e.message}`); }
-        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}</option>`;
+        const opt = (c, cur) => `<option value="${escA(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}${c.model ? ` (${esc(c.model)})` : ''}${c.edit ? ' · editing model' : ''}</option>`;
         $('#handy_img_conn').html(`<option value="">This chat's image model (or Marinara's default)</option>` + list.map((c) => opt(c, S().imageConnection)).join(''));
+        const chosen = list.find((c) => c.id === S().imageConnection);
+        if (chosen?.edit) $('#handy_img_status').text(`“${chosen.name}” is an editing model: it can only change an existing picture. Pick a text-to-image connection here, and choose “${chosen.name}” below for keeping a woman the same.`);
+        else if (list.length && list.every((c) => c.edit)) $('#handy_img_status').text('All your image connections use editing models, which can only change an existing picture. Add one with a text-to-image model in Marinara (for SpicyAPI\'s MiniMax H3, its text-to-image model).');
         $('#handy_img_edit').html(`<option value="">Same as above</option>` + list.map((c) => opt(c, S().imageEditConnection)).join('')
             + `<option value="venice" ${S().imageEditConnection === 'venice' ? 'selected' : ''}>Venice directly (uncensored editing, needs a Venice API key)</option>`);
         this.veniceBox();
@@ -3086,7 +3163,7 @@ const game = {
         return [
             `PANTY GAME — ON (a fantasy between consenting adults: the women are porn performers and women you invent; never real people he knows, and never use the names of real people he mentions; stay in character):`,
             `- It is all about panties. Show him porn and describe women in panties, and put panties="CUT, FABRIC, COLOR" (e.g. panties="black lace thong", "white cotton cheeky") on your tags with scene=, watch= and the matching act. Every pair named goes in his drawer, and you learn which cuts, fabrics and colors get him.`,
-            ...(S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
+            ...(images.on() ? [`- Show, don't just tell: when you describe a woman's pair, SEND HIM A PICTURE of her in it: on your <handy …/> tag put her="HER NAME", img="WHAT THE PICTURE SHOWS" and panties="CUT, FABRIC, COLOR" (the first time she's pictured, also look="HER FIXED LOOK"). Not pics=: that is only a search link.`] : S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
             `- Appreciate every detail out loud: how the cut frames her ass, thighs and hips, how it rides up or digs in, the fabric (lace, satin, silk, cotton, sheer mesh): how it looks, clings and feels, the color, the wet spot, and why a woman picks that pair for a man.`,
             `- Make him imagine them used on him: slipped off warm, wrapped around his cock, stroking him off, soaked through. Tell him how women wish they had his cum in their panties and in their pussy.`,
             `- Sometimes take him into the office fantasy: invent women at a workplace (names, roles, little glimpses) who each picked a special pair just for him today. They are invented characters only.`,
@@ -4193,11 +4270,11 @@ function handleMessage(id) {
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
         }
-        images.fromTags(tags.map((t) => parseAttrs(t[1])), msg);
         const vids = tags.flatMap((t) => videos.make(parseAttrs(t[1])));
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
     }
+    images.fromReply(tags.map((t) => parseAttrs(t[1])), msg);
     chars.speaker = null;
     updatePrompt();
 }

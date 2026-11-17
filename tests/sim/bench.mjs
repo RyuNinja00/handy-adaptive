@@ -140,7 +140,7 @@ export async function boot({ repo = ROOT, rtt = 150, jitter = 0.25, devMax = 1e9
             if (dev.mode !== 2) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'device not in HDSP mode' } }; }
             if (!Number.isFinite(body.position) || !Number.isFinite(body.duration)) { dev.cmds.push({ t: vnow, rejected: true, body }); return { error: { message: 'bad xpt payload' } }; }
             // quirks of a misbehaving device: moves the opposite way, or pins to the top whatever it's told
-            const goal = dev.quirk === 'reversed' ? 100 - body.position : dev.quirk === 'stuck' && !body.viaV3 ? 100 : body.position;   // "stuck" models firmware 4 misreading API v2 positions
+            const goal = dev.quirk === 'reversed' ? 100 - body.position : dev.quirk === 'stuck' && !body.viaV3 ? 100 : dev.quirk === 'fraction' && !body.viaV3 ? Math.min(1, Math.max(0, body.position)) * 100 : body.position;   // "stuck" models firmware 4 misreading API v2 positions
             const p0 = devPos(), dist = Math.abs(goal - p0);
             const dur = Math.max(body.duration, (dist / devMax) * 1000, 1);
             dev.seg = { p0, p1: goal, t0: vnow, t1: vnow + dur };

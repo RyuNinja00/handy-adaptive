@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.14.3.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.14.4.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -165,6 +165,7 @@ The extension uses the device's whole stroke range and applies your calibration 
 
 **If the arrows move the sleeve the wrong way.** After each move, the extension asks the Handy where it actually is and warns you on the calibration screen if something's off:
 - **"The sleeve is moving the opposite way"**: press **Flip direction**. Every position sent to the Handy is then mirrored, for calibration and play alike, and the setting is remembered. You can also use the **Arrows move the sleeve the wrong way?** link at any time, for example if ▼ raises the sleeve and ▲ lowers it (some mounts hold the Handy upside down, and not every Handy reports its position).
+- **Every button raises it, or "go to 50" sends it nearly to the top**: some firmware 4 Handys read streamed positions on a 0–1 scale instead of 0–100, so every position looks like "the top". On firmware 4, calibration checks this at the start (two slow test moves) and switches by itself. If your Handy doesn't report its position, press **Try the other position format** on the calibration screen (in the *wrong way?* help). The choice is also under *Position format (Streaming)* in the settings and applies to play as well.
 - **"The Handy says the sleeve isn't moving to where the buttons ask"**, or every button raises it: this usually means the Handy runs **firmware 4** and is being driven through the older API. Add an **API v3 Application ID** in the settings (Part 4). Calibration then uses the newer API automatically. For play, choose **Buffered streaming** as the Transport.
 
 **Test connection** shows your Handy's firmware version, with a tip if a firmware 4 Handy isn't on Buffered streaming.
@@ -927,7 +928,7 @@ Everything the extension learns is stored in SillyTavern's own settings for your
 
 ## Part 17 — Troubleshooting
 
-- **Calibration arrows all raise the sleeve, or ▼ raises it.** See *If the arrows move the sleeve the wrong way* in Part 5. In short: if it's simply reversed, press **Flip direction**. If every arrow raises it, your Handy is likely on firmware 4: add an API v3 Application ID (Part 4) and choose Buffered streaming.
+- **Calibration arrows all raise the sleeve, or ▼ raises it.** See *If the arrows move the sleeve the wrong way* in Part 5. In short: if it's simply reversed, press **Flip direction**. If every arrow raises it, press **Try the other position format** (firmware 4). The lasting fix for firmware 4 is an API v3 Application ID (Part 4) with Buffered streaming.
 
 **Pictures: she says she's showing you one, but nothing is drawn**
 - Some models "show" with `pics="…"` or a bare `<pics="…">` tag. Those are only picture-search links. A drawn picture needs `img="…"` and `her="NAME"` on a `<handy …/>` tag.

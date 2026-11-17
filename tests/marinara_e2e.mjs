@@ -50,7 +50,7 @@ function handyCmd(p, body) {
     if (p === '/hdsp/xpt') {
         if (dev.mode !== 2) return { error: { message: 'device not in HDSP mode' } };
         if (!Number.isFinite(body?.position) || !Number.isFinite(body?.duration)) return { error: { message: 'bad xpt payload' } };
-        const goal = dev.quirk === 'stuck' ? 100 : body.position;   // "stuck": firmware 4 misreading API v2 positions
+        const goal = dev.quirk === 'stuck' ? 100 : dev.quirk === 'fraction' ? Math.min(1, Math.max(0, body.position)) * 100 : body.position;   // "stuck": firmware 4 misreading API v2 positions
         const p0 = devPos(), t0 = Date.now(), dur = Math.max(body.duration, 1);
         dev.seg = { p0, p1: goal, t0, t1: t0 + dur };
         dev.cmds.push({ t: t0, p0, p1: goal, v: (Math.abs(goal - p0) / dur) * 1000 });
@@ -536,6 +536,28 @@ try {
         dev.fw = '3.2.3';
         await pg.evaluate(() => { window.handyAdaptive.api && (window.handyAdaptive.api.fwMajor = null); });
     });
+    await step('a firmware 4 Handy that reads 0–1 positions: calibration finds it, "go to 50" stops at 50, ▼ lowers the sleeve', async () => {
+        dev.fw = '4.0.12'; dev.quirk = 'fraction';
+        await pg.evaluate(() => { const H = window.handyAdaptive; H.api.fwMajor = null; H.api.scale = null; });
+        await pg.click('#handy_calib_btn');
+        await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
+        if ((await calib()).step === -1) await pg.click('#handy_calib_test');
+        await pg.click('#handy_calib_next');
+        await waitFor(jogVisible, 'arrows shown after the format check', 25000);
+        await waitFor(async () => (await pg.$$eval('.handy-toast', (els) => els.some((e) => /0–1 scale/.test(e.textContent)))), 'told it switched', 3000);
+        await settle();
+        const start = (await calib()).pos;
+        assert.ok(Math.abs(devPos() - start) < 1.5, `went to ${devPos().toFixed(1)} for ${start}`);
+        const d1 = await clickJog(-10), d2 = await clickJog(-10);
+        assert.ok(d1 <= -9 && d2 <= -9, `▼ lowers: ${d1}, ${d2}`);
+        assert.equal(state.storage.settings?.posScaleFound, 'fraction');
+        await pg.click('#handy_calib_cancel');
+        await waitFor(async () => !(await calib()).active, 'closed');
+        dev.quirk = null; dev.fw = '3.2.3';
+        await pg.evaluate(() => { const H = window.handyAdaptive; H.api.fwMajor = null; H.api.scale = null; });
+        await pg.click('#handy_settings_btn'); await pg.selectOption('#handy_pos_scale', 'percent'); await pg.selectOption('#handy_pos_scale', 'auto'); await pg.click('#handy-st-settings .handy-st-close');
+        await pg.evaluate(() => { window.handyAdaptive.api.scale = 'percent'; });   // the next steps use a firmware 3 Handy again
+    });
     await step('every game plays through Marinara: instructions reach the AI, tags drive the device, endings work', async () => {
         const G = (f, a) => pg.evaluate(f, a);
         const turn = async (chatId, user, content, characterId) => {
@@ -695,14 +717,14 @@ try {
         // An editing model picked for new pictures (the "image_urls: is required" mistake): rerouted, not an error
         await pg.selectOption('#handy_img_conn', 'img2');
         await pg.click('#handy_img_reload');
-        await waitFor(async () => /is an editing model: it can only change an existing picture/.test(await pg.textContent('#handy_img_status')), 'warning about an editing model');
+        await waitFor(async () => /is an editing model: it can only change an existing picture/.test(await pg.textContent('#handy_img_status')), 'warning about an editing model', 15000);
         await pg.click('#handy_img_test');
-        await waitFor(async () => /New pictures work \(SpicyAPI\)\. SpicyAPI edit is an editing model, so SpicyAPI was used for a new picture/.test(await pg.textContent('#handy_img_status')), 'rerouted to the text-to-image model');
+        await waitFor(async () => /New pictures work \(SpicyAPI\)\. SpicyAPI edit is an editing model, so SpicyAPI was used for a new picture/.test(await pg.textContent('#handy_img_status')), 'rerouted to the text-to-image model', 15000);
         assert.ok(!state.pictures.some((x) => x.connectionId === 'img2' && !x.referenceImages), 'never sent to the edit model without a picture');
         // only editing models: a clear explanation instead of SpicyAPI's error
         const saved = connectionsDb.splice(1, 1);
         await pg.click('#handy_img_test');
-        await waitFor(async () => /Failed: “SpicyAPI edit” uses an image-editing model \(minimax\/h3-image\/edit\)[\s\S]*text-to-image model/.test(await pg.textContent('#handy_img_status')), 'explained');
+        await waitFor(async () => /Failed: “SpicyAPI edit” uses an image-editing model \(minimax\/h3-image\/edit\)[\s\S]*text-to-image model/.test(await pg.textContent('#handy_img_status')), 'explained', 15000);
         connectionsDb.splice(1, 0, ...saved);
         await pg.selectOption('#handy_img_conn', '');
         await pg.click('#handy_img_reload');

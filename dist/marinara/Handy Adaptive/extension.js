@@ -1,4 +1,4 @@
-// Handy Adaptive v0.14.3 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.14.4 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -1189,7 +1189,7 @@ return { TRAITS, NEUTRAL, seedStyle, EMPTY_LEARNED, effect, describe, textHash, 
 
 // ---- index.js (the SillyTavern extension)
 (() => {
-// Handy Adaptive — SillyTavern extension (v0.14.3; also runs in Marinara Engine via marinara/st-compat.js)
+// Handy Adaptive — SillyTavern extension (v0.14.4; also runs in Marinara Engine via marinara/st-compat.js)
 //
 // The AI describes WHAT is happening (<handy act="blowjob" intensity="0.6"/>),
 // and the motion synthesizer improvises HOW the device moves, using a motion
@@ -1237,6 +1237,7 @@ const DEFAULTS = {
     videoLinks: true,           // the AI may suggest a video search: a link to the site's own search results
     videoSite: 'pornhub',       // pornhub | xhamster | xvideos
     picLinks: true,             // the AI may suggest a picture search: a link to PornPics search results
+    posScale: 'auto',           // API v2 streaming position format: 'auto' | 'percent' (0-100) | 'fraction' (0-1)
     flipAxis: false,            // the Handy moves the opposite way to its commands (set from calibration)
     imageGen: true,             // Marinara: she may send pictures she has drawn by Marinara's image connection
     imageConnection: '',        // Marinara image connection id ('' = the chat's image model, else Marinara's default)
@@ -1358,7 +1359,10 @@ const api = {
     // the full range is restored whenever acts or calibration start. Your limits are applied here instead.
     fullRange: () => api.slide(0, 100).catch(() => {}),
     // HDSP
-    xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: Math.round(wire(position)), duration: Math.round(duration), stopOnTarget: true }),
+    xpt: (position, duration) => api.call('PUT', '/hdsp/xpt', { position: posOut(wire(position)), duration: Math.round(duration), stopOnTarget: true }),
+    // How this Handy reads a streamed position: 'percent' (0-100) or 'fraction' (0-1, seen on firmware 4).
+    // Set by the probe at the start of calibration, or by hand.
+    scale: null,
     // Firmware version (GET /info), e.g. 3 or 4; null until read.
     fwMajor: null,
     async info() {
@@ -1410,6 +1414,9 @@ const span = () => { const c = cal(); return c ? Math.abs(c.tip - c.base) / 100 
 // "Flip direction": for a Handy that moves the opposite way to its commands. Applied to every position
 // sent to the device, so calibration and play stay consistent.
 const wire = (p) => (S().flipAxis ? 100 - p : p);
+// The position format for API v2 streaming: your setting, else what the probe found, else 0-100.
+const posScale = () => (S().posScale === 'fraction' || S().posScale === 'percent' ? S().posScale : api.scale || S().posScaleFound || 'percent');
+const posOut = (p) => (posScale() === 'fraction' ? Math.round(clamp(p, 0, 100) * 100) / 10000 : Math.round(clamp(p, 0, 100)));
 const toDev = (p) => { const c = cal(); const x = clamp(+p || 0, 0, 100); return c ? c.base + (x / 100) * (c.tip - c.base) : x; };
 // The speed cap is a physical limit on the device; in body units it is wider when your range is shorter.
 const capBody = () => maxVel() / span();
@@ -4006,6 +4013,35 @@ const calib = {
         else if (S().flipAxis || last.every((x) => Math.sign(x.dr) === Math.sign(x.dc))) this.problem = null;
         if (this.problem !== was) ui.calib();
     },
+    // Which position format does this Handy follow? Two slow test moves (to 35 % and 65 %) in each format,
+    // checking where the device says it went. Needs a Handy that reports its position; otherwise 0-100 stays.
+    async probe(my) {
+        const go = async (p) => { await api.xpt(p, 1600); await new Promise((r) => setTimeout(r, 1800)); return api.where(false); };
+        const follows = async () => {
+            try {
+                const a = await go(35); if (!this.active || my !== epoch) return null;
+                const b = await go(65); if (!this.active || my !== epoch) return null;
+                if (a === null || b === null) return null;
+                return Math.sign(b - a) === Math.sign(wire(65) - wire(35)) && Math.abs(b - a) >= 5;
+            } catch { return null; }
+        };
+        $('#handy_calib_text').html('Checking how your Handy reads positions: two slow test moves…');
+        api.scale = 'percent';
+        const pct = await follows();
+        if (pct === null || pct) { api.scale = pct ? 'percent' : null; if (pct) { S().posScaleFound = 'percent'; save(); } return; }
+        api.scale = 'fraction';
+        const frac = await follows();
+        if (frac) { S().posScaleFound = 'fraction'; save(); toast('Your Handy reads positions on a 0–1 scale (firmware 4). Switched to that for you.', 'success'); return; }
+        api.scale = null;   // neither worked: leave it, the self-check will say so
+    },
+    // By hand: try the other format (from the calibration help)
+    toggleScale() {
+        const now = posScale(), next = now === 'fraction' ? 'percent' : 'fraction';
+        S().posScale = next; save();
+        this.seen = []; this.problem = null; this.at = null;
+        toast(next === 'fraction' ? 'Using the 0–1 position format (firmware 4 style). Try the arrows now.' : 'Using the 0–100 position format. Try the arrows now.', 'info');
+        ui.calib(); this.target(this.pos);
+    },
     flip() {
         S().flipAxis = !S().flipAxis; save();
         this.seen = []; this.problem = null; this.at = null;   // re-time the next move from scratch
@@ -4069,6 +4105,8 @@ const calib = {
         this.seen = []; this.problem = null;
         try { await (this.v3() ? api3.mode(2) : api.mode(2)); }
         catch (e) { toast(`Handy start failed: ${e.message}`, 'error'); return this.abort(); }
+        if (!this.v3() && S().posScale !== 'percent' && S().posScale !== 'fraction' && !api.scale && api.fwMajor !== null && api.fwMajor >= 4) await this.probe(my);
+        if (!this.active || my !== epoch) return;
         await (this.v3() ? api3.stroke(0, 1).catch(() => {}) : api.fullRange());   // calibrate against the whole device range
         if (!this.active || my !== epoch) return;
         // We can't know where it is resting, so the first move is timed for the longest possible trip, and the
@@ -4374,6 +4412,7 @@ const ui = {
     <div id="handy_img_none" class="handy-small">Pictures she draws need Marinara Engine (its image connections). In SillyTavern, picture search links are used instead.</div>
     <label>Site for video searches <select id="handy_video_site" class="text_pole"><option value="pornhub">Pornhub</option><option value="xhamster">xHamster</option><option value="xvideos">XVideos</option></select></label>
     <label>Games: edges before the character may end it <input type="number" id="handy_game_min" class="text_pole" min="0" max="30"></label>
+    <label>Position format (Streaming) <select id="handy_pos_scale" class="text_pole"><option value="auto">Automatic (checked during calibration)</option><option value="percent">0–100 (firmware 3)</option><option value="fraction">0–1 (some firmware 4 Handys)</option></select></label>
     <label>Story mode: minutes per stage (or 2 edges) <input type="number" id="handy_story_min" class="text_pole" min="3" max="30"></label>
     <b>Her voice</b>
     <label class="checkbox_label"><input type="checkbox" id="handy_voice_on"> Read her replies aloud (your browser's voices)</label>
@@ -4475,7 +4514,7 @@ const ui = {
         $('#handy_img_edit').on('change', () => images.veniceBox());
         $('#handy_venice_test').on('click', () => images.testVenice());
         $('#handy_img_reload').on('click', () => images.fillConnections());
-        images.fillConnections(); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_story_min', 'storyStageMinutes');
+        images.fillConnections(); bind('#handy_video_site', 'videoSite'); bind('#handy_game_min', 'gameMinEdges'); bind('#handy_pos_scale', 'posScale'); bind('#handy_story_min', 'storyStageMinutes');
         bind('#handy_voice_on', 'voiceOn', 'checked'); bind('#handy_voice_sync', 'voiceSync', 'checked'); bind('#handy_voice_name', 'voiceName'); bind('#handy_voice_rate', 'voiceRate'); bind('#handy_voice_pitch', 'voicePitch');
         $('#handy_voice_on').on('change', function () { if (!this.checked) voice.stop(); });
         $('#handy_voice_test').on('click', () => { const was = S().voiceOn; S().voiceOn = true; voice.speak('Good boy. Keep your eyes on her.'); S().voiceOn = was; if (!voice.ok()) toast('This browser has no speech voices.', 'warning'); });
@@ -4589,6 +4628,7 @@ const ui = {
         $('#handy_calib').on('click', '[data-jog]', function () { calib.jog(+this.dataset.jog); });
         $('#handy_calib').on('click', '#handy_calib_wrong', (e) => { e.preventDefault(); calib.problem = calib.problem || 'ask'; ui.calib(); });
         $('#handy_calib').on('click', '[data-calfix="flip"]', () => calib.flip());
+        $('#handy_calib').on('click', '[data-calfix="scale"]', () => calib.toggleScale());
         $('#handy_calib').on('click', '[data-calfix="close"]', () => { calib.problem = null; ui.calib(); });
         $('#handy_calib_back').on('click', () => calib.back());
         $('#handy_calib_test').on('click', () => (calib.step === -1 ? calib.recal() : calib.test()));
@@ -4735,9 +4775,9 @@ const ui = {
         const warn = !c.active || c.step < 1 ? '' : c.problem === 'reversed'
             ? `⚠ The sleeve is moving the <b>opposite</b> way to the buttons.${fwTip} <div class="handy-row"><div class="menu_button" data-calfix="flip">Flip direction</div><div class="menu_button" data-calfix="close">Dismiss</div></div>`
             : c.problem === 'stuck'
-                ? `⚠ The Handy says the sleeve <b>isn't moving</b> to where the buttons ask.${fwTip || ' Check that nothing else (the Handy app, another site) is controlling it, then try again.'} <div class="handy-row"><div class="menu_button" data-calfix="close">Dismiss</div></div>`
+                ? `⚠ The Handy says the sleeve <b>isn't moving</b> to where the buttons ask.${onV2 ? ' Press <b>Try the other position format</b> first: some Handys (firmware 4) read positions on a 0–1 scale.' : ''}${fwTip || ' Check that nothing else (the Handy app, another site) is controlling it, then try again.'} <div class="handy-row">${onV2 ? '<div class="menu_button" data-calfix="scale">Try the other position format</div>' : ''}<div class="menu_button" data-calfix="close">Dismiss</div></div>`
                 : c.problem === 'ask'
-                    ? `If <b>▼ raises</b> the sleeve and <b>▲ lowers</b> it, press <b>Flip direction</b>.${fwTip} If every button raises it, ${fw4 && onV2 ? 'the Application ID above is the fix' : 'set the Transport to match your firmware (firmware 4: Buffered streaming with an Application ID) and run Test connection'}. <div class="handy-row"><div class="menu_button" data-calfix="flip">Flip direction</div><div class="menu_button" data-calfix="close">Close</div></div>`
+                    ? `If <b>▼ raises</b> the sleeve and <b>▲ lowers</b> it, press <b>Flip direction</b>. If <b>every button raises it</b>${onV2 ? `, or going to 50 sends it nearly to the top, press <b>Try the other position format</b> (now: ${posScale() === 'fraction' ? '0–1' : '0–100'})` : ''}.${fwTip} <div class="handy-row"><div class="menu_button" data-calfix="flip">Flip direction</div>${onV2 ? '<div class="menu_button" data-calfix="scale">Try the other position format</div>' : ''}<div class="menu_button" data-calfix="close">Close</div></div>`
                     : '';
         $('#handy_calib_warn').html(warn).toggle(!!warn);
         $('#handy_calib_help').toggle(c.active && c.step >= 1 && c.step <= 2 && !warn);

@@ -93,12 +93,12 @@ const SillyTavern = {
         groupId: scene.groupId, name1: scene.name1, name2: scene.name2,
         setExtensionPrompt(key, value) { if (key === MODULE) { promptText = String(value || ''); schedulePromptSync(); } },
         executeSlashCommandsWithOptions: async () => { throw new Error('starting a reply from an extension is not available in Marinara'); },
-        handyImages: imageHost,
+        handyImages: imageHost, onCleanup: fn => marinara.onCleanup(fn),
     }),
 };
 
 // Characters and persona of a chat, shaped like SillyTavern's (avatar = a stable key for per-character styles)
-async function loadScene(chatId) {
+async function loadScene(chatId, ticket) {
     const chat = await mapi('GET', `/chats/${enc(chatId)}`).catch(() => ({}));
     const ids = (parseMaybe(chat.characterIds, []) || []).filter((x) => typeof x === 'string');
     const list = [];
@@ -113,6 +113,7 @@ async function loadScene(chatId) {
     }
     let name1 = 'User';
     if (chat.personaId) { try { name1 = (await mapi('GET', `/characters/personas/${enc(chat.personaId)}`))?.name || name1; } catch { /* default */ } }
+    if (ticket !== navigation) return;
     scene.chatId = chatId;
     scene.characters.splice(0, scene.characters.length, ...list);
     scene.characterId = list.length === 1 ? 0 : undefined;
@@ -127,57 +128,53 @@ function mirror(msg) {
 }
 
 // ---------------------------------------------------------------- AI instructions → managed lorebook entry
-const lore = { id: null, entryId: null, last: null, ok: null, error: '' };
+const lore = { ok: null, error: '' };
 let syncChain = Promise.resolve(), syncTimer = null;
-async function ensureLorebook() {
-    if (lore.id && lore.entryId) return;
-    let lb = asList(await mapi('GET', '/lorebooks')).find((l) => l.name === LORE_NAME);
-    if (!lb) {
-        lb = await mapi('POST', '/lorebooks', {
-            name: LORE_NAME,
-            description: 'Created and kept up to date by the Handy Adaptive extension: it tells the AI how to control your Handy. It is emptied automatically when the extension is off.',
-            isGlobal: true, enabled: true, tokenBudget: 8192, scanDepth: 1,
+const books = new Map();
+let legacyChecked = false;
+async function syncBook(chatId, text) {
+    let book = books.get(chatId);
+    if (book && book.last === text) return;
+    if (!book) {
+        const list = asList(await mapi('GET', '/lorebooks'));
+        if (!legacyChecked) {
+            const old = list.find(l => l.name === LORE_NAME && l.isGlobal);
+            if (old) await mapi('PATCH', `/lorebooks/${enc(old.id)}`, { enabled: false, isGlobal: false });
+            legacyChecked = true;
+        }
+        if (!chatId) return;
+        const name = `${LORE_NAME} · ${chatId}`;
+        const lb = list.find(l => l.name === name && l.chatId === chatId) || await mapi('POST', '/lorebooks', {
+            name, chatId, isGlobal: false, scope: { mode: 'specific', chatIds: [chatId] }, enabled: true, tokenBudget: 8192,
         });
-    } else if (!lb.isGlobal || !lb.enabled) {
-        await mapi('PATCH', `/lorebooks/${enc(lb.id)}`, { isGlobal: true, enabled: true });
-    }
-    let entry = asList(await mapi('GET', `/lorebooks/${enc(lb.id)}/entries`)).find((e) => e.name === LORE_ENTRY);
-    if (!entry) {
-        entry = await mapi('POST', `/lorebooks/${enc(lb.id)}/entries`, {
-            name: LORE_ENTRY, content: '', constant: true, enabled: false, position: 2, depth: 1, role: 'system', order: 1,
+        const path = `/lorebooks/${enc(lb.id)}/entries`;
+        const entry = asList(await mapi('GET', path)).find(e => e.name === LORE_ENTRY) || await mapi('POST', path, {
+            name: LORE_ENTRY, constant: true, enabled: false, content: '', position: 2, depth: 1, role: 'system', order: 1,
             preventRecursion: true, excludeFromVectorization: true,
         });
+        book = { path: path + '/' + enc(entry.id), last: entry.enabled ? entry.content : '' };
+        books.set(chatId, book);
     }
-    lore.id = lb.id; lore.entryId = entry.id; lore.last = entry.enabled ? entry.content : '';
+    if (book.last !== text) {
+        await mapi('PATCH', book.path, { content: text, enabled: !!text });
+        book.last = text;
+    }
 }
-function syncPrompt({ force = false } = {}) {
+function syncPrompt(chatId = scene.chatId, text = promptText) {
     syncChain = syncChain.then(async () => {
-        const text = promptText;
-        const write = async () => {
-            await ensureLorebook();
-            if (force || text !== lore.last) {
-                await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`,
-                    { content: text, enabled: !!text, constant: true, position: 2, depth: 1, role: 'system' });
-                lore.last = text;
-            }
-        };
         try {
-            try { await write(); } catch {
-                lore.id = lore.entryId = lore.last = null;   // deleted or edited elsewhere: find or recreate it, once
-                await write();
-            }
-            if (lore.ok === false) compatToast('Handy: AI link restored', 'success');
+            try { await syncBook(chatId, text); }
+            catch { books.delete(chatId); await syncBook(chatId, text); }
             lore.ok = true; lore.error = '';
         } catch (e) {
-            lore.id = lore.entryId = lore.last = null;
-            if (lore.ok !== false) compatToast(`Handy couldn't update the AI instructions: ${e.message}`, 'error');
-            lore.ok = false; lore.error = e.message;
+            books.delete(chatId); lore.ok = false; lore.error = e.message;
+            compatToast(`Could not sync Handy instructions: ${e.message}`, 'warning');
         }
         refreshCompatStatus();
     });
     return syncChain;
 }
-function schedulePromptSync() { clearTimeout(syncTimer); syncTimer = setTimeout(syncPrompt, 400); }
+function schedulePromptSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncPrompt(), 400); }
 
 async function ensureHideRegex({ quiet = true } = {}) {
     try {
@@ -212,45 +209,100 @@ function isGenerateRequest(input, init) {
 }
 async function recent(chatId) {
     const list = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=8`);
-    return Array.isArray(list) ? list : [];
+    if (!Array.isArray(list)) throw new Error('Unreadable chat history');
+    return list;
 }
-// Persist generated search links with the originating reply. Keep the raw tags for swipes and continuations.
-async function appendViewingLinks(chatId, message, links) {
-    if (!links?.length) return;
-    const latest = (await recent(chatId)).find(row => row.id === message.id);
-    if (!latest || latest.content !== message.content || latest.activeSwipeIndex !== message.activeSwipeIndex) return;
-    const missing = links.filter(link => !latest.content.includes(link.url));
-    if (!missing.length) return;
-    const content = latest.content + '\n\n' + missing.map(link => link.markdown).join('\n\n');
-    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}`, { content });
-    handled.set(message.id, content);
-    // The app reloads its message cache later. Show links immediately on the original bubble.
-    const host = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
-    if (!host || scene.chatId !== chatId) return;
-    for (const link of missing) {
-        if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
-        const a = document.createElement('a');
-        a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-        a.textContent = `${link.icon} ${link.q} (${link.site} search)`;
-        const line = document.createElement('div');
-        line.append(a); host.append(line);
-        const timer = setInterval(() => {
-            if (line.isConnected && ![...host.querySelectorAll('a')].some(other => other !== a && other.href === a.href)) return;
-            line.remove(); clearInterval(timer);
-        }, 1500);
+// Viewing links are presentation metadata. Never replace an authored message to attach one.
+const viewingRows = new Map();
+function rememberLinks(chatId, row) {
+    const data = parseMaybe(row.extra, {})?.handyViewing;
+    if (Array.isArray(data?.links) && data.tags === tagSignature(row.content)) viewingRows.set(row.id, { chatId, links: data.links });
+    else viewingRows.delete(row.id);
+}
+function tagSignature(content) { return (String(content || '').match(/<handy\b[^>]*>/gi) || []).join(''); }
+function renderLinks() {
+    for (const host of document.querySelectorAll('[data-message-id]')) {
+        const entry = viewingRows.get(host.dataset.messageId);
+        const links = entry?.chatId === scene.chatId ? entry.links : [];
+        for (const line of host.querySelectorAll('[data-handy-viewing]')) {
+            if (!links.some(l => l.url === line.dataset.handyViewing)) line.remove();
+        }
+        for (const link of links) {
+            if (!/^https:\/\/(www\.pornhub\.com|xhamster\.com|www\.xvideos\.com|www\.pornpics\.com)\//.test(link.url)) continue;
+            if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
+            const a = document.createElement('a');
+            a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = `${link.q} (${link.site} search)`;
+            const line = document.createElement('div');
+            line.dataset.handyViewing = link.url; line.append(a); host.append(line);
+        }
     }
 }
-async function afterReply(res, chatId, before) {
-    try {   // wait for the streamed reply to finish
-        const reader = res?.body?.getReader();
-        if (reader) for (;;) { const { done } = await reader.read(); if (done) break; }
-    } catch { /* aborted or disconnected: the reply may still have been saved */ }
+async function appendViewingLinks(chatId, message, links) {
+    if (!links?.length) return;
+    const data = { tags: tagSignature(message.content), links };
+    const swipe = Number.isInteger(message.activeSwipeIndex) ? '?swipeIndex=' + message.activeSwipeIndex : '';
+    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}/extra${swipe}`, { handyViewing: data });
+    if (chatId === scene.chatId) { viewingRows.set(message.id, { chatId, links }); renderLinks(); }
+}
+let navigation = 0, turn = 0, selected = null, loading = Promise.resolve();
+function selectChat(chatId) {
+    if (selected === chatId) return loading;
+    const old = selected;
+    selected = chatId; scene.chatId = null;
+    const ticket = ++navigation;
+    if (old) syncPrompt(old, '');
+    eventSource.emit(eventTypes.CHAT_CHANGED, chatId);
+    previews.clear(); viewingRows.clear(); imagePreviewSeen.clear(); lastImagePreviewAt = 0;
+    document.querySelectorAll('[data-handy-image-poc], [data-handy-viewing]').forEach(el => el.remove());
+    loading = chatId ? loadScene(chatId, ticket).then(() => {
+        if (ticket !== navigation) return;
+        window.handyAdaptive?.refreshPrompt();
+        recent(chatId).then(rows => {
+            if (ticket !== navigation) return;
+            rows.forEach(row => rememberLinks(chatId, row));
+            renderLinks();
+        }).catch(() => {});
+    }) : Promise.resolve();
+    return loading;
+}
+const composerSelector = '[data-chat-composer][data-chat-id]';
+let hadComposer = false, seenComposer = false;
+function observeChat() {
+    const composer = document.querySelector(composerSelector);
+    if (composer || hadComposer) selectChat(composer?.dataset.chatId || null);
+    hadComposer = !!composer;
+    if (composer) seenComposer = true;
+}
+async function afterReply(res, chatId, before, current) {
+    const saved = new Map();
+    let completed = false;
+    try {
+        const reader = res.body.getReader(), decoder = new TextDecoder();
+        let pending = '';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            pending += decoder.decode(value, { stream: true });
+            const lines = pending.split('\n'); pending = lines.pop();
+            for (const line of lines) {
+                if (!line.startsWith('data:')) continue;
+                const event = JSON.parse(line.slice(5));
+                if (event.type === 'done') completed = true;
+                const row = event.data;
+                if (event.type === 'message_saved' && row?.role === 'assistant' && (!row.chatId || row.chatId === chatId))
+                    saved.set(row.id, row.content);
+            }
+        }
+    } catch { return; }
+    if (!completed || !saved.size || !current()) return;
     await new Promise((r) => setTimeout(r, 400));
-    if (chatId !== scene.chatId) return;
+    if (!current()) return;
     let msgs;
     try { msgs = await recent(chatId); } catch (e) { return console.warn('[Handy] could not read the reply', e); }
     for (const m of msgs) {
-        if (!m || m.role === 'user' || m.role === 'system' || typeof m.content !== 'string') continue;
+        if (!current()) return;
+        if (!m || !saved.has(m.id) || m.role !== 'assistant' || typeof m.content !== 'string' || (saved.get(m.id) && saved.get(m.id) !== m.content)) continue;
         const old = handled.has(m.id) ? handled.get(m.id) : before.get(m.id);
         if (old === m.content) continue;
         handled.set(m.id, m.content);
@@ -258,7 +310,7 @@ async function afterReply(res, chatId, before) {
         const text = old && m.content.startsWith(old) ? m.content.slice(old.length) : m.content;   // Continue: only the new part
         const ch = scene.characters.find((c) => c.id === m.characterId);
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
-            original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id } } });
+            original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id, swipeIndex: m.activeSwipeIndex } } });
         eventSource.emit(eventTypes.MESSAGE_RECEIVED, idx);
         try { await appendViewingLinks(chatId, m, scene.chat[idx]?.extra?.marinara?.links); }
         catch (e) { compatToast(`Could not add the viewing link to this reply: ${e.message}`, 'warning'); }
@@ -266,27 +318,48 @@ async function afterReply(res, chatId, before) {
     while (handled.size > 500) handled.delete(handled.keys().next().value);
 }
 async function hookedFetch(input, init) {
-    if (!isGenerateRequest(input, init)) return nativeFetch.apply(window, arguments);
+    if (!isGenerateRequest(input, init)) {
+        const url = new URL(typeof input === 'string' ? input : input?.url || String(input), location.href);
+        const path = url.origin === location.origin && /^\/api\/chats\/([^/]+)\/messages(?:\/([^/]+))?$/.exec(url.pathname);
+        const res = await nativeFetch.apply(window, arguments);
+        if (path && res.ok) {
+            const chatId = decodeURIComponent(path[1]);
+            res.clone().json().then(result => {
+                if (chatId !== selected) return;
+                for (const row of Array.isArray(result) ? result : [result]) if (row?.id) rememberLinks(chatId, row);
+                renderLinks();
+            }).catch(() => {});
+        }
+        return res;
+    }
     let body;
     try { body = JSON.parse(init.body); } catch { return nativeFetch.apply(window, arguments); }
     const chatId = typeof body.chatId === 'string' ? body.chatId : null;
     if (!chatId || body.impersonate || body.turnGameBots) return nativeFetch.apply(window, arguments);
-    let before = new Map();
+    const composer = document.querySelector(composerSelector);
+    if ((!composer && (seenComposer || body.autonomous)) || (composer && composer.dataset.chatId !== chatId)) return nativeFetch.apply(window, arguments);
+    const generation = ++turn;
+    const loadingScene = selectChat(chatId), ticket = navigation;
+    let stopTicket = window.handyAdaptive?.stopGeneration();
+    const current = () => ticket === navigation && generation === turn && scene.chatId === chatId && stopTicket === window.handyAdaptive?.stopGeneration();
+    let before = null;
     try {
-        if (chatId !== scene.chatId) { previews.clear(); imagePreviewSeen.clear(); lastImagePreviewAt = 0; document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove()); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
+        await loadingScene;
+        if (ticket !== navigation) return nativeFetch.apply(window, arguments);
         if (typeof body.userMessage === 'string' && body.userMessage.trim()) {
             const idx = mirror({ name: scene.name1, is_user: true, is_system: false, mes: body.userMessage, send_date: Date.now(), extra: {} });
             eventSource.emit(eventTypes.MESSAGE_SENT, idx);
+            if (/^resume(?: motion)?[.!]?$/i.test(body.userMessage.trim())) stopTicket = window.handyAdaptive?.stopGeneration();
         }
         // the AI must see this turn's instructions (don't hold the reply up for long)
-        await Promise.race([syncPrompt({ force: true }), new Promise((r) => setTimeout(r, 3000))]);
+        await syncPrompt();
         before = new Map((await recent(chatId)).map((m) => [m.id, m.content]));
     } catch (e) { console.warn('[Handy]', e); }
     const res = await nativeFetch.call(window, input, init);
-    if (res.ok) {
+    if (res.ok && before && current()) {
         let copy = null;
         try { copy = res.clone(); } catch { /* not cloneable */ }
-        afterReply(copy, chatId, before);
+        if (copy) afterReply(copy, chatId, before, current);
     }
     return res;
 }
@@ -499,7 +572,7 @@ const imageHost = {
         return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, warning, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
-    async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
+    async attach({ chatId, messageId, swipeIndex, dataUrl, prompt = '', title = '' }) {
         // Marinara permits data: in img-src, but its connect-src blocks fetch(dataUrl).
         const comma = dataUrl.indexOf(',');
         const match = /^data:(image\/[\w.+-]+);base64$/i.exec(dataUrl.slice(0, comma));
@@ -519,11 +592,13 @@ const imageHost = {
                 const msgs = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=30`);
                 const msg = (Array.isArray(msgs) ? msgs : []).find((x) => x.id === messageId);
                 if (!msg) throw new Error('The original message is no longer among the recent messages');
+                if (Number.isInteger(swipeIndex) && msg.activeSwipeIndex !== swipeIndex) throw new Error('The active reply changed while drawing');
                 const extra = parseMaybe(msg.extra, {}) || {};
                 const attachments = [...(Array.isArray(extra.attachments) ? extra.attachments : []),
                     { type: 'image', url: saved.url, prompt: String(prompt).slice(0, 2000), galleryId: saved.id, name: title || 'picture', filename: title || 'picture' }];
-                await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra`, { attachments });
-                previews.show(messageId, saved.url, title);
+                const swipe = Number.isInteger(swipeIndex) ? '?swipeIndex=' + swipeIndex : '';
+                await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra${swipe}`, { attachments });
+                if (chatId === scene.chatId) previews.show(messageId, saved.url, title);
             } catch (e) { return { url: saved.url, galleryId: saved.id, warning: `Picture saved in the Gallery but could not be attached to the reply (${e.message}).` }; }
         }
         return { url: saved.url, galleryId: saved.id };
@@ -557,14 +632,14 @@ const pictureQuery = (content) => {
     return null;
 };
 
-async function testInlineImage(query = null) {
+async function testInlineImage(query = null, messageId = null) {
     const status = settingsWin.find('#handy-st-image-status');
     const candidates = [
         '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
         '.chat-message', '.message', '[role="article"]',
     ];
-    let target = null;
-    for (const selector of candidates) {
+    let target = messageId ? document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`) : null;
+    for (const selector of messageId ? [] : candidates) {
         const matches = [...document.querySelectorAll(selector)].filter((el) =>
             !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
             el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
@@ -632,7 +707,8 @@ function scheduleImagePreview(messageId, content) {
     if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
     imagePreviewSeen.add(messageId);
     lastImagePreviewAt = Date.now();
-    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query); }, 700);
+    const ticket = navigation;
+    setTimeout(() => { if (ticket === navigation && extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query, messageId); }, 700);
 }
 
 
@@ -657,10 +733,17 @@ jQuery(() => setTimeout(() => {
 // same way itself.)
 const onKeyCapture = (e) => {
     const h = window.handyAdaptive, s = extensionSettings[MODULE];
-    if (h && e.key === 'Escape' && s.escStops !== false && h.active?.()) h.stop('Esc');
+    if (h && e.key === 'Escape' && s.enabled !== false && s.escStops !== false) h.userPause('Esc');
 };
 window.addEventListener('keydown', onKeyCapture, true);
 
+let renderTimer = null;
+const observer = new MutationObserver(() => {
+    observeChat();
+    if (!renderTimer && viewingRows.size) renderTimer = setTimeout(() => { renderTimer = null; renderLinks(); }, 50);
+});
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-chat-id','data-message-id'] });
+observeChat();
 syncPrompt();
 ensureHideRegex();
 marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
@@ -668,14 +751,13 @@ marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
 marinara.onCleanup(async () => {
     if (window.fetch === hookedFetch) window.fetch = nativeFetch;
     window.removeEventListener('keydown', onKeyCapture, true);
+    navigation++; observer.disconnect(); clearTimeout(syncTimer); clearTimeout(renderTimer);
     try { await window.handyAdaptive?.stop?.('extension disabled'); } catch { /* best effort */ }
     clearTimeout(saveTimer); await persist();
-    try {   // leave the AI instructions empty so the model stops writing tags
-        await ensureLorebook();
-        await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
-    } catch { /* best effort */ }
+    clearTimeout(syncTimer);
+    if (selected) await syncPrompt(selected, '');
     previews.clear(); clearInterval(previews.timer);
-    $('[data-handy-image-poc]').remove();
+    $('[data-handy-image-poc], [data-handy-viewing]').remove();
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;

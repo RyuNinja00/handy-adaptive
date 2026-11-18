@@ -1,34 +1,21 @@
-name: Build Marinara image POC ZIP
-on:
-  push:
-    branches: [feature/marinara-image-poc, fix/marinara-shorthand-pics, fix/marinara-hide-pics-tags, feature/pornpics-local-image-service]
-  workflow_dispatch:
+name: Verify extension and release packages
+on: [push, pull_request, workflow_dispatch]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate image bridge syntax
-        run: node --check image-bridge/server.mjs
-      - name: Build extension ZIP
-        run: node scripts/build-marinara.mjs
-      - name: Check archive
-        run: unzip -t dist/handy-adaptive-marinara.zip
-      - name: Commit rebuilt extension archive
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f dist/handy-adaptive-marinara.zip
-          if ! git diff --cached --quiet; then
-            git commit -m "build: update Marinara extension ZIP [skip ci]"
-            git push
-          fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: handy-adaptive-marinara-image-poc
-          path: dist/handy-adaptive-marinara.zip
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm install --no-save --package-lock=false playwright@1.58.2 && pip install playwright==1.58.0
+      - run: npx playwright install --with-deps chromium && python -m playwright install chromium
+      - run: npm test
+      - run: node --check image-bridge/server.mjs && git diff --exit-code -- dist && test -z "$(git ls-files --others --exclude-standard dist)"

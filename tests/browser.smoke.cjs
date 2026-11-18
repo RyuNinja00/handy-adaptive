@@ -65,6 +65,7 @@ server.listen(0, async () => {
     check('on a short phone screen the panel stays on screen', r >= 0, `top ${Math.round(r)}`);
     // calibration dialog: the real ▼ / ▲ buttons
     await p.setViewportSize({ width: 1280, height: 800 });
+    if (await p.isVisible('#handy_resume')) await p.click('#handy_resume');
     await p.$eval('#handy_calib_btn', (e) => e.click()); await p.waitForTimeout(300);
     await p.click('#handy_calib_next'); await p.waitForTimeout(300);
     const hidden = !(await p.isVisible('[data-jog="-2"]'));
@@ -105,6 +106,7 @@ server.listen(0, async () => {
     check('calibration: This is my tip, Back, This is my base, Test and Save all work, and the values you set are the ones saved',
         afterTip === 2 && backTo === 1 && afterBase === 3 && testing && testMoves >= 3 && s.calibration.tip === tipAt && s.calibration.base === baseAt && !(await p.isVisible('#handy_calib')),
         `tip ${tipAt}, base ${baseAt} → saved tip ${s.calibration.tip}, base ${s.calibration.base}; ${testMoves} test moves`);
+    if (await p.isVisible('#handy_resume')) await p.click('#handy_resume');
     await p.$eval('#handy_calib_btn', (e) => e.click()); await p.waitForTimeout(200); await p.click('#handy_calib_next'); await p.waitForTimeout(400);
     await p.click('#handy_calib_cancel'); await p.waitForTimeout(300);
     check('calibration: STOP / cancel closes it and keeps the saved values', !(await p.isVisible('#handy_calib')) && (await st()).calibration.tip === tipAt);
@@ -165,6 +167,7 @@ server.listen(0, async () => {
         for (const v of vals) { await p.selectOption('#' + sel, v).catch(() => {}); await p.waitForTimeout(30); }
     }
     await p.click('#handy_cal_clear'); await p.waitForTimeout(150);
+    if (await p.isVisible('#handy_resume')) await p.click('#handy_resume');
     await p.click('#handy_cal_start'); await p.waitForTimeout(200);
     const opened = await p.isVisible('#handy_calib');
     await p.click('#handy_calib_cancel'); await p.waitForTimeout(200);

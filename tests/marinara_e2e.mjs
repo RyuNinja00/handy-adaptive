@@ -86,7 +86,7 @@ ${bundle}
 const page = `<!doctype html><html><head><meta charset="utf-8"><title>mock marinara</title>
 <link rel="stylesheet" href="/api/personal-extensions/ext1/page-style.css?hash=x">
 <style>:root{--background:#050312;--foreground:#d4d4d4;--card:#141414d9;--primary:#ec4b97;--border:#ec4b9733;--destructive:#ff6b9d;--radius:.75rem}body{background:var(--background);color:var(--foreground);height:100vh;margin:0;font-family:system-ui,sans-serif}</style>
-</head><body><div id="app">chat<textarea id="composer"></textarea></div><script>
+</head><body><div id="app">chat<textarea id="composer" data-chat-composer="true" data-chat-id="chat1"></textarea></div><script>
 window.__composerKeys = [];
 document.getElementById('composer').addEventListener('keydown', (e) => { if (e.key.startsWith('Arrow')) window.__composerKeys.push(e.key); });
 const cleanupFns = [], timeouts = new Set(), intervals = new Set();
@@ -123,6 +123,7 @@ window.__disableExt = async () => {
   window.__timersLeft = timeouts.size + intervals.size; timeouts.clear(); intervals.clear();
 };
 window.sendTurn = async (body) => {
+  document.querySelector('#composer').dataset.chatId = body.chatId;
   const r = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json", "x-marinara-csrf": "1" }, body: JSON.stringify({ userMessage: null, ...body }), cache: "no-store" });
   const reader = r.body.getReader(); for (;;) { const { done } = await reader.read(); if (done) break; }
 };
@@ -202,12 +203,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/regex-scripts' && m === 'GET') return json(200, state.regex);
     if (p === '/api/regex-scripts' && m === 'POST') { const r = { id: newId('rx'), ...body }; state.regex.push(r); return json(200, r); }
     if ((mm = p.match(/^\/api\/chats\/([^/]+)\/messages$/)) && m === 'GET') {
+        if (state.failBaseline) { state.failBaseline = false; return json(200, { unavailable: true }); }
         const list = state.chats[mm[1]] || []; const limit = +url.searchParams.get('limit') || list.length;
         return json(200, list.slice(-limit));
     }
     if (p === '/api/generate' && m === 'POST') {
-        const managed = state.entries.find((e) => e.name === 'Device control instructions');
-        const lb = state.lorebooks.find((l) => l.id === managed?.lorebookId);
+        const lb = state.lorebooks.find(l => l.chatId === body.chatId);
+        const managed = state.entries.find(e => e.lorebookId === lb?.id);
         state.generations.push({ body, entry: managed && { ...managed }, lorebookGlobal: lb?.isGlobal, lorebookEnabled: lb?.enabled });
         const chat = (state.chats[body.chatId] ||= []);
         const nx = state.next || { mode: 'new', content: 'Okay.' }; state.next = null;
@@ -220,6 +222,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         for (const t of finalContent.match(/.{1,8}/gs) || []) { res.write(`data: ${JSON.stringify({ type: 'token', data: t })}\n\n`); await new Promise((r) => setTimeout(r, 10)); }
         target.content = finalContent;
+        res.write('data: ' + JSON.stringify({ type: 'message_saved', data: target }) + '\n\n');
         res.write('data: {"type":"done"}\n\n'); return res.end();
     }
     json(404, { error: 'not found: ' + m + ' ' + p });
@@ -246,7 +249,7 @@ const waitFor = async (fn, what, ms = 6000) => {
     while (Date.now() - t0 < ms) { if (await fn()) return; await new Promise((r) => setTimeout(r, 50)); }
     throw new Error('timed out waiting for: ' + what);
 };
-const managed = () => state.entries.find((e) => e.name === 'Device control instructions');
+const managed = () => state.entries.find(e => e.lorebookId === state.lorebooks.find(l => l.chatId === 'chat1')?.id);
 const running = () => pg.evaluate(() => window.handyAdaptive.actEngine.running);
 const act = () => pg.evaluate(() => window.handyAdaptive.actEngine.intent.act);
 const handyAt = () => state.handy.length;
@@ -272,10 +275,10 @@ try {
         assert.ok(await pg.isVisible('#handy_settings_btn'));
         assert.equal(await pg.evaluate(() => typeof window.$ === 'undefined' && typeof window.jQuery === 'undefined'), true, 'jQuery stays private');
     });
-    await step('creates a global lorebook with a constant system entry at depth 1', async () => {
+    await step('creates a chat-scoped lorebook with a constant system entry at depth 1', async () => {
         await waitFor(() => managed()?.enabled && managed()?.content?.includes('[Device control'), 'managed entry');
-        const lb = state.lorebooks.find((l) => l.name === 'Handy Adaptive (managed)');
-        assert.ok(lb && lb.isGlobal && lb.enabled);
+        const lb = state.lorebooks.find((l) => l.chatId === 'chat1');
+        assert.ok(lb && !lb.isGlobal && lb.enabled); assert.deepEqual(lb.scope.chatIds, ['chat1']);
         const e = managed();
         assert.deepEqual([e.constant, e.position, e.depth, e.role], [true, 2, 1, 'system']);
     });
@@ -297,6 +300,15 @@ try {
         assert.ok(state.handy.every((c) => c.key === 'KEY123'));
         assert.equal(await act(), 'blowjob');
     });
+    await step('missing baseline skips the turn without replaying history', async () => {
+        const before = state.handy.filter(c => c.path === '/mode').length;
+        state.failBaseline = true;
+        state.next = { mode: 'new', content: '<handy stop/>' };
+        await pg.evaluate(() => window.sendTurn({chatId:'chat1',userMessage:'test baseline'}));
+        await new Promise(r => setTimeout(r, 700));
+        assert.ok(await running(), 'the unverified turn was ignored');
+        assert.equal(state.handy.filter(c => c.path === '/mode').length, before);
+    });
     await step('the character card is read (per-character style for Vex)', async () => {
         const who = await pg.evaluate(() => window.handyAdaptive.chars.activeKey());
         assert.equal(who, 'marinara:c1');
@@ -317,7 +329,11 @@ try {
     await step('a regenerated reply runs its new tags', async () => {
         state.next = { mode: 'regen', content: 'She starts again, slowly. <handy act="handjob" intensity="0.4"/>' };
         await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', regenerateMessageId: 'x' }));
-        await waitFor(running, 'started by regenerate');
+        await new Promise(r => setTimeout(r, 700)); assert.equal(await running(), false);
+        await pg.click('#handy_resume');
+        state.next = { mode: 'regen', content: '<handy act="handjob" intensity="0.5"/>' };
+        await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', regenerateMessageId: 'x' }));
+        await waitFor(running, 'started by regenerate after explicit resume');
     });
     await step('Continue only runs tags in the new text', async () => {
         state.next = { mode: 'regen', content: 'She pauses. <handy stop/>' };
@@ -331,6 +347,8 @@ try {
         assert.ok(await running(), 'old stop tag must not re-run');
     });
     await step('switching chats stops the device; group chat characters are known', async () => {
+        await pg.evaluate(() => { document.querySelector('#composer').dataset.chatId = 'chat2'; });
+        await waitFor(async () => !(await running()), 'stopped on navigation before sending');
         state.next = { mode: 'new', content: 'Hello from the group.', characterId: 'c2' };
         await pg.evaluate(() => window.sendTurn({ chatId: 'chat2', userMessage: 'hey' }));
         await waitFor(async () => !(await running()), 'stopped on chat switch');
@@ -344,6 +362,7 @@ try {
         await waitFor(async () => !(await running()), 'stopped by Esc');
     });
     await step('Esc stops the device even while a Marinara menu is swallowing keys', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.evaluate(() => window.handyAdaptive.run({ act: 'handjob', intensity: 0.5 }));
         await waitFor(running, 'start');
         // Marinara's ContextMenu: window keydown, capture phase, stopPropagation on every key
@@ -362,6 +381,7 @@ try {
     const clickJog = async (d) => { const before = devPos(); await pg.click(`#handy_calib [data-jog="${d}"]`); await settle(); return Math.round(devPos() - before); };
     await step('calibration: the dialog opens from the panel and the arrows wait until the sleeve has arrived', async () => {
         dev.cmds.length = 0;   // (the simulated sleeve stays wherever the last act left it, like a real one)
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.click('#handy_calib_btn');
         await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
         assert.equal((await calib()).step, 0);
@@ -444,6 +464,7 @@ try {
         await waitFor(async () => !(await running()), 'STOP');
     });
     await step('calibration: STOP / cancel ends it at once and freezes the sleeve', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.click('#handy_calib_btn');
         await pg.waitForSelector('#handy_calib', { state: 'visible' });
         await pg.click('#handy_calib_next');
@@ -478,6 +499,7 @@ try {
         await pg.click('#handy_collapse'); assert.ok(await pg.isVisible('#handy_stop'));
     });
     await step('games: pick from the menu, game buttons work when clicked, the load row appears after a finish', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         const G = (f) => pg.evaluate(f);
         await pg.selectOption('#handy_game_mode', 'fucktoy');
         await pg.click('#handy_game_btn');
@@ -511,12 +533,14 @@ try {
         await pg.click('#handy_stop'); await waitFor(async () => !(await running()), 'STOP');
     });
     await step('calibration self-check in Marinara: firmware 4 shown, a Handy that ignores positions is flagged, the wrong-way help and Flip work', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         dev.fw = '4.0.12';
         await pg.click('#handy_settings_btn');
         await pg.click('#handy_test');
         await waitFor(async () => /firmware 4\.0\.12/.test(await pg.textContent('#handy_status')) && /Buffered streaming/.test(await pg.textContent('#handy_status')), 'firmware + tip shown');
         await pg.click('#handy-st-settings .handy-st-close');
         dev.quirk = 'stuck';
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.click('#handy_calib_btn');
         await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
         if ((await calib()).step === -1) await pg.click('#handy_calib_test');   // "Recalibrate", if it asked about the setup
@@ -542,8 +566,10 @@ try {
         await pg.evaluate(() => { window.handyAdaptive.api && (window.handyAdaptive.api.fwMajor = null); });
     });
     await step('a firmware 4 Handy that reads 0–1 positions: calibration finds it, "go to 50" stops at 50, ▼ lowers the sleeve', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         dev.fw = '4.0.12'; dev.quirk = 'fraction';
         await pg.evaluate(() => { const H = window.handyAdaptive; H.api.fwMajor = null; H.api.scale = null; });
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.click('#handy_calib_btn');
         await pg.waitForSelector('#handy_calib', { state: 'visible', timeout: 3000 });
         if ((await calib()).step === -1) await pg.click('#handy_calib_test');
@@ -564,6 +590,7 @@ try {
         await pg.evaluate(() => { window.handyAdaptive.api.scale = 'percent'; });   // the next steps use a firmware 3 Handy again
     });
     await step('every game plays through Marinara: instructions reach the AI, tags drive the device, endings work', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         const G = (f, a) => pg.evaluate(f, a);
         const turn = async (chatId, user, content, characterId) => {
             state.next = { mode: 'new', content, ...(characterId ? { characterId } : {}) };
@@ -571,6 +598,7 @@ try {
             await new Promise((r) => setTimeout(r, 700));   // the extension reads the finished reply
         };
         const start = async (mode) => {
+            if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
             if (await G(() => window.handyAdaptive.game.active)) await pg.click('#handy_game_btn');
             await pg.selectOption('#handy_game_mode', mode); await pg.click('#handy_game_btn');
             await waitFor(() => G((m) => window.handyAdaptive.game.active && window.handyAdaptive.game.mode === m, mode), mode + ' started');
@@ -617,8 +645,22 @@ try {
         await start('panties');
         await turn('chat1', 'show me', 'Look at these. <handy act="doggy" intensity="0.5" panties="red satin g-string" pics="red satin g-string ass" search="red satin thong"/>');
         await waitFor(() => G(() => Object.keys(window.handyAdaptive.profile().drawer).length >= 2), 'drawer grows');
-        await waitFor(() => state.chats.chat1.at(-1).content.includes('(https://www.pornhub.com/video/search?search=red+satin+thong)'), 'video search in saved reply');
-        assert.ok(state.chats.chat1.at(-1).content.includes('(https://www.pornpics.com/?q=red+satin+g-string+ass)'));
+        await waitFor(() => state.chats.chat1.at(-1).extra?.handyViewing?.links.some(l => l.url.endsWith('search=red+satin+thong')), 'video search in saved reply');
+        assert.ok(state.chats.chat1.at(-1).extra.handyViewing.links.some(l => l.url.endsWith('?q=red+satin+g-string+ass')));
+        const linked = state.chats.chat1.at(-1);
+        assert.ok(!linked.content.includes('https://'), 'link metadata preserves the original body');
+        await pg.evaluate(id => {
+            const bubble = document.createElement('article'); bubble.dataset.messageId = id;
+            document.querySelector('#app').append(bubble);
+        }, linked.id);
+        const selector = `[data-message-id="${linked.id}"] [data-handy-viewing]`;
+        await waitFor(async () => (await pg.locator(selector).count()) === 2, 'links on the originating bubble');
+        const original = linked.content; linked.content = 'Edited reply without a search.';
+        await pg.evaluate(() => fetch('/api/chats/chat1/messages?limit=8').then(r => r.json()));
+        await waitFor(async () => (await pg.locator(selector).count()) === 0, 'edited reply drops stale links');
+        linked.content = original;
+        await pg.evaluate(() => fetch('/api/chats/chat1/messages?limit=8').then(r => r.json()));
+        await waitFor(async () => (await pg.locator(selector).count()) === 2, 'links restored from saved metadata');
         assert.equal(await pg.locator('#handy_videos a').count(), 0);
         assert.match(await pg.textContent('#handy_game'), /drawer \d+/);
         await pg.click('#handy_panel [data-fb="finish"]');
@@ -639,6 +681,7 @@ try {
         await pg.click('#handy-st-settings .handy-st-close');
     });
     await step('cast, triggers, confessions, story mode, voice and heart rate all work in Marinara', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         const G = (f, a) => pg.evaluate(f, a);
         const turn = async (content, user = 'go') => {
             state.next = { mode: 'new', content };
@@ -686,6 +729,7 @@ try {
         await pg.click('#handy_settings_btn'); await pg.uncheck('#handy_voice_on'); await pg.click('#handy_hr_disconnect'); await pg.click('#handy-st-settings .handy-st-close');
     });
     await step('settings open in a window; Test connection works; ST-only options are hidden', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         await pg.click('#handy_settings_btn');
         assert.ok(await pg.isVisible('#handy-st-settings #handy_key'));
         assert.equal(await pg.isVisible('#handy_auto'), false);
@@ -700,6 +744,7 @@ try {
         await pg.screenshot({ path: path.join(root, 'tests', 'marinara_settings.png') });
     });
     await step('pictures: she sends pictures drawn by Marinara\'s image connection, saved and attached to her message', async () => {
+        if (await pg.isVisible('#handy_resume')) await pg.click('#handy_resume');
         const G = (f, a) => pg.evaluate(f, a);
         const turn = async (content) => {
             state.next = { mode: 'new', content };
@@ -867,7 +912,7 @@ try {
         await turn('She is for you. <handy act="handjob" her="Dana" img="posing in lingerie for him"/>');
         await waitFor(() => pics() === n + 1, 'cuckqueen picture');
         assert.equal(state.pictures.at(-1).referenceImages?.length, 1, 'her ❤ picture carries over');
-        assert.match(lastEntry(), /When you pick the other woman for him, SHOW her/);
+        assert.match(lastEntry(), /Introduce the other woman with a recognizable face/);
         // turned off: no instructions, no pictures
         await openSettings(); await pg.uncheck('#handy_img_on'); await pg.click('#handy-st-settings .handy-st-close');
         n = pics();
@@ -885,6 +930,7 @@ try {
         await pg.evaluate(() => { const d = document.createElement('div'); d.dataset.messageId = 'bridge-msg'; d.style.cssText = 'width:400px;height:40px'; d.textContent = 'her message'; document.getElementById('app').append(d); });
         state.next = { mode: 'new', content: 'Look at this. <pics="sleeping drunk redhead in stockings"/>' };
         await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', userMessage: 'show me' }));
+        await pg.evaluate(id => { document.querySelector('[data-message-id="bridge-msg"]').dataset.messageId = id; }, state.chats.chat1.at(-1).id);
         await waitFor(() => bridgeQueries.length === 1, 'bridge asked', 4000);
         assert.equal(bridgeQueries[0], 'redhead in stockings', 'minor and non-consent words removed before searching');
         await waitFor(async () => /Could not retrieve image/.test(await pg.textContent('figure[data-handy-image-poc]').catch(() => '')), 'bridge failure shown');
@@ -915,7 +961,7 @@ try {
         await pg.click('#handy_stop');
         await waitFor(async () => !(await running()), 'STOP');
     });
-    await step('recreates the lorebook if it was deleted', async () => {
+    await step('recreates the chat book when its next update finds it deleted', async () => {
         state.lorebooks.length = 0; state.entries.length = 0;
         await pg.evaluate(() => window.sendTurn({ chatId: 'chat1', userMessage: 'again' }));
         assert.ok(state.generations.at(-1).entry?.content.includes('[Device control'));

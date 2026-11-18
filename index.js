@@ -123,11 +123,45 @@ const signed1 = (v) => { const x = num(v); return x === undefined ? undefined : 
 //  - STOP never waits in that line: it goes out immediately, and bumping `epoch` makes any start that
 //    is still in progress, or still waiting its turn, abandon itself.
 let epoch = 0;
+const pauseKey = 'handy-adaptive:user-paused';
+let paused = false, stopGeneration = 0;
+try { paused = sessionStorage.getItem(pauseKey) === '1'; } catch { /* storage unavailable */ }
+let direction = '', hold = false, previousMoment = null, currentMoment = null;
+function userPause(reason) {
+    stopGeneration++;
+    paused = true; hold = false; direction = '';
+    try { sessionStorage.setItem(pauseKey, '1'); } catch { /* in-memory pause still applies */ }
+    const done = stopAll(reason);
+    ui.refresh(); updatePrompt();
+    return done;
+}
+function resumeMotion() {
+    if (paused) stopGeneration++;
+    paused = false;
+    try { sessionStorage.removeItem(pauseKey); } catch { /* in-memory state is authoritative */ }
+    lastActivity = Date.now(); ui.refresh(); updatePrompt();
+}
+function steer(choice) {
+    if (paused || !S().enabled) return;
+    if (!['hold','surprise','back'].includes(choice) || (choice === 'back' && !previousMoment)) return;
+    lastActivity = Date.now();
+    hold = choice === 'hold';
+    clearBeats();
+    if (hold) { clearTimeout(actEngine.durTimer); climax.cancel(); }
+    direction = hold ? 'Hold this mood and pace until the user chooses a change.' :
+        choice === 'surprise' ? 'Choose one fresh change within the current scene and user settings.' :
+        'Return to this recent moment: ' + previousMoment.description;
+    if (choice === 'back' && previousMoment.intent && actEngine.running) {
+        const preset = structuredClone(previousMoment.intent);
+        enqueue(() => actEngine.apply({ act: preset.act, preset }));
+    }
+    ui.refresh(); updatePrompt();
+}
 let sessionChecked = false;   // the setup has been confirmed (or calibrated) since SillyTavern loaded
 let chain = Promise.resolve();
 function enqueue(fn) {
     const my = epoch;
-    const p = chain.then(() => (my === epoch ? fn() : undefined));
+    const p = chain.then(() => (my === epoch && !paused ? fn() : undefined));
     chain = p.catch((e) => console.warn('[Handy]', e));
     return p;
 }
@@ -1270,7 +1304,7 @@ const images = {
     on() { return !!(S().imageGen && this.host()); },
     session: { subjects: {}, shots: [] },   // this game session's women and pictures
     busy: null, last: 0, notes: [], status: '',
-    reset() { this.session = { subjects: {}, shots: [] }; this.notes = []; this.status = ''; ui.refresh(); },
+    reset() { this.busy = null; this.last = 0; this.session = { subjects: {}, shots: [] }; this.notes = []; this.status = ''; ui.refresh(); },
     gap() { return clamp(num(S().imageGapSec) || 0, 0, 3600) * 1000; },
     waitSec() { return Math.max(0, Math.ceil((this.last + this.gap() - Date.now()) / 1000)); },
     subject(name) {
@@ -1363,7 +1397,7 @@ const images = {
         if (!visual.outfit && !visual.panties && !a.scene) Object.assign(visual, sub.wardrobe);
         sub.wardrobe = { outfit: visual.outfit, panties: visual.panties };
         const ref = msg?.extra?.marinara || {};
-        return this.draw({ sub, what, ...visual, refs, chatId: ref.chatId, messageId: ref.messageId });
+        return this.draw({ sub, what, ...visual, refs, chatId: ref.chatId, messageId: ref.messageId, swipeIndex: ref.swipeIndex });
     },
     prompt({ sub, what, panties, outfit, scene, watch, framing, refs }) {
         const look = sub.look || 'a beautiful woman';
@@ -1382,22 +1416,38 @@ const images = {
     },
     async draw(job) {
         const host = this.host(); if (!host) return;
+        const session = this.session;
         this.busy = job.sub.name; this.last = Date.now(); this.status = `🖼 drawing ${job.sub.name}…`; ui.refresh();
         try {
             const prompt = this.prompt(job);
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
             let url = out.dataUrl, galleryId = null, warning = '';
-            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
+            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, swipeIndex: job.swipeIndex, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
+            if (session !== this.session) return;
             const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, referenceWarning: job.refs.length && !out.usedReferences ? out.warning : '', ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
+            this.notes.push('The picture of ' + job.sub.name + (warning ? ' is in the panel; check delivery before describing it.' : ' is ready. React to the user’s choice on the next turn.'));
+            this.notes = this.notes.slice(-4);
             this.status = '';
             const detail = [warning, out.warning].filter(Boolean).join(' ');
             if (detail) { this.status = `🖼 ${detail}`; toast(detail, 'warning'); }
         } catch (e) {
+            if (session !== this.session) return;
             this.status = `🖼 picture failed: ${e.message}`;
             this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);
             console.warn('[Handy] picture failed', e);
-        } finally { this.busy = null; this.last = Date.now(); ui.refresh(); updatePrompt(); }
+        } finally { if (session === this.session) { this.busy = null; this.last = Date.now(); ui.refresh(); updatePrompt(); } }
+    },
+    editNote(id) {
+        const shot = this.session.shots.find(x => x.id === id);
+        if (!shot) return;
+        const member = cast.all()[shot.k], sub = this.session.subjects[shot.k];
+        const value = window.prompt('What caught your attention? Leave blank to clear.', member?.pictureNote || sub?.pictureNote || '');
+        if (value === null) return;
+        const note = String(value).trim().slice(0, 160);
+        if (member) member.pictureNote = note;
+        if (sub) sub.pictureNote = note;
+        save(); updatePrompt();
     },
     rate(id, kind) {
         const sh = this.session.shots.find((x) => x.id === id); if (!sh) return;
@@ -1433,6 +1483,11 @@ const images = {
         const ss = Object.values(this.session.subjects), pr = S().profile.pictures;
         const avail = this.busy ? `a picture of ${this.busy} is being drawn right now (don't ask for another yet)` : this.waitSec() ? `the next picture is possible in about ${this.waitSec()} s` : 'you may send a picture now';
         const L = [`- PICTURES: you can show him a picture of a named, invented adult cast member. On request or at a visual turning point, include one <handy her="CAST NAME" img="ONE VISIBLE CHANGE"/>. Use her actual cast name. First portrait: add look="fixed facial features, hair, eyes, distinguishing detail, age 25+". Later portraits: keep her identity; specify the current outfit, action and framing. Never write <pics=…> for a generated picture. Exclude the speaker, user and real people. At most one picture per reply; ${avail}.`];
+        for (const x of ss.slice(-4)) {
+            const memory = x.pictureNote || cast.all()[x.k]?.pictureNote;
+            if (memory) L.push(`- The user remembers ${x.name} for ${JSON.stringify(memory)}.`);
+        }
+        if (game.active && ['panties','cuckqueen'].includes(game.mode)) L.push('For a reveal, offer one visual clue and ask which detail to show. Wait for the choice, then request the image. While drawing, keep talking without claiming it arrived. On failure continue from the description.');
         if (game.active && this.GAME_LINES[game.mode]) L.push(`- ${this.GAME_LINES[game.mode]}`);
         if (ss.length) L.push(`- Pictured this session: ${ss.map((x) => `${x.name}${x.refs.length ? ' (look locked to a picture he ❤)' : ''}${x.loved ? `, ❤${x.loved}` : ''}${x.nope ? `, 👎${x.nope}` : ''}`).join('; ')}. Keep showing the same women unless the game calls for someone new.`);
         if (pr?.nope?.length) L.push(`- Picture ideas to vary: ${pr.nope.slice(0, 3).join('; ')}.`);
@@ -1771,7 +1826,7 @@ const game = {
         this.nudge(`${this.story ? 'Story mode' : GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
     spin() {
-        if (!this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
+        if (hold || !this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
         if (this.scenes >= 2 && play.rand() < 0.25 && !secrets.session.has('double-spin')) {
             const others = Object.keys(LIB().acts).filter((a) => a !== actEngine.intent.act && a !== 'teasing');
             const b = others[Math.floor(play.rand() * others.length)];
@@ -2018,7 +2073,7 @@ const game = {
         return [
             `PANTY GAME — ON (a fantasy between consenting adults: the women are porn performers and women you invent; never real people he knows, and never use the names of real people he mentions; stay in character):`,
             `- It is all about panties. Show him porn and describe women in panties, and put panties="CUT, FABRIC, COLOR" (e.g. panties="black lace thong", "white cotton cheeky") on your tags with scene=, watch= and the matching act. Every pair named goes in his drawer, and you learn which cuts, fabrics and colors get him.`,
-            ...(images.on() ? [`- Show, don't just tell: when you describe a woman's pair, SEND HIM A PICTURE of her in it: on your <handy …/> tag put her="HER NAME", img="WHAT THE PICTURE SHOWS" and panties="CUT, FABRIC, COLOR" (the first time she's pictured, also look="HER FIXED LOOK"). Not pics=: that is only a search link.`] : S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
+            ...(images.on() ? [`- Show, don't just tell: when he chooses a detail or requests the reveal, SEND HIM A PICTURE of her in it: on your <handy …/> tag put her="HER NAME", img="WHAT THE PICTURE SHOWS" and panties="CUT, FABRIC, COLOR" (the first time she's pictured, also look="HER FIXED LOOK"). Not pics=: that is only a search link.`] : S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
             `- Appreciate every detail out loud: how the cut frames her ass, thighs and hips, how it rides up or digs in, the fabric (lace, satin, silk, cotton, sheer mesh): how it looks, clings and feels, the color, the wet spot, and why a woman picks that pair for a man.`,
             `- Make him imagine them used on him: slipped off warm, wrapped around his cock, stroking him off, soaked through. Tell him how women wish they had his cum in their panties and in their pussy.`,
             `- Sometimes take him into the office fantasy: invent women at a workplace (names, roles, little glimpses) who each picked a special pair just for him today. They are invented characters only.`,
@@ -2135,7 +2190,7 @@ const play = {
     rand: Math.random,   // (tests pin it)
     later(ms, fn) { const t = setTimeout(() => { if (game.active) fn(); }, ms); this.timers.push(t); },
     // a timed surprise happens only while the device is moving: it never restarts what you stopped
-    whileMoving(ms, fn) { this.later(ms, () => { if (anyRunning()) fn(); }); },
+    whileMoving(ms, fn) { this.later(ms, () => { if (!hold && anyRunning()) fn(); }); },
     clear() { for (const t of this.timers) clearTimeout(t); this.timers = []; },
     // Each game's own state, reset at the start.
     onStart(mode) {
@@ -2362,7 +2417,7 @@ const cast = {
         const r = this.rank().slice(0, 6);
         const intro = `- THE CAST: invented women who come back across games (never real people). Bring one on with her="NAME" on a tag, and the first time add about="BODY, ROLE, PERSONALITY" (e.g. about="curvy redhead from accounting, shy until she isn't"). Reuse them: put the same woman in different games, in the pairs he liked on her. Add a new one now and then.`;
         if (!r.length) return intro;
-        const line = (x) => `${x.c.name}${x.c.about ? ` (${x.c.about})` : ''}${x.c.photo ? ' [has a picture he ❤]' : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
+        const line = (x) => `${x.c.name}${x.c.pictureNote ? ` (detail the user remembers: ${JSON.stringify(x.c.pictureNote)})` : ''}${x.c.about ? ` (${x.c.about})` : ''}${x.c.photo ? ' [has a picture he ❤]' : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
         return `${intro} So far, his favorites first: ${r.map(line).join('; ')}.`;
     },
 };
@@ -2810,13 +2865,12 @@ function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg || !msg.is_user) return;
     lastActivity = Date.now();   // you are here and taking part: the idle timer and the learning both count it
+    if (S().enabled && isUserStop(msg.mes)) {
+        logEvent('stop'); userPause('you said stop'); return;
+    }
+    if (paused && /^resume(?: motion)?[.!]?$/i.test(msg.mes.trim())) { resumeMotion(); return; }
     if (confess.waiting && S().enabled) { confess.answer(msg.mes); updatePrompt(); }
     if (!S().enabled || !(anyActive() || beats.length)) return;
-    if (isUserStop(msg.mes)) {
-        logEvent('stop');
-        stopAll('you said stop');
-        return updatePrompt();   // the reply being written now should already know
-    }
     const cue = S().detectClimax && !calib.active ? climaxCue(msg.mes) : null;
     if (cue === 'finish') finishSignal(true);
     else if (cue === 'close') closeSignal(true);
@@ -2938,7 +2992,10 @@ const calib = {
     },
     recal() { if (this.step === -1) { this.pending = null; this.start(); } },   // the waiting command is dropped
     async start() {
-        await stopAll();
+        if (paused) return toast('Resume motion before starting calibration.', 'info');
+        const stopping = stopAll(), startingEpoch = epoch;
+        await stopping;
+        if (paused || epoch !== startingEpoch) return;
         const my = epoch; this.my = my;
         this.active = true; this.step = 0; this.tip = null; this.base = null; this.at = null; this.moving = false;
         // Quick re-check: start from last session's tip, so a small change of height or angle is a few taps.
@@ -3040,20 +3097,16 @@ function actLine(name, e) {
 function profileText() {
     const s = S(), lib = LIB(), pr = s.profile;
     const L = [];
-    L.push(`[Device control: you control the user's Handy stroker toy. Write a tag in your reply whenever the physical action in the scene starts, changes or should build. Tags are hidden from the user and executed instantly.`);
-    L.push(`<handy act="ACT" intensity="0-1" depth="-1..1" variation="0-1" blend="ACT2:0.3" duration="seconds"/>`);
-    L.push(`- act = what is physically being done to the user's character right now. The device improvises realistic motion for that act from real examples, so describe the act — don't micromanage speed.`);
-    L.push(`- intensity: 0 = slow and gentle, 1 = frantic. Build it gradually as the scene escalates and drop it for teasing or after a peak.`);
-    L.push(`- depth: -1 = deep/at the base, +1 = shallow/at the tip. variation: 0 = mechanical, 1 = wild and unpredictable (omit to use the user's learned taste).`);
-    L.push(`- blend mixes in a little of other acts for transitions or creative combinations (e.g. a blowjob with handjob: act="blowjob" blend="handjob:0.4").`);
-    L.push(`- <handy stop/> stops. Don't emit a tag if nothing physical changed.`);
-    L.push(`- A reply may hold several tags. Put each one right where that moment happens in your text: they play in order as the user reads (e.g. a slow start, a tag mid-reply where it speeds up, another where it eases off).`);
+    L.push('[Device control: use hidden <handy act="ACT" intensity="0-1" depth="-1..1" variation="0-1" blend="ACT2:0.3" duration="seconds"/> tags at changes of action. Depth -1 is base, +1 tip. Space tags through the reply at reading pace. <handy stop/> stops.');
+    if (paused) L.push('PAUSED BY USER. Continue conversation without motion until the user resumes.');
+    if (direction) L.push(direction);
     if (ctx().groupId && s.charStyles) L.push(`- When two characters act on the user together, add with="THE OTHER CHARACTER'S NAME" to the tag (and duet="together" if they move as one; otherwise they take turns). The device then plays both of their styles. Leave it out when one character acts alone.`);
     L.push(`- <handy climax="30"/> pushes the user over the edge: a steady build to a peak over that many seconds (10-90), using what has made them finish before. Use it when the scene calls for the user to cum, not before.`);
     L.push(`- If the user is watching porn while you play, add scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" to a tag whenever you direct their attention: that is how you learn what gets them off.`);
     L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
-    for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
+    L.push(Object.keys(lib.acts).join(', '));
+    for (const k of new Set([actEngine.intent.act, ...pr.log.slice(-3).map(e => e.act)])) if (lib.acts[k]) L.push(actLine(k, lib.acts[k]));
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     const vt = videos.text();
     if (vt) L.push(vt);
@@ -3131,12 +3184,15 @@ function handleMessage(id) {
     if (S().enabled) { triggers.heard(msg.mes); voice.speak(msg.mes); }
     pending = [];
     images.notes = [];
-    clearBeats();   // a new reply replaces whatever was still waiting from the last one
-    if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
+    const motionKeys = ['act','pattern','intensity','depth','blend','variation','climax','game','favorite','move'];
+    const motionTag = a => isStop(a) || motionKeys.some(k => a[k] !== undefined);
+    const cues = proseCues(msg.mes);
+    if (!hold && (tags.some(t => motionTag(parseAttrs(t[1]))) || (!tags.length && cues.length))) clearBeats();
+    if (!paused && !hold && !tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
         // No tag: follow what the reply describes, each change when you'd read it.
         const wpm = num(S().readWpm), text = msg.mes;
         let tot = 0;
-        for (const c of proseCues(text)) {
+        for (const c of cues) {
             if (c.di) { if (Math.abs(tot + c.di) > 0.31) continue; tot += c.di; }
             const delay = wpm > 0 ? Math.min(180000, ((text.slice(0, c.idx).match(/\S+/g) || []).length / wpm) * 60000) : 0;
             beats.push(setTimeout(() => runBeat({ _cue: true, ...c }), Math.max(delay, 50)));
@@ -3152,6 +3208,7 @@ function handleMessage(id) {
         const w0 = wordsTo(tags[0].index);
         for (const t of tags) {
             const a = parseAttrs(t[1]);
+            if (paused || (hold && !isStop(a) && !/^(end|over|deny|denied)$/.test(a.game || '') && motionTag(a))) continue;
             const delay = wpm > 0 ? Math.min(180000, ((wordsTo(t.index) - w0) / wpm) * 60000) : 0;
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
@@ -3166,6 +3223,18 @@ function handleMessage(id) {
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
     }
+    const detail = tags.map(t => parseAttrs(t[1])).find(a => a.img || a.scene || a.watch || a.act);
+    if (detail && !paused && !hold) {
+        const description = [detail.her || detail.girl, detail.scene, detail.watch, detail.outfit || detail.panties, detail.img, detail.act].filter(v => typeof v === 'string').join(', ').slice(0, 450);
+        if (description && description !== currentMoment?.description) {
+            previousMoment = currentMoment;
+            const intent = actEngine.running || LIB().acts[detail.act] ? { ...structuredClone(actEngine.intent) } : null;
+            if (intent && LIB().acts[detail.act]) intent.act = detail.act;
+            if (intent && unit01(detail.intensity) !== undefined) intent.intensity = unit01(detail.intensity);
+            currentMoment = { description, intent };
+        }
+        if (direction && !hold) direction = '';
+    }
     images.fromReply(tags.map((t) => parseAttrs(t[1])), msg);
     chars.speaker = null;
     updatePrompt();
@@ -3173,7 +3242,7 @@ function handleMessage(id) {
 // <handy stop/>, and the ways models say the same thing through act/pattern.
 const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 'string' && /^(stop|stopped|none|off)$/i.test(v.trim()) && !LIB().acts[v.trim().toLowerCase()]);
 function runCommand(a) {
-    if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
+    if (paused || !S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
     if (a.her || a.girl || a.about || a.look) cast.meet(a);
     if (a.trigger && a.trigger !== true) triggers.add(a.trigger, game.active ? game.mode : null);
@@ -3439,7 +3508,7 @@ const ui = {
 <div id="handy_panel">
   <div class="handy-head"><b>Handy</b><span id="handy_live"></span><i id="handy_collapse" class="fa-solid fa-chevron-down"></i></div>
   <div class="handy-body">
-    <div id="handy_stop" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP</div>
+    <div id="handy_stop" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP</div><button id="handy_resume">Paused by you · Resume motion</button><div class="handy-row"><button data-steer="hold">Hold here</button><button data-steer="surprise">Surprise me</button><button data-steer="back">Bring that back</button></div>
     <div class="handy-grid">${fb}</div>
     <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div><div id="handy_calib_btn" class="menu_button" title="Calibrate tip and base (for when the Handy is set up differently)"><i class="fa-solid fa-ruler-vertical"></i></div></div>
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
@@ -3491,20 +3560,25 @@ const ui = {
         $('#handy_calib_cancel').on('click', () => stopAll('calibration cancelled'));
         // First in line (window, capture phase): while calibrating, ↑/↓ only move the sleeve. Otherwise the chat
         // box would see them too (↑ in an empty message box edits your last message in SillyTavern and Marinara).
-        window.addEventListener('keydown', (e) => {
+        const jogKey = (e) => {
             if (!calib.active || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
             e.preventDefault(); e.stopImmediatePropagation(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
-        }, true);
+        };
+        window.addEventListener('keydown', jogKey, true);
+        ctx().onCleanup?.(() => window.removeEventListener('keydown', jogKey, true));
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_panel').on('click', '[data-pic-rate]', function (e) { e.stopPropagation(); images.rate(this.closest('[data-pic]').dataset.pic, this.dataset.picRate); });
         $('#handy_panel').on('click', '[data-pic] img', function () { const u = this.getAttribute('src'); if (u && !u.startsWith('data:')) window.open(u, '_blank', 'noopener'); });
-        $('#handy_stop').on('click', () => stopAll('stop button'));
+        $('#handy_stop').on('click', () => userPause('stop button'));
+        $('#handy_resume').on('click', resumeMotion);
+        $('#handy_panel').on('click', '[data-steer]', function () { steer(this.dataset.steer); });
+        $('#handy_panel').on('click', '[data-picture-note]', function () { images.editNote(this.closest('[data-pic]').dataset.pic); });
         $('#handy_panel').on('click', '[data-use]', function () { play.use(this.dataset.use); });
         $('#handy_panel').on('click', '[data-load]', function () { focus.rateLoad(this.dataset.load); });
         $('#handy_panel').on('click', '[data-dg]', function () { play.daddy(this.dataset.dg); });
         $('#handy_game_btn').on('click', () => { if (game.active) { const n = GAMES[game.mode]; game.end('quit'); game.nudge(`${n} ended.`); } else game.start($('#handy_game_mode').val() || 'edging'); });
         $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
-        $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
+        $('#handy_play').on('click', () => { if (paused) resumeMotion(); const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
         $('#handy_fav').on('click', saveFavorite);
         $('#handy_favs').on('change', function () { const f = S().profile.favorites[+this.value]; if (this.value !== '' && f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
@@ -3551,7 +3625,7 @@ const ui = {
         const vl = S().videoLinks && !ctx().handyImages ? videos.list.slice(-3).reverse() : [];
         $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${v.icon} ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
         const shots = images.on() ? images.session.shots.slice(-4).reverse() : [];
-        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}">${p.referenceWarning ? `<span class="handy-pic-warning" title="${escA(p.referenceWarning)}">Text only</span>` : ''}<div class="handy-pic-rate"><span data-pic-rate="love" title="Keep her look" aria-label="Keep her look">❤ Keep look</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
+        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}">${p.referenceWarning ? `<span class="handy-pic-warning" title="${escA(p.referenceWarning)}">Text only</span>` : ''}<div class="handy-pic-rate"><span data-pic-rate="love" title="Keep her look" aria-label="Keep her look">❤ Keep look</span><span data-picture-note title="Edit what caught your attention">✎</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
         if ($('#handy_pictures').data('h') !== ph) $('#handy_pictures').html(ph).data('h', ph);
         $('#handy_pictures').toggle(shots.length > 0);
         $('#handy_pic_status').text(images.on() ? images.status : '').toggle(!!(images.on() && images.status));
@@ -3559,7 +3633,9 @@ const ui = {
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
-        if (!anyRunning()) $('#handy_live').text('stopped');
+        $('#handy_resume').toggle(paused);
+        $('#handy_panel [data-steer="back"]').prop('disabled', paused || !previousMoment);
+        if (!anyRunning()) $('#handy_live').text(paused ? 'Paused by you' : 'stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
         const pRec = cur_r ? chars.partnerRec() : null;
         $('#handy_who').text(cur_r ? `Style · ${chars.summary(cur_r)}${pRec ? ` + ${pRec.name} (${chars.duet === 'together' ? 'as one' : 'taking turns'})` : ''}` : '');
@@ -3656,16 +3732,23 @@ jQuery(() => {
     });
     // A game that hasn't had a reply yet goes with you to the new chat: in Marinara the extension only learns
 // which chat you're in when you send a message, so "open a chat, press Start, say hi" must keep the game.
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; images.reset(); edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
-    window.addEventListener('beforeunload', () => {
+    c.eventSource.on(ev.CHAT_CHANGED, () => { hold = false; direction = ''; currentMoment = previousMoment = null; cast.cur = null; stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; images.reset(); edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    const escKey = e => { if (e.key === 'Escape' && S().enabled && S().escStops && !paused) userPause('Esc'); };
+    document.addEventListener('keydown', escKey);
+    const unloading = () => {
         if (!anyActive()) return;
         epoch++;
         api.call('PUT', '/mode', { mode: 0 }, true).catch(() => {});
         api.hampStop(true).catch(() => {}); api.hsspStop(true).catch(() => {});
         if (S().appId) api3.stop(true).catch(() => {});
+    };
+    window.addEventListener('beforeunload', unloading);
+    c.onCleanup?.(() => {
+        window.removeEventListener('beforeunload', unloading);
+        document.removeEventListener('keydown', escKey);
+        images.reset();
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => { arousal.tick(); focus.tick(1); game.tick(1); }, 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, images, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, images, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, userPause, resumeMotion, steer, stopGeneration: () => stopGeneration, refreshPrompt: updatePrompt, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });

@@ -1,4 +1,4 @@
-// Handy Adaptive v0.14.4 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
+// Handy Adaptive v0.15.0 for Marinara Engine. Built from https://github.com/RyuNinja00/handy-adaptive
 // (index.js, synth.js and charstyle.js unmodified + marinara/st-compat.js). Generated: do not edit.
 
 // ---- Marinara-managed timers: disabling the extension clears them all
@@ -108,12 +108,12 @@ const SillyTavern = {
         groupId: scene.groupId, name1: scene.name1, name2: scene.name2,
         setExtensionPrompt(key, value) { if (key === MODULE) { promptText = String(value || ''); schedulePromptSync(); } },
         executeSlashCommandsWithOptions: async () => { throw new Error('starting a reply from an extension is not available in Marinara'); },
-        handyImages: imageHost,
+        handyImages: imageHost, onCleanup: fn => marinara.onCleanup(fn),
     }),
 };
 
 // Characters and persona of a chat, shaped like SillyTavern's (avatar = a stable key for per-character styles)
-async function loadScene(chatId) {
+async function loadScene(chatId, ticket) {
     const chat = await mapi('GET', `/chats/${enc(chatId)}`).catch(() => ({}));
     const ids = (parseMaybe(chat.characterIds, []) || []).filter((x) => typeof x === 'string');
     const list = [];
@@ -128,6 +128,7 @@ async function loadScene(chatId) {
     }
     let name1 = 'User';
     if (chat.personaId) { try { name1 = (await mapi('GET', `/characters/personas/${enc(chat.personaId)}`))?.name || name1; } catch { /* default */ } }
+    if (ticket !== navigation) return;
     scene.chatId = chatId;
     scene.characters.splice(0, scene.characters.length, ...list);
     scene.characterId = list.length === 1 ? 0 : undefined;
@@ -142,57 +143,53 @@ function mirror(msg) {
 }
 
 // ---------------------------------------------------------------- AI instructions → managed lorebook entry
-const lore = { id: null, entryId: null, last: null, ok: null, error: '' };
+const lore = { ok: null, error: '' };
 let syncChain = Promise.resolve(), syncTimer = null;
-async function ensureLorebook() {
-    if (lore.id && lore.entryId) return;
-    let lb = asList(await mapi('GET', '/lorebooks')).find((l) => l.name === LORE_NAME);
-    if (!lb) {
-        lb = await mapi('POST', '/lorebooks', {
-            name: LORE_NAME,
-            description: 'Created and kept up to date by the Handy Adaptive extension: it tells the AI how to control your Handy. It is emptied automatically when the extension is off.',
-            isGlobal: true, enabled: true, tokenBudget: 8192, scanDepth: 1,
+const books = new Map();
+let legacyChecked = false;
+async function syncBook(chatId, text) {
+    let book = books.get(chatId);
+    if (book && book.last === text) return;
+    if (!book) {
+        const list = asList(await mapi('GET', '/lorebooks'));
+        if (!legacyChecked) {
+            const old = list.find(l => l.name === LORE_NAME && l.isGlobal);
+            if (old) await mapi('PATCH', `/lorebooks/${enc(old.id)}`, { enabled: false, isGlobal: false });
+            legacyChecked = true;
+        }
+        if (!chatId) return;
+        const name = `${LORE_NAME} · ${chatId}`;
+        const lb = list.find(l => l.name === name && l.chatId === chatId) || await mapi('POST', '/lorebooks', {
+            name, chatId, isGlobal: false, scope: { mode: 'specific', chatIds: [chatId] }, enabled: true, tokenBudget: 8192,
         });
-    } else if (!lb.isGlobal || !lb.enabled) {
-        await mapi('PATCH', `/lorebooks/${enc(lb.id)}`, { isGlobal: true, enabled: true });
-    }
-    let entry = asList(await mapi('GET', `/lorebooks/${enc(lb.id)}/entries`)).find((e) => e.name === LORE_ENTRY);
-    if (!entry) {
-        entry = await mapi('POST', `/lorebooks/${enc(lb.id)}/entries`, {
-            name: LORE_ENTRY, content: '', constant: true, enabled: false, position: 2, depth: 1, role: 'system', order: 1,
+        const path = `/lorebooks/${enc(lb.id)}/entries`;
+        const entry = asList(await mapi('GET', path)).find(e => e.name === LORE_ENTRY) || await mapi('POST', path, {
+            name: LORE_ENTRY, constant: true, enabled: false, content: '', position: 2, depth: 1, role: 'system', order: 1,
             preventRecursion: true, excludeFromVectorization: true,
         });
+        book = { path: path + '/' + enc(entry.id), last: entry.enabled ? entry.content : '' };
+        books.set(chatId, book);
     }
-    lore.id = lb.id; lore.entryId = entry.id; lore.last = entry.enabled ? entry.content : '';
+    if (book.last !== text) {
+        await mapi('PATCH', book.path, { content: text, enabled: !!text });
+        book.last = text;
+    }
 }
-function syncPrompt({ force = false } = {}) {
+function syncPrompt(chatId = scene.chatId, text = promptText) {
     syncChain = syncChain.then(async () => {
-        const text = promptText;
-        const write = async () => {
-            await ensureLorebook();
-            if (force || text !== lore.last) {
-                await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`,
-                    { content: text, enabled: !!text, constant: true, position: 2, depth: 1, role: 'system' });
-                lore.last = text;
-            }
-        };
         try {
-            try { await write(); } catch {
-                lore.id = lore.entryId = lore.last = null;   // deleted or edited elsewhere: find or recreate it, once
-                await write();
-            }
-            if (lore.ok === false) compatToast('Handy: AI link restored', 'success');
+            try { await syncBook(chatId, text); }
+            catch { books.delete(chatId); await syncBook(chatId, text); }
             lore.ok = true; lore.error = '';
         } catch (e) {
-            lore.id = lore.entryId = lore.last = null;
-            if (lore.ok !== false) compatToast(`Handy couldn't update the AI instructions: ${e.message}`, 'error');
-            lore.ok = false; lore.error = e.message;
+            books.delete(chatId); lore.ok = false; lore.error = e.message;
+            compatToast(`Could not sync Handy instructions: ${e.message}`, 'warning');
         }
         refreshCompatStatus();
     });
     return syncChain;
 }
-function schedulePromptSync() { clearTimeout(syncTimer); syncTimer = setTimeout(syncPrompt, 400); }
+function schedulePromptSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncPrompt(), 400); }
 
 async function ensureHideRegex({ quiet = true } = {}) {
     try {
@@ -227,45 +224,100 @@ function isGenerateRequest(input, init) {
 }
 async function recent(chatId) {
     const list = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=8`);
-    return Array.isArray(list) ? list : [];
+    if (!Array.isArray(list)) throw new Error('Unreadable chat history');
+    return list;
 }
-// Persist generated search links with the originating reply. Keep the raw tags for swipes and continuations.
-async function appendViewingLinks(chatId, message, links) {
-    if (!links?.length) return;
-    const latest = (await recent(chatId)).find(row => row.id === message.id);
-    if (!latest || latest.content !== message.content || latest.activeSwipeIndex !== message.activeSwipeIndex) return;
-    const missing = links.filter(link => !latest.content.includes(link.url));
-    if (!missing.length) return;
-    const content = latest.content + '\n\n' + missing.map(link => link.markdown).join('\n\n');
-    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}`, { content });
-    handled.set(message.id, content);
-    // The app reloads its message cache later. Show links immediately on the original bubble.
-    const host = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
-    if (!host || scene.chatId !== chatId) return;
-    for (const link of missing) {
-        if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
-        const a = document.createElement('a');
-        a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-        a.textContent = `${link.icon} ${link.q} (${link.site} search)`;
-        const line = document.createElement('div');
-        line.append(a); host.append(line);
-        const timer = setInterval(() => {
-            if (line.isConnected && ![...host.querySelectorAll('a')].some(other => other !== a && other.href === a.href)) return;
-            line.remove(); clearInterval(timer);
-        }, 1500);
+// Viewing links are presentation metadata. Never replace an authored message to attach one.
+const viewingRows = new Map();
+function rememberLinks(chatId, row) {
+    const data = parseMaybe(row.extra, {})?.handyViewing;
+    if (Array.isArray(data?.links) && data.tags === tagSignature(row.content)) viewingRows.set(row.id, { chatId, links: data.links });
+    else viewingRows.delete(row.id);
+}
+function tagSignature(content) { return (String(content || '').match(/<handy\b[^>]*>/gi) || []).join(''); }
+function renderLinks() {
+    for (const host of document.querySelectorAll('[data-message-id]')) {
+        const entry = viewingRows.get(host.dataset.messageId);
+        const links = entry?.chatId === scene.chatId ? entry.links : [];
+        for (const line of host.querySelectorAll('[data-handy-viewing]')) {
+            if (!links.some(l => l.url === line.dataset.handyViewing)) line.remove();
+        }
+        for (const link of links) {
+            if (!/^https:\/\/(www\.pornhub\.com|xhamster\.com|www\.xvideos\.com|www\.pornpics\.com)\//.test(link.url)) continue;
+            if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
+            const a = document.createElement('a');
+            a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = `${link.q} (${link.site} search)`;
+            const line = document.createElement('div');
+            line.dataset.handyViewing = link.url; line.append(a); host.append(line);
+        }
     }
 }
-async function afterReply(res, chatId, before) {
-    try {   // wait for the streamed reply to finish
-        const reader = res?.body?.getReader();
-        if (reader) for (;;) { const { done } = await reader.read(); if (done) break; }
-    } catch { /* aborted or disconnected: the reply may still have been saved */ }
+async function appendViewingLinks(chatId, message, links) {
+    if (!links?.length) return;
+    const data = { tags: tagSignature(message.content), links };
+    const swipe = Number.isInteger(message.activeSwipeIndex) ? '?swipeIndex=' + message.activeSwipeIndex : '';
+    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}/extra${swipe}`, { handyViewing: data });
+    if (chatId === scene.chatId) { viewingRows.set(message.id, { chatId, links }); renderLinks(); }
+}
+let navigation = 0, turn = 0, selected = null, loading = Promise.resolve();
+function selectChat(chatId) {
+    if (selected === chatId) return loading;
+    const old = selected;
+    selected = chatId; scene.chatId = null;
+    const ticket = ++navigation;
+    if (old) syncPrompt(old, '');
+    eventSource.emit(eventTypes.CHAT_CHANGED, chatId);
+    previews.clear(); viewingRows.clear(); imagePreviewSeen.clear(); lastImagePreviewAt = 0;
+    document.querySelectorAll('[data-handy-image-poc], [data-handy-viewing]').forEach(el => el.remove());
+    loading = chatId ? loadScene(chatId, ticket).then(() => {
+        if (ticket !== navigation) return;
+        window.handyAdaptive?.refreshPrompt();
+        recent(chatId).then(rows => {
+            if (ticket !== navigation) return;
+            rows.forEach(row => rememberLinks(chatId, row));
+            renderLinks();
+        }).catch(() => {});
+    }) : Promise.resolve();
+    return loading;
+}
+const composerSelector = '[data-chat-composer][data-chat-id]';
+let hadComposer = false, seenComposer = false;
+function observeChat() {
+    const composer = document.querySelector(composerSelector);
+    if (composer || hadComposer) selectChat(composer?.dataset.chatId || null);
+    hadComposer = !!composer;
+    if (composer) seenComposer = true;
+}
+async function afterReply(res, chatId, before, current) {
+    const saved = new Map();
+    let completed = false;
+    try {
+        const reader = res.body.getReader(), decoder = new TextDecoder();
+        let pending = '';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            pending += decoder.decode(value, { stream: true });
+            const lines = pending.split('\n'); pending = lines.pop();
+            for (const line of lines) {
+                if (!line.startsWith('data:')) continue;
+                const event = JSON.parse(line.slice(5));
+                if (event.type === 'done') completed = true;
+                const row = event.data;
+                if (event.type === 'message_saved' && row?.role === 'assistant' && (!row.chatId || row.chatId === chatId))
+                    saved.set(row.id, row.content);
+            }
+        }
+    } catch { return; }
+    if (!completed || !saved.size || !current()) return;
     await new Promise((r) => setTimeout(r, 400));
-    if (chatId !== scene.chatId) return;
+    if (!current()) return;
     let msgs;
     try { msgs = await recent(chatId); } catch (e) { return console.warn('[Handy] could not read the reply', e); }
     for (const m of msgs) {
-        if (!m || m.role === 'user' || m.role === 'system' || typeof m.content !== 'string') continue;
+        if (!current()) return;
+        if (!m || !saved.has(m.id) || m.role !== 'assistant' || typeof m.content !== 'string' || (saved.get(m.id) && saved.get(m.id) !== m.content)) continue;
         const old = handled.has(m.id) ? handled.get(m.id) : before.get(m.id);
         if (old === m.content) continue;
         handled.set(m.id, m.content);
@@ -273,7 +325,7 @@ async function afterReply(res, chatId, before) {
         const text = old && m.content.startsWith(old) ? m.content.slice(old.length) : m.content;   // Continue: only the new part
         const ch = scene.characters.find((c) => c.id === m.characterId);
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
-            original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id } } });
+            original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id, swipeIndex: m.activeSwipeIndex } } });
         eventSource.emit(eventTypes.MESSAGE_RECEIVED, idx);
         try { await appendViewingLinks(chatId, m, scene.chat[idx]?.extra?.marinara?.links); }
         catch (e) { compatToast(`Could not add the viewing link to this reply: ${e.message}`, 'warning'); }
@@ -281,27 +333,48 @@ async function afterReply(res, chatId, before) {
     while (handled.size > 500) handled.delete(handled.keys().next().value);
 }
 async function hookedFetch(input, init) {
-    if (!isGenerateRequest(input, init)) return nativeFetch.apply(window, arguments);
+    if (!isGenerateRequest(input, init)) {
+        const url = new URL(typeof input === 'string' ? input : input?.url || String(input), location.href);
+        const path = url.origin === location.origin && /^\/api\/chats\/([^/]+)\/messages(?:\/([^/]+))?$/.exec(url.pathname);
+        const res = await nativeFetch.apply(window, arguments);
+        if (path && res.ok) {
+            const chatId = decodeURIComponent(path[1]);
+            res.clone().json().then(result => {
+                if (chatId !== selected) return;
+                for (const row of Array.isArray(result) ? result : [result]) if (row?.id) rememberLinks(chatId, row);
+                renderLinks();
+            }).catch(() => {});
+        }
+        return res;
+    }
     let body;
     try { body = JSON.parse(init.body); } catch { return nativeFetch.apply(window, arguments); }
     const chatId = typeof body.chatId === 'string' ? body.chatId : null;
     if (!chatId || body.impersonate || body.turnGameBots) return nativeFetch.apply(window, arguments);
-    let before = new Map();
+    const composer = document.querySelector(composerSelector);
+    if ((!composer && (seenComposer || body.autonomous)) || (composer && composer.dataset.chatId !== chatId)) return nativeFetch.apply(window, arguments);
+    const generation = ++turn;
+    const loadingScene = selectChat(chatId), ticket = navigation;
+    let stopTicket = window.handyAdaptive?.stopGeneration();
+    const current = () => ticket === navigation && generation === turn && scene.chatId === chatId && stopTicket === window.handyAdaptive?.stopGeneration();
+    let before = null;
     try {
-        if (chatId !== scene.chatId) { previews.clear(); imagePreviewSeen.clear(); lastImagePreviewAt = 0; document.querySelectorAll('[data-handy-image-poc]').forEach((el) => el.remove()); await loadScene(chatId); eventSource.emit(eventTypes.CHAT_CHANGED, chatId); }
+        await loadingScene;
+        if (ticket !== navigation) return nativeFetch.apply(window, arguments);
         if (typeof body.userMessage === 'string' && body.userMessage.trim()) {
             const idx = mirror({ name: scene.name1, is_user: true, is_system: false, mes: body.userMessage, send_date: Date.now(), extra: {} });
             eventSource.emit(eventTypes.MESSAGE_SENT, idx);
+            if (/^resume(?: motion)?[.!]?$/i.test(body.userMessage.trim())) stopTicket = window.handyAdaptive?.stopGeneration();
         }
         // the AI must see this turn's instructions (don't hold the reply up for long)
-        await Promise.race([syncPrompt({ force: true }), new Promise((r) => setTimeout(r, 3000))]);
+        await syncPrompt();
         before = new Map((await recent(chatId)).map((m) => [m.id, m.content]));
     } catch (e) { console.warn('[Handy]', e); }
     const res = await nativeFetch.call(window, input, init);
-    if (res.ok) {
+    if (res.ok && before && current()) {
         let copy = null;
         try { copy = res.clone(); } catch { /* not cloneable */ }
-        afterReply(copy, chatId, before);
+        if (copy) afterReply(copy, chatId, before, current);
     }
     return res;
 }
@@ -514,7 +587,7 @@ const imageHost = {
         return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, warning, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
-    async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
+    async attach({ chatId, messageId, swipeIndex, dataUrl, prompt = '', title = '' }) {
         // Marinara permits data: in img-src, but its connect-src blocks fetch(dataUrl).
         const comma = dataUrl.indexOf(',');
         const match = /^data:(image\/[\w.+-]+);base64$/i.exec(dataUrl.slice(0, comma));
@@ -534,11 +607,13 @@ const imageHost = {
                 const msgs = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=30`);
                 const msg = (Array.isArray(msgs) ? msgs : []).find((x) => x.id === messageId);
                 if (!msg) throw new Error('The original message is no longer among the recent messages');
+                if (Number.isInteger(swipeIndex) && msg.activeSwipeIndex !== swipeIndex) throw new Error('The active reply changed while drawing');
                 const extra = parseMaybe(msg.extra, {}) || {};
                 const attachments = [...(Array.isArray(extra.attachments) ? extra.attachments : []),
                     { type: 'image', url: saved.url, prompt: String(prompt).slice(0, 2000), galleryId: saved.id, name: title || 'picture', filename: title || 'picture' }];
-                await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra`, { attachments });
-                previews.show(messageId, saved.url, title);
+                const swipe = Number.isInteger(swipeIndex) ? '?swipeIndex=' + swipeIndex : '';
+                await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(messageId)}/extra${swipe}`, { attachments });
+                if (chatId === scene.chatId) previews.show(messageId, saved.url, title);
             } catch (e) { return { url: saved.url, galleryId: saved.id, warning: `Picture saved in the Gallery but could not be attached to the reply (${e.message}).` }; }
         }
         return { url: saved.url, galleryId: saved.id };
@@ -572,14 +647,14 @@ const pictureQuery = (content) => {
     return null;
 };
 
-async function testInlineImage(query = null) {
+async function testInlineImage(query = null, messageId = null) {
     const status = settingsWin.find('#handy-st-image-status');
     const candidates = [
         '[data-message-id]', '[data-testid="message"]', '[data-testid="chat-message"]',
         '.chat-message', '.message', '[role="article"]',
     ];
-    let target = null;
-    for (const selector of candidates) {
+    let target = messageId ? document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`) : null;
+    for (const selector of messageId ? [] : candidates) {
         const matches = [...document.querySelectorAll(selector)].filter((el) =>
             !el.closest('#handy-st-settings, #handy_panel, #handy-toasts') &&
             el.getBoundingClientRect().width > 100 && el.getBoundingClientRect().height > 10);
@@ -647,7 +722,8 @@ function scheduleImagePreview(messageId, content) {
     if (!query || imagePreviewSeen.has(messageId) || Date.now() - lastImagePreviewAt < IMAGE_PREVIEW_COOLDOWN) return;
     imagePreviewSeen.add(messageId);
     lastImagePreviewAt = Date.now();
-    setTimeout(() => { if (extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query); }, 700);
+    const ticket = navigation;
+    setTimeout(() => { if (ticket === navigation && extensionSettings[MODULE].imagePreviewPoc) void testInlineImage(query, messageId); }, 700);
 }
 
 
@@ -672,10 +748,17 @@ jQuery(() => setTimeout(() => {
 // same way itself.)
 const onKeyCapture = (e) => {
     const h = window.handyAdaptive, s = extensionSettings[MODULE];
-    if (h && e.key === 'Escape' && s.escStops !== false && h.active?.()) h.stop('Esc');
+    if (h && e.key === 'Escape' && s.enabled !== false && s.escStops !== false) h.userPause('Esc');
 };
 window.addEventListener('keydown', onKeyCapture, true);
 
+let renderTimer = null;
+const observer = new MutationObserver(() => {
+    observeChat();
+    if (!renderTimer && viewingRows.size) renderTimer = setTimeout(() => { renderTimer = null; renderLinks(); }, 50);
+});
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-chat-id','data-message-id'] });
+observeChat();
 syncPrompt();
 ensureHideRegex();
 marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
@@ -683,14 +766,13 @@ marinara.log.info('Handy Adaptive loaded (SillyTavern compatibility layer)');
 marinara.onCleanup(async () => {
     if (window.fetch === hookedFetch) window.fetch = nativeFetch;
     window.removeEventListener('keydown', onKeyCapture, true);
+    navigation++; observer.disconnect(); clearTimeout(syncTimer); clearTimeout(renderTimer);
     try { await window.handyAdaptive?.stop?.('extension disabled'); } catch { /* best effort */ }
     clearTimeout(saveTimer); await persist();
-    try {   // leave the AI instructions empty so the model stops writing tags
-        await ensureLorebook();
-        await mapi('PATCH', `/lorebooks/${enc(lore.id)}/entries/${enc(lore.entryId)}`, { content: '', enabled: false });
-    } catch { /* best effort */ }
+    clearTimeout(syncTimer);
+    if (selected) await syncPrompt(selected, '');
     previews.clear(); clearInterval(previews.timer);
-    $('[data-handy-image-poc]').remove();
+    $('[data-handy-image-poc], [data-handy-viewing]').remove();
     $('#handy_panel, #handy_calib, #handy-st-settings, #handy-toasts').remove();
     if (ownToastr) delete window.toastr;
     delete window.handyAdaptive;
@@ -1350,11 +1432,45 @@ const signed1 = (v) => { const x = num(v); return x === undefined ? undefined : 
 //  - STOP never waits in that line: it goes out immediately, and bumping `epoch` makes any start that
 //    is still in progress, or still waiting its turn, abandon itself.
 let epoch = 0;
+const pauseKey = 'handy-adaptive:user-paused';
+let paused = false, stopGeneration = 0;
+try { paused = sessionStorage.getItem(pauseKey) === '1'; } catch { /* storage unavailable */ }
+let direction = '', hold = false, previousMoment = null, currentMoment = null;
+function userPause(reason) {
+    stopGeneration++;
+    paused = true; hold = false; direction = '';
+    try { sessionStorage.setItem(pauseKey, '1'); } catch { /* in-memory pause still applies */ }
+    const done = stopAll(reason);
+    ui.refresh(); updatePrompt();
+    return done;
+}
+function resumeMotion() {
+    if (paused) stopGeneration++;
+    paused = false;
+    try { sessionStorage.removeItem(pauseKey); } catch { /* in-memory state is authoritative */ }
+    lastActivity = Date.now(); ui.refresh(); updatePrompt();
+}
+function steer(choice) {
+    if (paused || !S().enabled) return;
+    if (!['hold','surprise','back'].includes(choice) || (choice === 'back' && !previousMoment)) return;
+    lastActivity = Date.now();
+    hold = choice === 'hold';
+    clearBeats();
+    if (hold) { clearTimeout(actEngine.durTimer); climax.cancel(); }
+    direction = hold ? 'Hold this mood and pace until the user chooses a change.' :
+        choice === 'surprise' ? 'Choose one fresh change within the current scene and user settings.' :
+        'Return to this recent moment: ' + previousMoment.description;
+    if (choice === 'back' && previousMoment.intent && actEngine.running) {
+        const preset = structuredClone(previousMoment.intent);
+        enqueue(() => actEngine.apply({ act: preset.act, preset }));
+    }
+    ui.refresh(); updatePrompt();
+}
 let sessionChecked = false;   // the setup has been confirmed (or calibrated) since SillyTavern loaded
 let chain = Promise.resolve();
 function enqueue(fn) {
     const my = epoch;
-    const p = chain.then(() => (my === epoch ? fn() : undefined));
+    const p = chain.then(() => (my === epoch && !paused ? fn() : undefined));
     chain = p.catch((e) => console.warn('[Handy]', e));
     return p;
 }
@@ -2497,7 +2613,7 @@ const images = {
     on() { return !!(S().imageGen && this.host()); },
     session: { subjects: {}, shots: [] },   // this game session's women and pictures
     busy: null, last: 0, notes: [], status: '',
-    reset() { this.session = { subjects: {}, shots: [] }; this.notes = []; this.status = ''; ui.refresh(); },
+    reset() { this.busy = null; this.last = 0; this.session = { subjects: {}, shots: [] }; this.notes = []; this.status = ''; ui.refresh(); },
     gap() { return clamp(num(S().imageGapSec) || 0, 0, 3600) * 1000; },
     waitSec() { return Math.max(0, Math.ceil((this.last + this.gap() - Date.now()) / 1000)); },
     subject(name) {
@@ -2590,7 +2706,7 @@ const images = {
         if (!visual.outfit && !visual.panties && !a.scene) Object.assign(visual, sub.wardrobe);
         sub.wardrobe = { outfit: visual.outfit, panties: visual.panties };
         const ref = msg?.extra?.marinara || {};
-        return this.draw({ sub, what, ...visual, refs, chatId: ref.chatId, messageId: ref.messageId });
+        return this.draw({ sub, what, ...visual, refs, chatId: ref.chatId, messageId: ref.messageId, swipeIndex: ref.swipeIndex });
     },
     prompt({ sub, what, panties, outfit, scene, watch, framing, refs }) {
         const look = sub.look || 'a beautiful woman';
@@ -2609,22 +2725,38 @@ const images = {
     },
     async draw(job) {
         const host = this.host(); if (!host) return;
+        const session = this.session;
         this.busy = job.sub.name; this.last = Date.now(); this.status = `🖼 drawing ${job.sub.name}…`; ui.refresh();
         try {
             const prompt = this.prompt(job);
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
             let url = out.dataUrl, galleryId = null, warning = '';
-            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
+            if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, swipeIndex: job.swipeIndex, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
+            if (session !== this.session) return;
             const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, referenceWarning: job.refs.length && !out.usedReferences ? out.warning : '', ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
+            this.notes.push('The picture of ' + job.sub.name + (warning ? ' is in the panel; check delivery before describing it.' : ' is ready. React to the user’s choice on the next turn.'));
+            this.notes = this.notes.slice(-4);
             this.status = '';
             const detail = [warning, out.warning].filter(Boolean).join(' ');
             if (detail) { this.status = `🖼 ${detail}`; toast(detail, 'warning'); }
         } catch (e) {
+            if (session !== this.session) return;
             this.status = `🖼 picture failed: ${e.message}`;
             this.note(`The picture of ${job.sub.name} could not be drawn (${String(e.message).slice(0, 80)}). Carry on without it.`);
             console.warn('[Handy] picture failed', e);
-        } finally { this.busy = null; this.last = Date.now(); ui.refresh(); updatePrompt(); }
+        } finally { if (session === this.session) { this.busy = null; this.last = Date.now(); ui.refresh(); updatePrompt(); } }
+    },
+    editNote(id) {
+        const shot = this.session.shots.find(x => x.id === id);
+        if (!shot) return;
+        const member = cast.all()[shot.k], sub = this.session.subjects[shot.k];
+        const value = window.prompt('What caught your attention? Leave blank to clear.', member?.pictureNote || sub?.pictureNote || '');
+        if (value === null) return;
+        const note = String(value).trim().slice(0, 160);
+        if (member) member.pictureNote = note;
+        if (sub) sub.pictureNote = note;
+        save(); updatePrompt();
     },
     rate(id, kind) {
         const sh = this.session.shots.find((x) => x.id === id); if (!sh) return;
@@ -2660,6 +2792,11 @@ const images = {
         const ss = Object.values(this.session.subjects), pr = S().profile.pictures;
         const avail = this.busy ? `a picture of ${this.busy} is being drawn right now (don't ask for another yet)` : this.waitSec() ? `the next picture is possible in about ${this.waitSec()} s` : 'you may send a picture now';
         const L = [`- PICTURES: you can show him a picture of a named, invented adult cast member. On request or at a visual turning point, include one <handy her="CAST NAME" img="ONE VISIBLE CHANGE"/>. Use her actual cast name. First portrait: add look="fixed facial features, hair, eyes, distinguishing detail, age 25+". Later portraits: keep her identity; specify the current outfit, action and framing. Never write <pics=…> for a generated picture. Exclude the speaker, user and real people. At most one picture per reply; ${avail}.`];
+        for (const x of ss.slice(-4)) {
+            const memory = x.pictureNote || cast.all()[x.k]?.pictureNote;
+            if (memory) L.push(`- The user remembers ${x.name} for ${JSON.stringify(memory)}.`);
+        }
+        if (game.active && ['panties','cuckqueen'].includes(game.mode)) L.push('For a reveal, offer one visual clue and ask which detail to show. Wait for the choice, then request the image. While drawing, keep talking without claiming it arrived. On failure continue from the description.');
         if (game.active && this.GAME_LINES[game.mode]) L.push(`- ${this.GAME_LINES[game.mode]}`);
         if (ss.length) L.push(`- Pictured this session: ${ss.map((x) => `${x.name}${x.refs.length ? ' (look locked to a picture he ❤)' : ''}${x.loved ? `, ❤${x.loved}` : ''}${x.nope ? `, 👎${x.nope}` : ''}`).join('; ')}. Keep showing the same women unless the game calls for someone new.`);
         if (pr?.nope?.length) L.push(`- Picture ideas to vary: ${pr.nope.slice(0, 3).join('; ')}.`);
@@ -2998,7 +3135,7 @@ const game = {
         this.nudge(`${this.story ? 'Story mode' : GAMES[this.mode]} on. Send a message and she will start it.`);   // she opens the game
     },
     spin() {
-        if (!this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
+        if (hold || !this.active || this.mode !== 'roulette' || climax.active || !anyRunning()) return;   // no spin while you've stopped it
         if (this.scenes >= 2 && play.rand() < 0.25 && !secrets.session.has('double-spin')) {
             const others = Object.keys(LIB().acts).filter((a) => a !== actEngine.intent.act && a !== 'teasing');
             const b = others[Math.floor(play.rand() * others.length)];
@@ -3245,7 +3382,7 @@ const game = {
         return [
             `PANTY GAME — ON (a fantasy between consenting adults: the women are porn performers and women you invent; never real people he knows, and never use the names of real people he mentions; stay in character):`,
             `- It is all about panties. Show him porn and describe women in panties, and put panties="CUT, FABRIC, COLOR" (e.g. panties="black lace thong", "white cotton cheeky") on your tags with scene=, watch= and the matching act. Every pair named goes in his drawer, and you learn which cuts, fabrics and colors get him.`,
-            ...(images.on() ? [`- Show, don't just tell: when you describe a woman's pair, SEND HIM A PICTURE of her in it: on your <handy …/> tag put her="HER NAME", img="WHAT THE PICTURE SHOWS" and panties="CUT, FABRIC, COLOR" (the first time she's pictured, also look="HER FIXED LOOK"). Not pics=: that is only a search link.`] : S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
+            ...(images.on() ? [`- Show, don't just tell: when he chooses a detail or requests the reveal, SEND HIM A PICTURE of her in it: on your <handy …/> tag put her="HER NAME", img="WHAT THE PICTURE SHOWS" and panties="CUT, FABRIC, COLOR" (the first time she's pictured, also look="HER FIXED LOOK"). Not pics=: that is only a search link.`] : S().picLinks ? [`- Show, don't just tell: when you describe a pair, add pics="CUT FABRIC COLOR panties BODY PART" (e.g. pics="red satin thong ass") so he can look at examples while you talk about the fit.`] : []),
             `- Appreciate every detail out loud: how the cut frames her ass, thighs and hips, how it rides up or digs in, the fabric (lace, satin, silk, cotton, sheer mesh): how it looks, clings and feels, the color, the wet spot, and why a woman picks that pair for a man.`,
             `- Make him imagine them used on him: slipped off warm, wrapped around his cock, stroking him off, soaked through. Tell him how women wish they had his cum in their panties and in their pussy.`,
             `- Sometimes take him into the office fantasy: invent women at a workplace (names, roles, little glimpses) who each picked a special pair just for him today. They are invented characters only.`,
@@ -3362,7 +3499,7 @@ const play = {
     rand: Math.random,   // (tests pin it)
     later(ms, fn) { const t = setTimeout(() => { if (game.active) fn(); }, ms); this.timers.push(t); },
     // a timed surprise happens only while the device is moving: it never restarts what you stopped
-    whileMoving(ms, fn) { this.later(ms, () => { if (anyRunning()) fn(); }); },
+    whileMoving(ms, fn) { this.later(ms, () => { if (!hold && anyRunning()) fn(); }); },
     clear() { for (const t of this.timers) clearTimeout(t); this.timers = []; },
     // Each game's own state, reset at the start.
     onStart(mode) {
@@ -3589,7 +3726,7 @@ const cast = {
         const r = this.rank().slice(0, 6);
         const intro = `- THE CAST: invented women who come back across games (never real people). Bring one on with her="NAME" on a tag, and the first time add about="BODY, ROLE, PERSONALITY" (e.g. about="curvy redhead from accounting, shy until she isn't"). Reuse them: put the same woman in different games, in the pairs he liked on her. Add a new one now and then.`;
         if (!r.length) return intro;
-        const line = (x) => `${x.c.name}${x.c.about ? ` (${x.c.about})` : ''}${x.c.photo ? ' [has a picture he ❤]' : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
+        const line = (x) => `${x.c.name}${x.c.pictureNote ? ` (detail the user remembers: ${JSON.stringify(x.c.pictureNote)})` : ''}${x.c.about ? ` (${x.c.about})` : ''}${x.c.photo ? ' [has a picture he ❤]' : ''}${x.c.drawer.length ? `, wears ${x.c.drawer.slice(0, 2).join(' / ')}` : ''}${x.it ? ` — ${[x.it.finishes >= 0.5 ? `${Math.round(x.it.finishes * 10) / 10} finishes` : '', x.it.edges ? `${Math.round(x.it.edges)} edges` : '', x.it.big ? '🌊' : ''].filter(Boolean).join(', ') || 'new'}` : ' — new'}`;
         return `${intro} So far, his favorites first: ${r.map(line).join('; ')}.`;
     },
 };
@@ -4037,13 +4174,12 @@ function handleUserMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg || !msg.is_user) return;
     lastActivity = Date.now();   // you are here and taking part: the idle timer and the learning both count it
+    if (S().enabled && isUserStop(msg.mes)) {
+        logEvent('stop'); userPause('you said stop'); return;
+    }
+    if (paused && /^resume(?: motion)?[.!]?$/i.test(msg.mes.trim())) { resumeMotion(); return; }
     if (confess.waiting && S().enabled) { confess.answer(msg.mes); updatePrompt(); }
     if (!S().enabled || !(anyActive() || beats.length)) return;
-    if (isUserStop(msg.mes)) {
-        logEvent('stop');
-        stopAll('you said stop');
-        return updatePrompt();   // the reply being written now should already know
-    }
     const cue = S().detectClimax && !calib.active ? climaxCue(msg.mes) : null;
     if (cue === 'finish') finishSignal(true);
     else if (cue === 'close') closeSignal(true);
@@ -4165,7 +4301,10 @@ const calib = {
     },
     recal() { if (this.step === -1) { this.pending = null; this.start(); } },   // the waiting command is dropped
     async start() {
-        await stopAll();
+        if (paused) return toast('Resume motion before starting calibration.', 'info');
+        const stopping = stopAll(), startingEpoch = epoch;
+        await stopping;
+        if (paused || epoch !== startingEpoch) return;
         const my = epoch; this.my = my;
         this.active = true; this.step = 0; this.tip = null; this.base = null; this.at = null; this.moving = false;
         // Quick re-check: start from last session's tip, so a small change of height or angle is a few taps.
@@ -4267,20 +4406,16 @@ function actLine(name, e) {
 function profileText() {
     const s = S(), lib = LIB(), pr = s.profile;
     const L = [];
-    L.push(`[Device control: you control the user's Handy stroker toy. Write a tag in your reply whenever the physical action in the scene starts, changes or should build. Tags are hidden from the user and executed instantly.`);
-    L.push(`<handy act="ACT" intensity="0-1" depth="-1..1" variation="0-1" blend="ACT2:0.3" duration="seconds"/>`);
-    L.push(`- act = what is physically being done to the user's character right now. The device improvises realistic motion for that act from real examples, so describe the act — don't micromanage speed.`);
-    L.push(`- intensity: 0 = slow and gentle, 1 = frantic. Build it gradually as the scene escalates and drop it for teasing or after a peak.`);
-    L.push(`- depth: -1 = deep/at the base, +1 = shallow/at the tip. variation: 0 = mechanical, 1 = wild and unpredictable (omit to use the user's learned taste).`);
-    L.push(`- blend mixes in a little of other acts for transitions or creative combinations (e.g. a blowjob with handjob: act="blowjob" blend="handjob:0.4").`);
-    L.push(`- <handy stop/> stops. Don't emit a tag if nothing physical changed.`);
-    L.push(`- A reply may hold several tags. Put each one right where that moment happens in your text: they play in order as the user reads (e.g. a slow start, a tag mid-reply where it speeds up, another where it eases off).`);
+    L.push('[Device control: use hidden <handy act="ACT" intensity="0-1" depth="-1..1" variation="0-1" blend="ACT2:0.3" duration="seconds"/> tags at changes of action. Depth -1 is base, +1 tip. Space tags through the reply at reading pace. <handy stop/> stops.');
+    if (paused) L.push('PAUSED BY USER. Continue conversation without motion until the user resumes.');
+    if (direction) L.push(direction);
     if (ctx().groupId && s.charStyles) L.push(`- When two characters act on the user together, add with="THE OTHER CHARACTER'S NAME" to the tag (and duet="together" if they move as one; otherwise they take turns). The device then plays both of their styles. Leave it out when one character acts alone.`);
     L.push(`- <handy climax="30"/> pushes the user over the edge: a steady build to a peak over that many seconds (10-90), using what has made them finish before. Use it when the scene calls for the user to cum, not before.`);
     L.push(`- If the user is watching porn while you play, add scene="WHAT KIND OF SCENE" and watch="WHAT TO FOCUS ON" to a tag whenever you direct their attention: that is how you learn what gets them off.`);
     L.push(`- If the user says they are close, you are edging them: in character, pull back (lower intensity or stop), hold them right there, or push them over (raise it), and send the matching tag.`);
     L.push(`Available acts${lib.starter ? ' (starter defaults — not yet trained)' : ` (learned from ${lib.sources} scripted videos)`}:`);
-    for (const [k, e] of Object.entries(lib.acts)) L.push(actLine(k, e));
+    L.push(Object.keys(lib.acts).join(', '));
+    for (const k of new Set([actEngine.intent.act, ...pr.log.slice(-3).map(e => e.act)])) if (lib.acts[k]) L.push(actLine(k, lib.acts[k]));
     const loves = pr.log.filter((e) => e.kind === 'love' && e.act).slice(-6);
     const vt = videos.text();
     if (vt) L.push(vt);
@@ -4358,12 +4493,15 @@ function handleMessage(id) {
     if (S().enabled) { triggers.heard(msg.mes); voice.speak(msg.mes); }
     pending = [];
     images.notes = [];
-    clearBeats();   // a new reply replaces whatever was still waiting from the last one
-    if (!tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
+    const motionKeys = ['act','pattern','intensity','depth','blend','variation','climax','game','favorite','move'];
+    const motionTag = a => isStop(a) || motionKeys.some(k => a[k] !== undefined);
+    const cues = proseCues(msg.mes);
+    if (!hold && (tags.some(t => motionTag(parseAttrs(t[1]))) || (!tags.length && cues.length))) clearBeats();
+    if (!paused && !hold && !tags.length && S().enabled && S().proseCues && actEngine.running && !climax.active && Date.now() >= windUntil) {
         // No tag: follow what the reply describes, each change when you'd read it.
         const wpm = num(S().readWpm), text = msg.mes;
         let tot = 0;
-        for (const c of proseCues(text)) {
+        for (const c of cues) {
             if (c.di) { if (Math.abs(tot + c.di) > 0.31) continue; tot += c.di; }
             const delay = wpm > 0 ? Math.min(180000, ((text.slice(0, c.idx).match(/\S+/g) || []).length / wpm) * 60000) : 0;
             beats.push(setTimeout(() => runBeat({ _cue: true, ...c }), Math.max(delay, 50)));
@@ -4379,6 +4517,7 @@ function handleMessage(id) {
         const w0 = wordsTo(tags[0].index);
         for (const t of tags) {
             const a = parseAttrs(t[1]);
+            if (paused || (hold && !isStop(a) && !/^(end|over|deny|denied)$/.test(a.game || '') && motionTag(a))) continue;
             const delay = wpm > 0 ? Math.min(180000, ((wordsTo(t.index) - w0) / wpm) * 60000) : 0;
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
@@ -4393,6 +4532,18 @@ function handleMessage(id) {
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
     }
+    const detail = tags.map(t => parseAttrs(t[1])).find(a => a.img || a.scene || a.watch || a.act);
+    if (detail && !paused && !hold) {
+        const description = [detail.her || detail.girl, detail.scene, detail.watch, detail.outfit || detail.panties, detail.img, detail.act].filter(v => typeof v === 'string').join(', ').slice(0, 450);
+        if (description && description !== currentMoment?.description) {
+            previousMoment = currentMoment;
+            const intent = actEngine.running || LIB().acts[detail.act] ? { ...structuredClone(actEngine.intent) } : null;
+            if (intent && LIB().acts[detail.act]) intent.act = detail.act;
+            if (intent && unit01(detail.intensity) !== undefined) intent.intensity = unit01(detail.intensity);
+            currentMoment = { description, intent };
+        }
+        if (direction && !hold) direction = '';
+    }
     images.fromReply(tags.map((t) => parseAttrs(t[1])), msg);
     chars.speaker = null;
     updatePrompt();
@@ -4400,7 +4551,7 @@ function handleMessage(id) {
 // <handy stop/>, and the ways models say the same thing through act/pattern.
 const isStop = (a) => !!a.stop || [a.act, a.pattern].some((v) => typeof v === 'string' && /^(stop|stopped|none|off)$/i.test(v.trim()) && !LIB().acts[v.trim().toLowerCase()]);
 function runCommand(a) {
-    if (!S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
+    if (paused || !S().enabled || (calib.active && calib.step !== -1)) return;   // nothing else drives the device while you calibrate
     if (isStop(a)) return stopAll();
     if (a.her || a.girl || a.about || a.look) cast.meet(a);
     if (a.trigger && a.trigger !== true) triggers.add(a.trigger, game.active ? game.mode : null);
@@ -4666,7 +4817,7 @@ const ui = {
 <div id="handy_panel">
   <div class="handy-head"><b>Handy</b><span id="handy_live"></span><i id="handy_collapse" class="fa-solid fa-chevron-down"></i></div>
   <div class="handy-body">
-    <div id="handy_stop" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP</div>
+    <div id="handy_stop" class="handy-stop"><i class="fa-solid fa-hand"></i> STOP</div><button id="handy_resume">Paused by you · Resume motion</button><div class="handy-row"><button data-steer="hold">Hold here</button><button data-steer="surprise">Surprise me</button><button data-steer="back">Bring that back</button></div>
     <div class="handy-grid">${fb}</div>
     <div class="handy-row"><select id="handy_act" class="text_pole"></select><div id="handy_play" class="menu_button" title="Play this act"><i class="fa-solid fa-play"></i></div><div id="handy_fav" class="menu_button" title="Save as favorite"><i class="fa-solid fa-star"></i></div><div id="handy_calib_btn" class="menu_button" title="Calibrate tip and base (for when the Handy is set up differently)"><i class="fa-solid fa-ruler-vertical"></i></div></div>
     <div class="handy-row"><span class="handy-small">Intensity</span><input id="handy_intensity" type="range" min="0" max="1" step="0.05" value="0.5"></div>
@@ -4718,20 +4869,25 @@ const ui = {
         $('#handy_calib_cancel').on('click', () => stopAll('calibration cancelled'));
         // First in line (window, capture phase): while calibrating, ↑/↓ only move the sleeve. Otherwise the chat
         // box would see them too (↑ in an empty message box edits your last message in SillyTavern and Marinara).
-        window.addEventListener('keydown', (e) => {
+        const jogKey = (e) => {
             if (!calib.active || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
             e.preventDefault(); e.stopImmediatePropagation(); calib.jog((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 2));
-        }, true);
+        };
+        window.addEventListener('keydown', jogKey, true);
+        ctx().onCleanup?.(() => window.removeEventListener('keydown', jogKey, true));
         $('#handy_panel').on('click', '[data-fb]', function () { feedback(this.dataset.fb); });
         $('#handy_panel').on('click', '[data-pic-rate]', function (e) { e.stopPropagation(); images.rate(this.closest('[data-pic]').dataset.pic, this.dataset.picRate); });
         $('#handy_panel').on('click', '[data-pic] img', function () { const u = this.getAttribute('src'); if (u && !u.startsWith('data:')) window.open(u, '_blank', 'noopener'); });
-        $('#handy_stop').on('click', () => stopAll('stop button'));
+        $('#handy_stop').on('click', () => userPause('stop button'));
+        $('#handy_resume').on('click', resumeMotion);
+        $('#handy_panel').on('click', '[data-steer]', function () { steer(this.dataset.steer); });
+        $('#handy_panel').on('click', '[data-picture-note]', function () { images.editNote(this.closest('[data-pic]').dataset.pic); });
         $('#handy_panel').on('click', '[data-use]', function () { play.use(this.dataset.use); });
         $('#handy_panel').on('click', '[data-load]', function () { focus.rateLoad(this.dataset.load); });
         $('#handy_panel').on('click', '[data-dg]', function () { play.daddy(this.dataset.dg); });
         $('#handy_game_btn').on('click', () => { if (game.active) { const n = GAMES[game.mode]; game.end('quit'); game.nudge(`${n} ended.`); } else game.start($('#handy_game_mode').val() || 'edging'); });
         $('#handy_act').on('change', function () { ui.picked = { act: this.value, was: actEngine.intent.act }; });
-        $('#handy_play').on('click', () => { const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
+        $('#handy_play').on('click', () => { if (paused) resumeMotion(); const act = $('#handy_act').val(), intensity = +$('#handy_intensity').val(); ui.picked = null; enqueue(() => actEngine.apply({ act, intensity })); logEvent('chose:' + act); });
         $('#handy_intensity').on('change', function () { const intensity = +this.value; if (actEngine.running) enqueue(() => actEngine.running && actEngine.apply({ intensity })); });
         $('#handy_fav').on('click', saveFavorite);
         $('#handy_favs').on('change', function () { const f = S().profile.favorites[+this.value]; if (this.value !== '' && f) { enqueue(() => playFavorite(f)); logEvent('favorite:' + f.name); } this.value = ''; });
@@ -4778,7 +4934,7 @@ const ui = {
         const vl = S().videoLinks && !ctx().handyImages ? videos.list.slice(-3).reverse() : [];
         $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${v.icon} ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
         const shots = images.on() ? images.session.shots.slice(-4).reverse() : [];
-        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}">${p.referenceWarning ? `<span class="handy-pic-warning" title="${escA(p.referenceWarning)}">Text only</span>` : ''}<div class="handy-pic-rate"><span data-pic-rate="love" title="Keep her look" aria-label="Keep her look">❤ Keep look</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
+        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}">${p.referenceWarning ? `<span class="handy-pic-warning" title="${escA(p.referenceWarning)}">Text only</span>` : ''}<div class="handy-pic-rate"><span data-pic-rate="love" title="Keep her look" aria-label="Keep her look">❤ Keep look</span><span data-picture-note title="Edit what caught your attention">✎</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
         if ($('#handy_pictures').data('h') !== ph) $('#handy_pictures').html(ph).data('h', ph);
         $('#handy_pictures').toggle(shots.length > 0);
         $('#handy_pic_status').text(images.on() ? images.status : '').toggle(!!(images.on() && images.status));
@@ -4786,7 +4942,9 @@ const ui = {
         $('#handy_game_btn').toggleClass('on', game.active).find('span').text(game.active ? 'End' : 'Start');
         $('#handy_game_mode').prop('disabled', game.active); if (game.active) $('#handy_game_mode').val(game.mode);
         $('#handy_now').text(actEngine.running ? actEngine.describe() : hamp.running ? `pattern: ${hamp.pattern}` : '');
-        if (!anyRunning()) $('#handy_live').text('stopped');
+        $('#handy_resume').toggle(paused);
+        $('#handy_panel [data-steer="back"]').prop('disabled', paused || !previousMoment);
+        if (!anyRunning()) $('#handy_live').text(paused ? 'Paused by you' : 'stopped');
         const ak = chars.activeKey(), cur_r = ak ? s.characters?.[ak] : null;
         const pRec = cur_r ? chars.partnerRec() : null;
         $('#handy_who').text(cur_r ? `Style · ${chars.summary(cur_r)}${pRec ? ` + ${pRec.name} (${chars.duet === 'together' ? 'as one' : 'taking turns'})` : ''}` : '');
@@ -4883,18 +5041,25 @@ jQuery(() => {
     });
     // A game that hasn't had a reply yet goes with you to the new chat: in Marinara the extension only learns
 // which chat you're in when you send a message, so "open a chat, press Start, say hi" must keep the game.
-    c.eventSource.on(ev.CHAT_CHANGED, () => { stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; images.reset(); edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S().escStops && anyActive()) stopAll('Esc'); });
-    window.addEventListener('beforeunload', () => {
+    c.eventSource.on(ev.CHAT_CHANGED, () => { hold = false; direction = ''; currentMoment = previousMoment = null; cast.cur = null; stopAll(); if (!(game.active && !game.replies)) game.reset(); focus.clear(); pending = []; images.reset(); edges = 0; chars.who = null; chars.speaker = null; chars.partner = null; chars.current(); ui.refresh(); updatePrompt(); });
+    const escKey = e => { if (e.key === 'Escape' && S().enabled && S().escStops && !paused) userPause('Esc'); };
+    document.addEventListener('keydown', escKey);
+    const unloading = () => {
         if (!anyActive()) return;
         epoch++;
         api.call('PUT', '/mode', { mode: 0 }, true).catch(() => {});
         api.hampStop(true).catch(() => {}); api.hsspStop(true).catch(() => {});
         if (S().appId) api3.stop(true).catch(() => {});
+    };
+    window.addEventListener('beforeunload', unloading);
+    c.onCleanup?.(() => {
+        window.removeEventListener('beforeunload', unloading);
+        document.removeEventListener('keydown', escKey);
+        images.reset();
     });
     S().profile.sessions++; save(); updatePrompt();
     setInterval(() => { arousal.tick(); focus.tick(1); game.tick(1); }, 1000);
-    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, images, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
+    window.handyAdaptive = { actEngine, hamp, calib, chars, climax, arousal, game, focus, play, secrets, videos, cleanQuery, images, cast, triggers, confess, ladder, story, voice, hr, setups, proseCues, feedback, stop: stopAll, userPause, resumeMotion, steer, stopGeneration: () => stopGeneration, refreshPrompt: updatePrompt, active: anyActive, run: (a) => enqueue(() => runCommand(a)), api, api3, profile: () => S().profile, library: LIB };
 });
 
 })();

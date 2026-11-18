@@ -76,7 +76,7 @@ Pick **one** of these methods.
 
 ### Method B — Install from the zip
 
-1. Download `dist/handy-adaptive-v0.14.4.zip` from the repository.
+1. Download `dist/handy-adaptive-v0.15.0.zip` from the repository.
 2. Unzip it. You'll get a folder called `handy-adaptive`.
 3. Move that folder into one of these locations inside your SillyTavern install:
    - `SillyTavern/data/<your-user>/extensions/` (usually `data/default-user/extensions/`), or
@@ -1068,3 +1068,10 @@ From the repository root (needs Node.js, Python 3 and ffmpeg):
 npm test
 ```
 This runs a markup check, synthesizer checks, a simulated learning session, the extension against a simulated Handy (phrase joins, speed cap and rhythm at several network delays, stop behaviour, malformed tags, every transport and feature), a real-browser smoke test of the panel (skipped if Playwright isn't installed), and a full trainer run against a mock vision model.
+
+
+### Pause, pacing, and picture memory
+
+STOP, Esc (when enabled), and your safeword pause motion even while a reply is pending. Choose **Resume motion**, send **resume motion**, or press the manual play button to allow motion again. A scripted pause still follows the story.
+
+**Hold here** keeps the pace through the next replies. **Surprise me** lets the character choose a change on your next turn. **Bring that back** recalls the previous moment in this chat, including its motion when the act engine is running. Short reactions leave scheduled beats in place. Use the pencil on a picture to edit the detail you want remembered about that cast member; clear the text to forget it.

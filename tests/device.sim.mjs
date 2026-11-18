@@ -1218,6 +1218,31 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     pic.message('<handy scene="new stage"/>');
     check('scene fallback respects disabled video links', !pic.st.chat.at(-1).mes.includes('https://'));
 
+    let finishDraw;
+    pic.st.handyImages.generate = () => new Promise(resolve => { finishDraw = resolve; });
+    pic.message('<handy her="Ada" img="portrait"/>');
+    pic.handlers.chat_changed();
+    finishDraw({ dataUrl: 'old-chat-image' }); await pic.advance(10);
+    check('late image cannot populate the next chat or start its cooldown', pic.H.images.session.shots.length === 0 && pic.H.images.last === 0);
+
+    const controls = await boot({ settings: { sessionCheck: false, readWpm: 60 } });
+    controls.say('stop');
+    controls.message('<handy act="handjob"/>'); await controls.advance(1500);
+    check('idle STOP blocks a late reply', !controls.H.active());
+    controls.say('resume motion');
+    controls.message('<handy act="handjob"/> One two three four <handy act="cowgirl"/>');
+    await controls.advance(1000); controls.message('I like that.');
+    await controls.advance(5000);
+    check('a plain reaction preserves the next scheduled beat', controls.H.actEngine.intent.act === 'cowgirl');
+    controls.H.steer('hold'); controls.message('<handy act="handjob"/>'); await controls.advance(1000);
+    check('Hold here preserves current motion', controls.H.actEngine.intent.act === 'cowgirl');
+    controls.H.steer('surprise'); controls.message('<handy act="handjob" scene="one"/>'); await controls.advance(1000);
+    controls.message('<handy act="cowgirl" scene="two"/>'); await controls.advance(1000);
+    controls.H.steer('back'); await controls.advance(1000);
+    check('Bring that back recalls the previous scene and motion', controls.H.actEngine.intent.act === 'handjob' && last(controls).includes('one'));
+    controls.say('stop'); controls.message('<handy act="cowgirl"/>'); await controls.advance(1000);
+    check('active STOP stays paused through the next AI reply', !controls.H.active());
+
     // ---- Marinara-style flows
     const mz = await boot({ seed: 400 });
     mz.st.executeSlashCommandsWithOptions = async () => { throw new Error('not available'); };

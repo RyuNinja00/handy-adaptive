@@ -50,7 +50,7 @@ The first time it runs, the extension creates two things in your Marinara librar
 
 | Item | Where | What it does |
 |---|---|---|
-| **Handy Adaptive (managed)** | Lorebooks | A global lorebook with one always-on entry. The extension rewrites that entry before every AI reply with the device instructions, your acts, your learned taste and any feedback you just gave. It sits one message from the end of the chat as a system note, the same place SillyTavern puts it. |
+| **Handy Adaptive (managed)** | Lorebooks | Each chat has a separate book identified by its chat ID. Its entry updates when the instructions or feedback change. Upgrading disables the legacy global book. It sits one message from the end of the chat as a system note, the same place SillyTavern puts it. |
 | **Handy Adaptive: hide device tags** | Presets → Regexes | A display-only regex, so `<handy …/>` tags don't show in the chat. The model still sees its earlier tags, which helps it stay consistent. |
 
 If you delete either one, the extension recreates it. Click **Hide device tags in chat** for the regex, or just send a message for the lorebook. When you turn the extension off, the lorebook entry is emptied so the AI stops writing tags.
@@ -82,7 +82,7 @@ Also:
 - Game buttons (Good girl, Make her wait, the Fucktoy use buttons) act on the device at once. Her spoken reaction comes in her next reply, and a toast tells you once per game.
 - Timed events (a roulette spin, a surprise) show a toast. Send a message to hear her side of it.
 - If you open another chat, press **Start**, and then say hi, the game comes with you. A game that has already had a reply ends when you change chats.
-- With search links enabled, video and picture searches appear as clickable links in the assistant reply and remain in chat history. A viewing game can also use its scene tag to build the video search.
+- With search links enabled, video and picture searches appear as clickable links on the originating reply. The extension saves these links in swipe metadata and renders them on reload. A viewing game can also use its scene tag to build the video search.
 - Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
 ## Pictures she sends
@@ -97,7 +97,7 @@ The extension draws them through Marinara's own endpoints: `POST /api/characters
 2. **Settings → Addons → Import Extension File** and pick it. Marinara recognizes the same name and asks to update it.
 3. Any code change disables the extension until you approve the new fingerprint. Choose **Review and Run** again.
 
-Settings, calibration, setups, character styles, learned taste and the managed lorebook all carry over.
+Settings, calibration, setups, character styles and learned taste carry over. Version 0.15 disables the old global instruction book and creates a scoped book for each chat.
 
 ## Troubleshooting
 
@@ -108,7 +108,7 @@ Settings, calibration, setups, character styles, learned taste and the managed l
 | No **Import Extension File** button | Do both parts of Step 1, and restart Marinara after editing `.env`. From another device, also set the admin secret. |
 | The panel doesn't appear after **Review and Run** | Reload the page. Check the extension shows as enabled in **Settings → Addons**. Open the browser console (F12) and look for messages tagged `[Personal Extension Handy Adaptive]` or `[Handy]`. |
 | **AI instructions: ⚠ …** in the settings window | The extension couldn't write its lorebook. From another device, set the admin secret (Step 1). Check that **Handy Adaptive (managed)** isn't locked or disabled. |
-| The AI never writes tags | Check the status says *active*. Check the managed lorebook's **Global** and **Enabled** switches are on. Check the chat's lorebook list doesn't switch it off. A larger, instruction-following model helps. |
+| The AI never writes tags | Check the status says *active* and the book for this chat is enabled. Check the chat's lorebook list doesn't switch it off. A larger, instruction-following model helps. |
 | Tags show in the chat | Click **Hide device tags in chat** in the settings window, and check the regex is enabled under **Presets → Regexes**. |
 | The instructions get cut off | Raise the managed lorebook's **Token Budget** on its Overview tab. The extension sets 8192. |
 | The extension stopped after an update | Expected: approve the new code with **Review and Run**. |
@@ -129,7 +129,7 @@ The **Show real images for AI picture requests (including games)** option uses a
 node image-bridge/server.mjs
 ```
 
-By default it listens only on `127.0.0.1:38765`. Check `http://127.0.0.1:38765/health` in the same browser. In Handy Adaptive's ⚙ settings, enable **Show real images for AI picture requests (including games)**. When an AI reply includes `<pics="black lace thong">` or `<handy pics="black lace thong"/>`, the extension asks the bridge for a matching PornPics search result, downloads it as a browser blob and inserts it under the latest chat message. The raw tag remains hidden by the display regex.
+By default it listens only on `127.0.0.1:38765`. Check `http://127.0.0.1:38765/health` in the same browser. In Handy Adaptive's ⚙ settings, enable **Show real images for AI picture requests (including games)**. When an AI reply includes `<pics="black lace thong">` or `<handy pics="black lace thong"/>`, the extension asks the bridge for a matching PornPics search result, downloads it as a browser blob and inserts it under the exact assistant message that requested it. The raw tag remains hidden by the display regex.
 
 **Limitations:** Search uses publicly accessible HTML image candidates and may stop working if PornPics changes its markup, blocks automated requests or requires JavaScript. The first downloadable candidate is not guaranteed to match the requested description. The inserted image is temporary DOM content and is not persisted with the chat. The manual **Test inline image (POC)** button continues to show a placeholder and does not exercise the bridge. Automatic requests have a 45-second cooldown. Before searching, the query loses the same words the extension strips from search links (anything pointing at minors or non-consent). These real pictures are separate from **Pictures she sends**: they're never saved, never sent to an image model and never used as a reference for a drawn picture. Only use this feature for lawful adult material and respect site terms.
 

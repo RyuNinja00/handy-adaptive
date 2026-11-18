@@ -28,6 +28,7 @@ import os
 import random
 import re
 import shutil
+import tempfile
 import statistics as st
 import subprocess
 import sys
@@ -1197,13 +1198,16 @@ def build(args):
         lib["acts"][act] = entry
 
     stats = {a: e.pop("_stats") for a, e in lib["acts"].items()}
-    if os.path.exists(args.out):       # one step of undo
-        try:
-            os.replace(args.out, args.out + ".previous")
-        except OSError:
-            pass
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(lib, f, separators=(",", ":"))
+    # Publish only complete files, including the one-step backup.
+    dest = os.path.abspath(args.out)
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(dest)) as tmpdir:
+        staged = os.path.join(tmpdir, "library")
+        write_json(staged, lib, separators=(",", ":"))
+        if os.path.isfile(dest):
+            backup = os.path.join(tmpdir, "previous")
+            shutil.copyfile(dest, backup)
+            os.replace(backup, dest + ".previous")
+        os.replace(staged, dest)
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB) from {len(files)} trained video(s)"
           + (f", {unfinished} not finished yet (included as far as they got)" if unfinished else "") + "\n")
     print(f"{'act':<18}{'time':>7}{'vids':>6}{'phrases':>8}  {'kept':<22}motion")

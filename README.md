@@ -1,10 +1,12 @@
-# Handy Adaptive (SillyTavern + Marinara Engine) v0.8
+# Handy Adaptive (SillyTavern + Marinara Engine) v0.15.0
 
 The AI describes **what** is happening in the scene, the extension improvises **how** the device moves using motion learned from your hand-scripted videos, and your live feedback tunes it to your taste over time.
 
 📖 **New here? Follow the [complete step-by-step User Guide](docs/USER_GUIDE.md)**: installation, setup, training, daily use, troubleshooting and reference.
 
 🍝 **Using [Marinara Engine](https://github.com/Pasta-Devs/Marinara-Engine)?** Import `dist/handy-adaptive-marinara.zip` as an External Extension. It's the same extension with a small compatibility layer. See **[docs/MARINARA.md](docs/MARINARA.md)**.
+
+[Marinara ZIP](dist/handy-adaptive-marinara.zip) · [SillyTavern ZIP](dist/handy-adaptive-v0.15.0.zip)
 
 ## Install (SillyTavern)
 1. Copy the `handy-adaptive` folder into `SillyTavern/data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/`), or push it to a git repo and use **Extensions → Install extension**.

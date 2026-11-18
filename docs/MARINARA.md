@@ -82,7 +82,7 @@ Also:
 - Game buttons (Good girl, Make her wait, the Fucktoy use buttons) act on the device at once. Her spoken reaction comes in her next reply, and a toast tells you once per game.
 - Timed events (a roulette spin, a surprise) show a toast. Send a message to hear her side of it.
 - If you open another chat, press **Start**, and then say hi, the game comes with you. A game that has already had a reply ends when you change chats.
-- Video and picture search links appear on the panel only, not under her message.
+- With search links enabled, video and picture searches appear as clickable links in the assistant reply and remain in chat history. A viewing game can also use its scene tag to build the video search.
 - Her voice and the heart-rate sensor work in Marinara as well. The sensor needs Chrome or Edge, with Marinara opened on `localhost` (or https).
 
 ## Pictures she sends

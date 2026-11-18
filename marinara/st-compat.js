@@ -214,6 +214,32 @@ async function recent(chatId) {
     const list = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=8`);
     return Array.isArray(list) ? list : [];
 }
+// Persist generated search links with the originating reply. Keep the raw tags for swipes and continuations.
+async function appendViewingLinks(chatId, message, links) {
+    if (!links?.length) return;
+    const latest = (await recent(chatId)).find(row => row.id === message.id);
+    if (!latest || latest.content !== message.content || latest.activeSwipeIndex !== message.activeSwipeIndex) return;
+    const missing = links.filter(link => !latest.content.includes(link.url));
+    if (!missing.length) return;
+    const content = latest.content + '\n\n' + missing.map(link => link.markdown).join('\n\n');
+    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}`, { content });
+    handled.set(message.id, content);
+    // The app reloads its message cache later. Show links immediately on the original bubble.
+    const host = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
+    if (!host || scene.chatId !== chatId) return;
+    for (const link of missing) {
+        if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
+        const a = document.createElement('a');
+        a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        a.textContent = `${link.icon} ${link.q} (${link.site} search)`;
+        const line = document.createElement('div');
+        line.append(a); host.append(line);
+        const timer = setInterval(() => {
+            if (line.isConnected && ![...host.querySelectorAll('a')].some(other => other !== a && other.href === a.href)) return;
+            line.remove(); clearInterval(timer);
+        }, 1500);
+    }
+}
 async function afterReply(res, chatId, before) {
     try {   // wait for the streamed reply to finish
         const reader = res?.body?.getReader();
@@ -234,6 +260,8 @@ async function afterReply(res, chatId, before) {
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
             original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id } } });
         eventSource.emit(eventTypes.MESSAGE_RECEIVED, idx);
+        try { await appendViewingLinks(chatId, m, scene.chat[idx]?.extra?.marinara?.links); }
+        catch (e) { compatToast(`Could not add the viewing link to this reply: ${e.message}`, 'warning'); }
     }
     while (handled.size > 500) handled.delete(handled.keys().next().value);
 }
@@ -449,6 +477,8 @@ const imageHost = {
         }
         const refs = [];
         for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
+        const warning = references.length && !refs.length ? 'Her saved reference could not be read. This picture uses her written look.' : '';
+        if (warning) prompt = String(prompt).replace(REF_LINE, '');
         const useEdit = refs.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
         const { conn, note } = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId, refs.length > 0);
         const name = 'handy-picture';
@@ -466,7 +496,7 @@ const imageHost = {
             throw e;
         }
         if (!out || typeof out.image !== 'string' || !out.image.startsWith('data:image/')) throw new Error('the image connection returned no picture');
-        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, ...(note ? { note } : {}) };
+        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, warning, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
     async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {

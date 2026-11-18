@@ -174,6 +174,11 @@ const server = http.createServer(async (req, res) => {
         return json(200, { id, chatId: mm[1], url: `/api/gallery/file/${mm[1]}/${id}.png` });
     }
     if (p.startsWith('/api/gallery/file/') && m === 'GET') { res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(Buffer.from(PNG, 'base64')); }
+    if ((mm = p.match(/^\/api\/chats\/([^/]+)\/messages\/([^/]+)$/)) && m === 'PATCH') {
+        const msg = (state.chats[mm[1]] || []).find(x => x.id === mm[2]);
+        if (!msg) return json(404, {});
+        msg.content = body.content; return json(200, msg);
+    }
     if ((mm = p.match(/^\/api\/chats\/([^/]+)\/messages\/([^/]+)\/extra$/)) && m === 'PATCH') {
         const msg = (state.chats[mm[1]] || []).find((x) => x.id === mm[2]);
         if (!msg) return json(404, { error: 'Message not found' });
@@ -612,8 +617,9 @@ try {
         await start('panties');
         await turn('chat1', 'show me', 'Look at these. <handy act="doggy" intensity="0.5" panties="red satin g-string" pics="red satin g-string ass" search="red satin thong"/>');
         await waitFor(() => G(() => Object.keys(window.handyAdaptive.profile().drawer).length >= 2), 'drawer grows');
-        await pg.waitForSelector('#handy_videos a[href*="pornpics.com/?q=red+satin+g-string+ass"]', { state: 'visible' });
-        await pg.waitForSelector('#handy_videos a[href*="pornhub.com/video/search?search=red+satin+thong"]', { state: 'visible' });
+        await waitFor(() => state.chats.chat1.at(-1).content.includes('(https://www.pornhub.com/video/search?search=red+satin+thong)'), 'video search in saved reply');
+        assert.ok(state.chats.chat1.at(-1).content.includes('(https://www.pornpics.com/?q=red+satin+g-string+ass)'));
+        assert.equal(await pg.locator('#handy_videos a').count(), 0);
         assert.match(await pg.textContent('#handy_game'), /drawer \d+/);
         await pg.click('#handy_panel [data-fb="finish"]');
         await pg.waitForSelector('#handy_load', { state: 'visible' });

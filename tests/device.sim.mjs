@@ -1194,6 +1194,30 @@ for (const [text, want] of [["I'm so close...", 'close'], ["I'm close to the doo
     vs.message('<handy pics="lace"/>Text.'); await vs.advance(1000);
     check('pictures turned off too: nothing', !/📷/.test(vs.st.chat.at(-1).mes) && !/Suggestions:/.test(last(vs)));
 
+    const pic = await boot({ settings: { imageGapSec: 0 } });
+    const draws = [];
+    pic.st.handyImages = {
+        available: () => true,
+        async generate(job) { draws.push(job); return { dataUrl: 'test-image-' + draws.length, usedReferences: job.references.length }; },
+    };
+    pic.message('<handy her="Ada" panties="navy satin briefs" look="auburn hair"/><handy her="Bea" panties="white cotton"/><handy her="Ada" img="turns toward the mirror" framing="side view"/>');
+    await pic.advance(1000);
+    check('picture inherits only the named rival’s preceding details', draws.length === 1 && /auburn hair/.test(draws[0].prompt) && /navy satin briefs/.test(draws[0].prompt) && /side view/.test(draws[0].prompt) && !/white cotton/.test(draws[0].prompt));
+    pic.H.images.rate(pic.H.images.session.shots[0].id, 'love');
+    pic.message('<handy her="Ada"/><handy img="looks up"/>');
+    await pic.advance(1000);
+    check('same subject keeps her wardrobe and latest hearted likeness', draws[1]?.references.join() === 'test-image-1' && /navy satin briefs/.test(draws[1].prompt));
+    pic.H.images.rate(pic.H.images.session.shots[1].id, 'love');
+    pic.message('<handy her="Ada" outfit="green dress" img="arrives outside"/>');
+    await pic.advance(1000);
+    check('new outfit replaces previous pair and newest heart replaces old likeness', draws[2]?.references.join() === 'test-image-2' && /green dress/.test(draws[2].prompt) && !/navy satin/.test(draws[2].prompt));
+    pic.H.game.active = true; pic.H.game.mode = 'roulette';
+    pic.message('<handy scene="neon rooftop"/>');
+    check('a viewing game puts the scene search in the originating reply', pic.st.chat.at(-1).mes.includes('search=neon+rooftop'));
+    pic.st.extensionSettings.handy_adaptive.videoLinks = false;
+    pic.message('<handy scene="new stage"/>');
+    check('scene fallback respects disabled video links', !pic.st.chat.at(-1).mes.includes('https://'));
+
     // ---- Marinara-style flows
     const mz = await boot({ seed: 400 });
     mz.st.executeSlashCommandsWithOptions = async () => { throw new Error('not available'); };

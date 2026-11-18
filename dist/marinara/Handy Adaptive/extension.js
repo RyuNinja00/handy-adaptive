@@ -229,6 +229,32 @@ async function recent(chatId) {
     const list = await mapi('GET', `/chats/${enc(chatId)}/messages?limit=8`);
     return Array.isArray(list) ? list : [];
 }
+// Persist generated search links with the originating reply. Keep the raw tags for swipes and continuations.
+async function appendViewingLinks(chatId, message, links) {
+    if (!links?.length) return;
+    const latest = (await recent(chatId)).find(row => row.id === message.id);
+    if (!latest || latest.content !== message.content || latest.activeSwipeIndex !== message.activeSwipeIndex) return;
+    const missing = links.filter(link => !latest.content.includes(link.url));
+    if (!missing.length) return;
+    const content = latest.content + '\n\n' + missing.map(link => link.markdown).join('\n\n');
+    await mapi('PATCH', `/chats/${enc(chatId)}/messages/${enc(message.id)}`, { content });
+    handled.set(message.id, content);
+    // The app reloads its message cache later. Show links immediately on the original bubble.
+    const host = document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`);
+    if (!host || scene.chatId !== chatId) return;
+    for (const link of missing) {
+        if ([...host.querySelectorAll('a')].some(a => a.href === link.url)) continue;
+        const a = document.createElement('a');
+        a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        a.textContent = `${link.icon} ${link.q} (${link.site} search)`;
+        const line = document.createElement('div');
+        line.append(a); host.append(line);
+        const timer = setInterval(() => {
+            if (line.isConnected && ![...host.querySelectorAll('a')].some(other => other !== a && other.href === a.href)) return;
+            line.remove(); clearInterval(timer);
+        }, 1500);
+    }
+}
 async function afterReply(res, chatId, before) {
     try {   // wait for the streamed reply to finish
         const reader = res?.body?.getReader();
@@ -249,6 +275,8 @@ async function afterReply(res, chatId, before) {
         const idx = mirror({ name: ch?.name || scene.name2 || 'Character', is_user: false, is_system: false, mes: text,
             original_avatar: ch?.avatar, send_date: Date.now(), extra: { marinara: { chatId, messageId: m.id } } });
         eventSource.emit(eventTypes.MESSAGE_RECEIVED, idx);
+        try { await appendViewingLinks(chatId, m, scene.chat[idx]?.extra?.marinara?.links); }
+        catch (e) { compatToast(`Could not add the viewing link to this reply: ${e.message}`, 'warning'); }
     }
     while (handled.size > 500) handled.delete(handled.keys().next().value);
 }
@@ -464,6 +492,8 @@ const imageHost = {
         }
         const refs = [];
         for (const r of references.slice(0, 4)) { try { refs.push(await toDataUrl(r)); } catch (e) { console.warn('[Handy] reference skipped', e); } }
+        const warning = references.length && !refs.length ? 'Her saved reference could not be read. This picture uses her written look.' : '';
+        if (warning) prompt = String(prompt).replace(REF_LINE, '');
         const useEdit = refs.length > 0 && s.imageEditConnection && s.imageEditConnection !== VENICE_EDIT;
         const { conn, note } = await resolveImageConnection(useEdit ? s.imageEditConnection : s.imageConnection, chatId, refs.length > 0);
         const name = 'handy-picture';
@@ -481,7 +511,7 @@ const imageHost = {
             throw e;
         }
         if (!out || typeof out.image !== 'string' || !out.image.startsWith('data:image/')) throw new Error('the image connection returned no picture');
-        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, ...(note ? { note } : {}) };
+        return { dataUrl: out.image, connection: conn.name, usedReferences: refs.length, warning, ...(note ? { note } : {}) };
     },
     // Save to the chat's Gallery and attach under the message. → { url, galleryId }
     async attach({ chatId, messageId, dataUrl, prompt = '', title = '' }) {
@@ -2442,7 +2472,7 @@ const videos = {
     md(v) { return `${v.icon} [${v.q} (${v.site} search)](${v.url})`; },
     text() {
         const L = [];
-        if (S().videoLinks) L.push(`add search="SHORT SEARCH TERMS" to a tag for a video (e.g. search="milf black lace lingerie POV"): the user gets a link to ${VIDEO_SITES[S().videoSite]?.name || 'Pornhub'}'s search results`);
+        if (S().videoLinks) L.push(`add search="SHORT SEARCH TERMS" to a tag for a video (e.g. search="milf black lace lingerie POV"): when you direct him to open a scene, include its search tag in that same reply. The extension places the clickable link under your words. Use ${VIDEO_SITES[S().videoSite]?.name || 'Pornhub'}'s search results`);
         if (S().picLinks) L.push(images.on()
             ? `add pics="SHORT SEARCH TERMS" for a link to PornPics search results of real-world examples of a style (to SHOW HIM a woman, send a picture with img= instead)`
             : `add pics="SHORT SEARCH TERMS" for pictures (e.g. pics="white cotton cheeky panties ass"): a link to PornPics search results, great for showing a cut, fabric or body part`);
@@ -2485,13 +2515,14 @@ const images = {
         const tagged = attrs.find((x) => x.pics && x.pics !== true);
         const pics = tagged?.pics || /<pics\s*=\s*(["'])(.*?)\1/i.exec(text)?.[2];
         if (!pics || !String(pics).trim()) return;
-        const from = tagged || attrs.find((x) => (x.her && x.her !== true) || (x.girl && x.girl !== true)) || {};
-        const named = [from.her, from.girl].find((x) => x && x !== true);
-        const name = named && !this.isSelf(named, msg) ? named : this.nameIn(text, msg);
-        if (name && !from.her && !from.girl) cast.meet({ her: name });   // she joins the cast, so she stays the same
+        const prefix = tagged ? attrs.slice(0, attrs.indexOf(tagged)) : attrs;
+        const from = tagged || {};
+        const named = this.pictureTag([...prefix, { ...from, img: pics }])?.her;
+        const name = named && (tagged || prefix.length) ? named : this.nameIn(text, msg);
+        if (name && !this.isSelf(name, msg) && !from.her && !from.girl) cast.meet({ her: name });   // she joins the cast, so she stays the same
         if (!name) return this.note('A picture needs her="NAME" (another woman of the cast, never you): none was drawn.');
         this.note('You used pics= (that only gives him a search link). To send him a picture, put img="WHAT THE PICTURE SHOWS" and her="HER NAME" on a <handy …/> tag. This time the picture was drawn from your pics= words.');
-        return this.fromTags([{ ...from, img: pics, her: name || undefined }], msg);
+        return this.fromTags([...prefix, { ...from, img: pics, her: name }], msg);
     },
     // The woman a reply is about: a cast member named in it, else a woman it introduces by name ("Claire is gonna
     // wear…", who becomes a new invented cast member), else the last woman pictured, else the current one.
@@ -2513,12 +2544,26 @@ const images = {
         if (cast.cur && all[cast.cur] && !this.isSelf(all[cast.cur].name, msg)) return all[cast.cur].name;
         return '';
     },
-    // From a reply's tags: at most one picture per reply.
+    // Read only tags up to the picture. Unnamed detail tags belong to the last named subject.
+    pictureTag(attrs) {
+        const details = new Map();
+        let subject = cast.cur && cast.all()[cast.cur]?.name || '';
+        for (const tag of attrs) {
+            subject = [tag.her, tag.girl].find(v => typeof v === 'string' && v.trim()) || subject;
+            const key = cast.key(subject);
+            const context = details.get(key) || {};
+            for (const field of ['look', 'about', 'panties', 'outfit', 'scene', 'watch', 'framing']) {
+                if (typeof tag[field] === 'string' && tag[field].trim()) context[field] = tag[field];
+            }
+            details.set(key, context);
+            if (typeof tag.img === 'string' && tag.img.trim()) return { ...context, img: tag.img, her: subject };
+        }
+    },
     fromTags(attrs, msg) {
         if (!this.on()) return;
-        const a = attrs.find((x) => x.img && x.img !== true);
+        const a = this.pictureTag(attrs);
         if (!a) return;
-        const name = [a.her, a.girl].find((x) => x && x !== true) || (cast.cur && cast.all()[cast.cur]?.name) || '';
+        const name = a.her;
         if (!name) return this.note('A picture needs her="NAME" (a woman of the cast): none was drawn.');
         if (this.isSelf(name, msg)) return this.note(`No picture was drawn: pictures are of the other women of the cast, never of you (${name}).`);
         if (this.busy) return this.note('You asked for a picture while the last one was still being drawn: wait for it before asking again.');
@@ -2531,18 +2576,33 @@ const images = {
         if (!sub.look && c?.look) sub.look = c.look;
         if (!sub.look && c?.about) sub.look = cleanImgText(c.about, 300);
         if (c && sub.look && !c.look) { c.look = sub.look; save(); }
-        const refs = sub.refs.length ? sub.refs.slice(-3) : c?.photo ? [c.photo] : [];
-        const panties = a.panties && a.panties !== true ? cleanImgText(a.panties, 80) : '';
+        const refs = sub.refs.length ? sub.refs.slice(-1) : c?.photo ? [c.photo] : [];
+        const current = focus.cur?.facets?.her === sub.k ? focus.cur : null;
+        const visual = {};
+        for (const field of ['outfit', 'panties', 'scene', 'watch', 'framing']) {
+            const prior = field === 'watch' ? current?.phrase : current?.[field] || current?.facets?.[field];
+            const wardrobeChanged = (field === 'panties' && a.outfit) || (field === 'outfit' && a.panties);
+            const value = a[field] || (!a.scene && !wardrobeChanged && prior) || '';
+            if (IMG_REAL.test(value)) return this.note('Use an invented adult cast member for this picture.');
+            visual[field] = cleanImgText(value, 160);
+        }
+        // Retain wardrobe per subject across follow-ups. A newly specified outfit replaces the old pair.
+        if (!visual.outfit && !visual.panties && !a.scene) Object.assign(visual, sub.wardrobe);
+        sub.wardrobe = { outfit: visual.outfit, panties: visual.panties };
         const ref = msg?.extra?.marinara || {};
-        return this.draw({ sub, what, panties, refs, chatId: ref.chatId, messageId: ref.messageId });
+        return this.draw({ sub, what, ...visual, refs, chatId: ref.chatId, messageId: ref.messageId });
     },
-    prompt({ sub, what, panties, refs }) {
+    prompt({ sub, what, panties, outfit, scene, watch, framing, refs }) {
         const look = sub.look || 'a beautiful woman';
         return [
             refs.length ? `Keep the woman from the reference picture${refs.length > 1 ? 's' : ''} exactly the same: same face, hair, eyes, skin, body shape and proportions. Only the pose, outfit, framing and setting change as described.` : '',
             `${S().imageStyle || DEFAULTS.imageStyle}.`,
             `${sub.name}, an adult woman (25 or older): ${look}.`,
+            scene ? `Setting or scene: ${scene}.` : '',
+            outfit ? `Current outfit: ${outfit}.` : '',
             `The picture: ${what}.`,
+            watch ? `Visible detail to emphasize: ${watch}.` : '',
+            `Camera: ${framing || 'choose an angle that clearly shows the requested change or detail'}.`,
             panties ? `She is wearing ${panties} panties.` : '',
             'A single adult woman, consenting, clearly of adult age.',
         ].filter(Boolean).join(' ');
@@ -2555,7 +2615,7 @@ const images = {
             const out = await host.generate({ prompt, negativePrompt: IMG_NEG, references: job.refs, chatId: job.chatId });
             let url = out.dataUrl, galleryId = null, warning = '';
             if (job.chatId) { try { ({ url, galleryId, warning } = await host.attach({ chatId: job.chatId, messageId: job.messageId, dataUrl: out.dataUrl, prompt, title: `${job.sub.name}: ${job.what}`.slice(0, 120) })); } catch (e) { warning = `Picture drawn, but not saved: ${e.message}`; } }
-            const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
+            const shot = { id: `p${Date.now()}`, k: job.sub.k, name: job.sub.name, what: job.what, url, galleryId, referenceWarning: job.refs.length && !out.usedReferences ? out.warning : '', ref: (out.usedReferences ?? job.refs.length) > 0, at: Date.now() };
             this.session.shots.push(shot); if (this.session.shots.length > 24) this.session.shots.shift();
             this.status = '';
             const detail = [warning, out.warning].filter(Boolean).join(' ');
@@ -2569,13 +2629,12 @@ const images = {
     rate(id, kind) {
         const sh = this.session.shots.find((x) => x.id === id); if (!sh) return;
         const sub = this.session.subjects[sh.k], c = cast.all()[sh.k], pr = S().profile.pictures ??= { loved: [], nope: [] };
-        if (sh.rated === kind) return;
+        if (sh.rated === kind && (kind !== 'love' || sub?.refs.at(-1) === sh.url)) return;
         sh.rated = kind;
         if (kind === 'love') {
-            if (sub) { sub.refs = [...sub.refs.filter((u) => u !== sh.url), sh.url].slice(-3); sub.loved++; }
+            if (sub) { sub.refs = [sh.url]; sub.loved++; }
             if (c && !/^data:/.test(sh.url)) c.photo = sh.url;   // she looks like this in later games too
-            pr.loved = [`${sh.name}: ${sh.what}`.slice(0, 140), ...pr.loved].slice(0, 8);
-            this.note(`HE ❤ THE PICTURE of ${sh.name} (${sh.what}). Her look is now locked to that picture: every picture of her is drawn from it. Show him more of her like that, a step further each time.`);
+            this.note(`HE ❤ THE PICTURE of ${sh.name} (${sh.what}). Her look is now locked to that picture: every picture of her is drawn from it. Keep her identifiable. Follow the current request for wardrobe, pose and setting.`);
         } else {
             if (sub) sub.nope++;
             pr.nope = [`${sh.name}: ${sh.what}`.slice(0, 140), ...pr.nope].slice(0, 8);
@@ -2585,20 +2644,25 @@ const images = {
     },
     note(t) { this.notes.push(t); if (this.notes.length > 4) this.notes.shift(); updatePrompt(); },
     GAME_LINES: {
-        panties: 'In the Panty game, show the pair you are describing on her: img= with the cut, fabric and color and how it fits her ass, hips and thighs (close-ups, bent over, from behind, slipping them down), plus panties="CUT, FABRIC, COLOR". Keep to one woman this session unless he asks for another; each picture goes a little further.',
-        cuckqueen: 'When you pick the other woman for him, SHOW her: her="NAME", look= and img= of her posing for him. Then keep sending pictures of the same woman as the game goes, each a step further (undressing, teasing him, offering herself). She is the one, not you.',
-        rivalry: 'Show the rival: a picture of her when she appears, then her taunting him as the score changes.',
-        party: 'Now and then show him a still of the woman you are both watching, as you describe her.',
-        fucktoy: 'Show him the woman he is using, posed the way he is using her.',
+        panties: 'In the Panty game, show the pair when introduced, changed, or a detail is requested. Keep the wearer and pair until the story changes them. Example: <handy her="CAST NAME" panties="navy satin briefs" img="she turns to show the lace side panel" framing="three-quarter side view"/>.',
+        cuckqueen: 'Introduce the other woman with a recognizable face. On a follow-up keep her identity and outfit unless the request changes them. Example: <handy her="CAST NAME" img="she looks up from the velvet booth" framing="eye-level portrait"/>.',
+        rivalry: 'Introduce rivals separately. Picture the named leader on a lead change. Match framing for comparisons. Example: <handy her="CAST NAME" img="the new leader claims the spotlight" framing="waist-up, same backdrop as her rival"/>.',
+        party: 'Send a paused frame when attention shifts. A rewind returns to the same woman, wardrobe and setting. Example: <handy her="CAST NAME" img="freeze the moment she glances back" framing="over-the-shoulder still"/>.',
+        roulette: 'Establish each new spin with one distinguishing visual. Keep that scene until the next spin. Example: <handy her="CAST NAME" scene="neon rooftop" img="the new performer steps into a pool of blue light"/>.',
+        trance: 'Use an opening image, then hold the visual through ordinary turns. Change it on a request or milestone. Example: <handy her="CAST NAME" img="still portrait by candlelight" framing="steady close-up"/>.',
+        edging: 'Open with a visual anchor. Change it when the viewing focus changes or the user requests a picture. Example: <handy her="CAST NAME" img="she meets the camera in the mirror" framing="reflection at eye level"/>.',
+        mommy: 'Use a cast portrait at the start or a stamina milestone. Hold the scene in between. Example: <handy her="CAST NAME" img="the adult cast guest raises a glass at the milestone"/>.',
+        daddy: 'Picture an invented adult guest at a chosen milestone or on request. Keep the same guest between turns. Example: <handy her="CAST NAME" img="the guest smiles as the velvet curtain opens"/>.',
+        fucktoy: 'Show the named adult participant when a choice changes the scene. Frame the detail the user chose. Example: <handy her="CAST NAME" img="she changes position on the velvet chaise" framing="side view"/>.',
     },
     text() {
         if (!this.on()) return '';
-        const ss = Object.values(this.session.subjects), pr = S().profile.pictures || { loved: [], nope: [] };
+        const ss = Object.values(this.session.subjects), pr = S().profile.pictures;
         const avail = this.busy ? `a picture of ${this.busy} is being drawn right now (don't ask for another yet)` : this.waitSec() ? `the next picture is possible in about ${this.waitSec()} s` : 'you may send a picture now';
-        const L = [`- PICTURES: you can show him a picture you make. Exactly like this, on a device tag: <handy act="…" her="Claire" look="early 30s, chestnut hair in a messy bun, glasses, hazel eyes, fair skin, curvy hips" img="from behind, pencil skirt lifted, pink lace cheeky panties, looking back over her shoulder"/>. Never write <pics=…> or pics= to send a picture: those are only search links. On the tag, img="WHAT THE PICTURE SHOWS" (pose, framing, what she is wearing or not, the setting, her expression) and her="NAME" (a woman of the cast). It is drawn and appears under your message after a short while; talk as if you are sending it to him. The first time a woman is pictured, also add look="HER FIXED LOOK" (age 25+, face, hair, eyes, skin tone, body, one distinguishing detail): it is kept, and every later picture of her uses it, so she stays the same woman. At most one picture per reply, only when it heightens the moment; ${avail}. Pictures are only of the invented adult women of the cast: never yourself, never real people or anyone he mentions knowing.`];
+        const L = [`- PICTURES: you can show him a picture of a named, invented adult cast member. On request or at a visual turning point, include one <handy her="CAST NAME" img="ONE VISIBLE CHANGE"/>. Use her actual cast name. First portrait: add look="fixed facial features, hair, eyes, distinguishing detail, age 25+". Later portraits: keep her identity; specify the current outfit, action and framing. Never write <pics=…> for a generated picture. Exclude the speaker, user and real people. At most one picture per reply; ${avail}.`];
         if (game.active && this.GAME_LINES[game.mode]) L.push(`- ${this.GAME_LINES[game.mode]}`);
         if (ss.length) L.push(`- Pictured this session: ${ss.map((x) => `${x.name}${x.refs.length ? ' (look locked to a picture he ❤)' : ''}${x.loved ? `, ❤${x.loved}` : ''}${x.nope ? `, 👎${x.nope}` : ''}`).join('; ')}. Keep showing the same women unless the game calls for someone new.`);
-        if (pr.loved?.length) L.push(`- Pictures he has loved before: ${pr.loved.slice(0, 5).join('; ')}.${pr.nope?.length ? ` Not for him: ${pr.nope.slice(0, 3).join('; ')}.` : ''}`);
+        if (pr?.nope?.length) L.push(`- Picture ideas to vary: ${pr.nope.slice(0, 3).join('; ')}.`);
         if (this.notes.length) L.push(`- PICTURE NEWS: ${this.notes.join(' ')}`);
         return L.join('\n');
     },
@@ -2715,7 +2779,11 @@ const focus = {
         const her = val(a.her, 40) || val(a.girl, 40); if (her) fac.her = cast.key(her);
         if (!watch && !scene && !Object.keys(fac).length) return false;
         const c = this.cur, now = Date.now();
-        const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '', facets: { ...(scene ? {} : c?.facets), ...(scene ? { talk: c?.facets?.talk } : {}), ...fac } };
+        const priorFacets = { ...c?.facets };
+        if (fac.her && fac.her !== priorFacets.her) {
+            for (const field of ['woman', 'outfit', 'panties']) delete priorFacets[field];
+        }
+        const next = { phrase: watch ?? (scene ? '' : c?.phrase || ''), scene: scene ?? c?.scene ?? '', facets: { ...(scene ? {} : priorFacets), ...(scene ? { talk: c?.facets?.talk } : {}), ...fac } };
         if (c && next.phrase === c.phrase && next.scene === c.scene && JSON.stringify(next.facets) === JSON.stringify(c.facets || {})) return false;
         if (c) { this.prev.push({ ...c, until: now }); this.prev = this.prev.filter((p) => now - p.until < 120000); }
         this.cur = { ...next, tags: this.tagsOf(`${next.scene} ${next.phrase}`), act: a.act && a.act !== true ? String(a.act) : actEngine.intent.act, since: now, lastEdge: now };
@@ -4315,7 +4383,13 @@ function handleMessage(id) {
             if (delay < 500) { if (isStop(a)) stopAll(); else enqueue(() => runCommand(a)); }
             else beats.push(setTimeout(() => runBeat(a), delay));
         }
-        const vids = tags.flatMap((t) => videos.make(parseAttrs(t[1])));
+        const parsed = tags.map(t => parseAttrs(t[1]));
+        const hasSearch = parsed.some(a => a.search);
+        const viewingGame = game.active && ['edging', 'roulette', 'mommy', 'party', 'panties', 'cuckqueen'].includes(game.mode);
+        const suggestions = parsed.flatMap(a => videos.make(viewingGame && !hasSearch && typeof a.scene === 'string'
+            ? { ...a, search: a.scene } : a));
+        const vids = [...new Map(suggestions.map(v => [v.url, v])).values()].filter(v => !msg.mes.includes(v.url));
+        if (msg.extra?.marinara) msg.extra.marinara.links = vids.map(v => ({ ...v, markdown: videos.md(v) }));
         msg.mes = msg.mes.replace(TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim() + (vids.length ? `\n\n${vids.map((v) => videos.md(v)).join('\n')}` : '');
         if (vids.length) ui.refresh();
     }
@@ -4701,10 +4775,10 @@ const ui = {
                 : '';
         if ($('#handy_game_actions').html() !== ga) $('#handy_game_actions').html(ga);
         $('#handy_game_actions').toggle(!!ga);
-        const vl = S().videoLinks ? videos.list.slice(-3).reverse() : [];
+        const vl = S().videoLinks && !ctx().handyImages ? videos.list.slice(-3).reverse() : [];
         $('#handy_videos').html(vl.map((v) => `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${v.icon} ${esc(v.q)}</a> <span>(${esc(v.site)})</span>`).join('<br>')).toggle(vl.length > 0);
         const shots = images.on() ? images.session.shots.slice(-4).reverse() : [];
-        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}"><div class="handy-pic-rate"><span data-pic-rate="love" title="❤ Keep her looking like this">❤</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
+        const ph = shots.map((p) => `<div class="handy-pic${p.rated ? ` rated-${p.rated}` : ''}" data-pic="${escA(p.id)}" title="${escA(p.name)}: ${escA(p.what)}"><img src="${escA(p.url)}" alt="${escA(p.name)}">${p.referenceWarning ? `<span class="handy-pic-warning" title="${escA(p.referenceWarning)}">Text only</span>` : ''}<div class="handy-pic-rate"><span data-pic-rate="love" title="Keep her look" aria-label="Keep her look">❤ Keep look</span><span data-pic-rate="nope" title="👎 Not this">👎</span></div></div>`).join('');
         if ($('#handy_pictures').data('h') !== ph) $('#handy_pictures').html(ph).data('h', ph);
         $('#handy_pictures').toggle(shots.length > 0);
         $('#handy_pic_status').text(images.on() ? images.status : '').toggle(!!(images.on() && images.status));

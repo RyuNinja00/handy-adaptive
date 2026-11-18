@@ -14,9 +14,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Provide FFmpeg for trainer fixtures
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            python -m pip install imageio-ffmpeg==0.6.0
+            mkdir -p "$RUNNER_TEMP/handy-tools"
+            ln -s "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" "$RUNNER_TEMP/handy-tools/ffmpeg"
+            echo "$RUNNER_TEMP/handy-tools" >> "$GITHUB_PATH"
+          fi
       - run: npm install --no-save --package-lock=false playwright@1.58.2 && pip install playwright==1.58.0
-      - run: npx playwright install --with-deps chromium && python -m playwright install chromium
+      - run: npx playwright install chromium && python -m playwright install chromium
       - run: python scripts/package-release.py --check
       - run: npm test
       - run: node --check image-bridge/server.mjs && git diff --exit-code -- dist/marinara && test -z "$(git ls-files --others --exclude-standard dist)"

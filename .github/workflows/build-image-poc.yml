@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -17,5 +17,6 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm install --no-save --package-lock=false playwright@1.58.2 && pip install playwright==1.58.0
       - run: npx playwright install --with-deps chromium && python -m playwright install chromium
+      - run: python scripts/package-release.py --check
       - run: npm test
-      - run: node --check image-bridge/server.mjs && git diff --exit-code -- dist && test -z "$(git ls-files --others --exclude-standard dist)"
+      - run: node --check image-bridge/server.mjs && git diff --exit-code -- dist/marinara && test -z "$(git ls-files --others --exclude-standard dist)"

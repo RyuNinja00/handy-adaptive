@@ -1,5 +1,6 @@
 """Create reproducible import archives from the same source tree."""
 import json
+import sys
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -9,6 +10,14 @@ version = json.loads((root / "manifest.json").read_text())["version"]
 
 
 def package(name, files):
+    if sys.argv[1:] == ["--check"]:
+        with ZipFile(dist / name) as archive:
+            if sorted(archive.namelist()) != sorted(member for member, _ in files):
+                raise ValueError(f"{name}: unexpected archive contents")
+            for member, source in files:
+                if archive.read(member) != source.read_bytes():
+                    raise ValueError(f"{name}: stale {member}")
+        return
     with ZipFile(dist / name, "w") as archive:
         for member, source in sorted(files):
             info = ZipInfo(member)
